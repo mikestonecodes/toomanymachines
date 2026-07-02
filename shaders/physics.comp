@@ -1,35 +1,80 @@
 #version 460
 #include "common.glsl"
 
-// GPU sim: clear → scatter → step, one dispatch per mode (pc.mode). Bucket grid
-// (GCOUNT + GITEM indices). Every body only writes itself → no data races.
+// GPU sim: clear → scatter → step, one dispatch per mode (pc.mode). Bucket grid over the
+// whole WORLD (GCOUNT + GITEM). Every body only writes ITSELF → no data races. The enemy↔
+// bullet kill is a symmetric handshake of two self-writes computed from the same reads; a
+// bullet can occasionally spark a frame before its victim notices the hit — one lost damage
+// point, invisible in a thousand-bot horde.
 
 layout(local_size_x = 64) in;
 
 uint cell_of(vec2 p) {
-	ivec2 c = clamp(ivec2(p / pc.cell_size), ivec2(0), ivec2(int(GRID_SIZE) - 1));
+	ivec2 c = clamp(ivec2(p / CELL_SIZE), ivec2(0), ivec2(int(GRID_SIZE) - 1));
 	return uint(c.y) * GRID_SIZE + uint(c.x);
 }
 
-float hash1(uint n) {
-	uint x = n * 747796405u + 2891336453u;
-	x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
-	x = (x >> 22u) ^ x;
-	return float(x) / 4294967296.0;
+float city_h(int i, int j) {
+	if (i < 0 || j < 0 || i >= int(CITY_N) || j >= int(CITY_N)) { return 0.0; }
+	return CITY[uint(j) * CITY_N + uint(i)];
 }
 
-Body spawn_enemy(uint id) {
-	uint s = id * 2654435761u + uint(pc.time * 120.0);
-	float r = ENEMY_R_MIN + hash1(s) * (ENEMY_R_MAX - ENEMY_R_MIN);
-	float t = hash1(s + 1u);
-	vec2 p;
-	uint side = uint(hash1(s + 2u) * 4.0);
-	if      (side == 0u) p = vec2(t * pc.screen.x, -r);
-	else if (side == 1u) p = vec2(t * pc.screen.x, pc.screen.y + r);
-	else if (side == 2u) p = vec2(-r, t * pc.screen.y);
-	else                 p = vec2(pc.screen.x + r, t * pc.screen.y);
+// Push a circle out of the buildings it overlaps (walls inset BLDG_INSET into their
+// cell). Mirrors collide_city in car.odin.
+vec2 building_push(vec2 p, float r) {
+	int i0 = int(floor((p.x - r) / CITY_CELL)), i1 = int(floor((p.x + r) / CITY_CELL));
+	int j0 = int(floor((p.y - r) / CITY_CELL)), j1 = int(floor((p.y + r) / CITY_CELL));
+	for (int j = j0; j <= j1; j++) {
+		for (int i = i0; i <= i1; i++) {
+			if (city_h(i, j) <= 0.0) { continue; }
+			vec2 lo = vec2(i, j) * CITY_CELL + BLDG_INSET;
+			vec2 hi = vec2(i + 1, j + 1) * CITY_CELL - BLDG_INSET;
+			vec2 q = clamp(p, lo, hi);
+			vec2 d = p - q;
+			float dist = length(d);
+			if (dist < r && dist > 0.0001) { p = q + (d / dist) * r; }
+		}
+	}
+	return p;
+}
+
+bool in_building(vec2 p) {
+	int i = int(floor(p.x / CITY_CELL)), j = int(floor(p.y / CITY_CELL));
+	if (city_h(i, j) <= 0.0) { return false; }
+	vec2 lo = vec2(i, j) * CITY_CELL + BLDG_INSET;
+	vec2 hi = vec2(i + 1, j + 1) * CITY_CELL - BLDG_INSET;
+	return all(greaterThan(p, lo)) && all(lessThan(p, hi));
+}
+
+// Spawner for the endless assault: variant mix 60/30/10 (spider/skitter/brute — the
+// palette rule, in bots), marching in from BEYOND the city border. Hashed side attempts
+// keep spawns off the truck's doorstep when it hugs an edge. `gen` = respawn generation.
+Body spawn_enemy(uint slot, uint gen) {
+	uint s = slot * 2654435761u + gen * 974711u;
 	Body b;
-	b.pos = p; b.vel = vec2(0.0); b.radius = r; b.life = 0.0; b.kind = KIND_ENEMY;
+	float hv = hash1(s);
+	float hr = 0.85 + 0.3 * hash1(s + 9u);
+	if      (hv < 0.6) { b.variant = VAR_SPIDER;  b.radius = R_SPIDER * hr;  b.hp = HP_SPIDER; }
+	else if (hv < 0.9) { b.variant = VAR_SKITTER; b.radius = R_SKITTER * hr; b.hp = HP_SKITTER; }
+	else               { b.variant = VAR_BRUTE;   b.radius = R_BRUTE * hr;   b.hp = HP_BRUTE; }
+	vec2 p = vec2(0.0);
+	for (uint k = 0u; k < 4u; k++) {
+		float t = hash1(s + 5u + k * 3u);
+		float depth = 60.0 + hash1(s + 6u + k * 3u) * 320.0; // out in the void
+		uint side = uint(hash1(s + 7u + k * 3u) * 4.0);
+		if      (side == 0u) p = vec2(t * WORLD, -depth);
+		else if (side == 1u) p = vec2(t * WORLD, WORLD + depth);
+		else if (side == 2u) p = vec2(-depth, t * WORLD);
+		else                 p = vec2(WORLD + depth, t * WORLD);
+		if (distance(p, pc.player) > SPAWN_MIN_D) { break; }
+	}
+	vec2 to = pc.player - p;
+	b.pos = p;
+	b.vel = vec2(0.0);
+	b.life = 0.0;
+	b.angle = atan(to.y, to.x);
+	b.kind = KIND_ENEMY;
+	b.gen = gen;
 	return b;
 }
 
@@ -42,36 +87,122 @@ void main() {
 	}
 	if (id >= BODY_COUNT) { return; }
 
-	if (pc.mode == 1u) { // scatter into the bucket grid
+	if (pc.mode == 1u) { // scatter live bodies into the bucket grid
 		Body b = BODIES[id];
-		if (b.kind == KIND_DEAD) { return; }
+		if (b.kind == KIND_DEAD || b.kind == KIND_DYING) { return; }
 		uint cell = cell_of(b.pos);
 		uint slot = atomicAdd(GCOUNT[cell], 1u);
 		if (slot < CELL_CAP) { GITEM[cell * CELL_CAP + slot] = id; }
 		return;
 	}
 
-	// mode 2: step
+	// ── mode 2: step ─────────────────────────────────────────────────────────
 	Body b = BODIES[id];
 
-	if (b.kind == KIND_BULLET) {
-		b.pos += b.vel * pc.dt;
+	if (b.kind == KIND_DYING) { // death burst counts down, then the slot queues a respawn
 		b.life -= pc.dt;
-		if (b.life <= 0.0 || b.pos.x < -20.0 || b.pos.y < -20.0 || b.pos.x > pc.screen.x + 20.0 || b.pos.y > pc.screen.y + 20.0) {
+		if (b.life <= 0.0) {
 			b.kind = KIND_DEAD;
+			b.life = 1.0 + hash1(id * 331u + uint(pc.time)) * 3.0; // respawn countdown
 		}
 		BODIES[id] = b;
 		return;
 	}
-	if (b.kind != KIND_ENEMY) { return; } // player is CPU-driven; dead idle
 
-	vec2 to = pc.player - b.pos;
-	float pd = length(to);
-	if (pd > 0.001) { b.pos += (to / pd) * ENEMY_SPEED * pc.dt; }
-	if (pd < b.radius + CAR_RADIUS) { BODIES[id] = spawn_enemy(id); return; }
+	if (b.kind == KIND_DEAD) {
+		// Endless assault: a dead ENEMY slot inside the budget respawns at the world edge
+		// when its countdown runs out. The budget only ever grows — it never lets up.
+		if (id >= ENEMY_LO && id < ENEMY_LO + MAX_ENEMIES) {
+			uint slot = id - ENEMY_LO;
+			uint budget = min(400u + uint(pc.time * 4.0), MAX_ENEMIES);
+			b.life -= pc.dt;
+			if (slot < budget && b.life <= 0.0) { BODIES[id] = spawn_enemy(slot, b.gen + 1u); }
+			else { BODIES[id] = b; }
+		}
+		return;
+	}
 
-	int cx = int(clamp(b.pos.x / pc.cell_size, 0.0, float(GRID_SIZE) - 1.0));
-	int cy = int(clamp(b.pos.y / pc.cell_size, 0.0, float(GRID_SIZE) - 1.0));
+	if (b.kind == KIND_BULLET) {
+		b.pos += b.vel * pc.dt;
+		b.life -= pc.dt;
+		if (b.life <= 0.0 || any(lessThan(b.pos, vec2(-OUTSKIRTS - 300.0))) || any(greaterThan(b.pos, vec2(WORLD + OUTSKIRTS + 300.0)))) {
+			b.kind = KIND_DEAD;
+			BODIES[id] = b;
+			return;
+		}
+		if (in_building(b.pos)) { // shots splash on the walls
+			b.kind = KIND_DYING; b.variant = VAR_SPARK; b.life = SPARK_T; b.vel = vec2(0.0);
+			BODIES[id] = b;
+			return;
+		}
+		// die (→ impact spark) on the first enemy we overlap; the enemy reads the same
+		// overlap and takes the damage (see the race note up top).
+		int cx = int(clamp(b.pos.x / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
+		int cy = int(clamp(b.pos.y / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
+		for (int dy = -1; dy <= 1; dy++) {
+			int ny = cy + dy;
+			if (ny < 0 || ny >= int(GRID_SIZE)) { continue; }
+			for (int dx = -1; dx <= 1; dx++) {
+				int nx = cx + dx;
+				if (nx < 0 || nx >= int(GRID_SIZE)) { continue; }
+				uint cell = uint(ny) * GRID_SIZE + uint(nx);
+				uint cnt = min(GCOUNT[cell], CELL_CAP);
+				for (uint k = 0u; k < cnt; k++) {
+					uint j = GITEM[cell * CELL_CAP + k];
+					if (j == id) { continue; }
+					Body o = BODIES[j];
+					if (o.kind == KIND_ENEMY && distance(b.pos, o.pos) < b.radius + o.radius) {
+						b.kind = KIND_DYING; b.variant = VAR_SPARK; b.life = SPARK_T; b.vel *= 0.1;
+						BODIES[id] = b;
+						return;
+					}
+				}
+			}
+		}
+		BODIES[id] = b;
+		return;
+	}
+	if (b.kind != KIND_ENEMY) { return; } // player is CPU-driven
+
+	// ── enemy: INVADE the city — march to a hashed street crossing and hold it.
+	// The truck only becomes the target inside AGGRO_D; defense = intercepting the
+	// stream before it settles in.
+	vec2 toP = pc.player - b.pos;
+	float pd = length(toP);
+	bool aggro = pd < AGGRO_D;
+	vec2 tgt = pc.player;
+	if (!aggro) { // objective: one of the interior street crossings (cells 4/8/12/16)
+		uint s2 = id * 97u + b.gen * 57u;
+		tgt = vec2(4.0 + 4.0 * floor(hash1(s2 + 1u) * 3.999) + 0.5,
+		           4.0 + 4.0 * floor(hash1(s2 + 2u) * 3.999) + 0.5) * CITY_CELL;
+	}
+	vec2 to = tgt - b.pos;
+	float td = length(to);
+	vec2 dir = td > 0.001 ? to / td : vec2(1.0, 0.0);
+	float ph = hash1(id * 71u) * TAU;
+	float spd = SPD_BRUTE;
+	if (b.variant == VAR_SPIDER)  { spd = SPD_SPIDER; }
+	if (b.variant == VAR_SKITTER) { // skitters lunge in darting bursts
+		float lunge = max(sin(pc.time * 2.3 + ph), 0.0);
+		spd = SPD_SKITTER * (0.55 + 1.1 * lunge * lunge);
+	}
+	if (!aggro && td < 90.0) { dir = vec2(-dir.y, dir.x); spd *= 0.5; } // arrived: circle + occupy the crossing
+	vec2 desired = dir * spd;
+	desired += vec2(-dir.y, dir.x) * sin(pc.time * 1.7 + ph) * spd * 0.35; // weave, don't beeline
+	if (b.variant == VAR_SPIDER && in_building(b.pos)) { desired *= 0.55; } // spiders CLIMB buildings, slower
+	b.vel = mix(b.vel, desired, 1.0 - exp(-5.0 * pc.dt));
+	b.pos += b.vel * pc.dt;
+
+	if (pd < b.radius + CAR_RADIUS + 2.0) { // kamikaze: blow up on the truck
+		b.kind = KIND_DYING;
+		b.life = DEATH_T;
+		BODIES[id] = b;
+		return;
+	}
+
+	// grid: swarm separation + bullet damage (hit flash + knockback)
+	int cx = int(clamp(b.pos.x / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
+	int cy = int(clamp(b.pos.y / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
 	for (int dy = -1; dy <= 1; dy++) {
 		int ny = cy + dy;
 		if (ny < 0 || ny >= int(GRID_SIZE)) { continue; }
@@ -87,14 +218,28 @@ void main() {
 				vec2 off = b.pos - o.pos;
 				float d = length(off);
 				if (o.kind == KIND_BULLET) {
-					if (d < b.radius + o.radius) { BODIES[id] = spawn_enemy(id); return; }
-				} else if (o.kind == KIND_ENEMY) {
+					if (d < b.radius + o.radius) {
+						b.hp -= 1.0;
+						b.life = 1.0; // hit flash
+						b.vel += normalize(o.vel) * KNOCKBACK;
+					}
+				} else if (o.kind == KIND_ENEMY || o.kind == KIND_PLAYER) {
 					float md = b.radius + o.radius;
 					if (d < md && d > 0.001) { b.pos += (off / d) * (md - d) * 0.5; }
 				}
 			}
 		}
 	}
-	b.pos = clamp(b.pos, vec2(b.radius), pc.screen - vec2(b.radius));
+	if (b.hp <= 0.0) {
+		b.kind = KIND_DYING;
+		b.life = DEATH_T;
+		b.vel *= 0.25;
+		BODIES[id] = b;
+		return;
+	}
+	if (b.variant != VAR_SPIDER) { b.pos = building_push(b.pos, b.radius); } // only spiders climb
+	b.pos = clamp(b.pos, vec2(-OUTSKIRTS), vec2(WORLD + OUTSKIRTS)); // the wasteland is walkable — they march IN
+	if (length(b.vel) > 20.0) { b.angle = atan(b.vel.y, b.vel.x); }
+	b.life = max(b.life - pc.dt * 6.0, 0.0); // flash decay
 	BODIES[id] = b;
 }

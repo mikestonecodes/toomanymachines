@@ -42,6 +42,7 @@ main :: proc() {
 
 	last := time.tick_now()
 	frame_n := 0
+	shot_taken := false
 	for !should_quit {
 		ev: SDL.Event
 		for SDL.PollEvent(&ev) {
@@ -77,15 +78,18 @@ main :: proc() {
 
 		mx, my: f32
 		btn := SDL.GetMouseState(&mx, &my)
-		input.aim = {mx * mouse_scale, my * mouse_scale}
+		input.mouse = {mx * mouse_scale, my * mouse_scale}
 		input.fire = .LEFT in btn
 
-		if shot_mode || gpuav_mode { // headless drive: sweep-fire so the GPU work is exercised
+		if shot_mode || gpuav_mode { // headless drive: run for the border + sweep-fire so the GPU work is exercised
 			input.fire = true
-			ang := f32(frame_n) * 0.06
-			input.aim = player_pos + [2]f32{math.cos(ang), math.sin(ang)} * 400
-			if shot_mode && frame_n == 100 { vk_request_shot(".debug_screenshots/vk.jpg") }
-			if frame_n >= (shot_mode ? 115 : 90) { should_quit = true }
+			input.up = true
+			ang := f32(frame_n) * 0.05
+			input.mouse = {f32(win_w) * 0.5 + math.cos(ang) * 240, f32(win_h) * 0.5 + math.sin(ang) * 240}
+			if gpuav_mode && frame_n >= 90 { should_quit = true }
+			// give the assault a few seconds to close in on the truck
+			if shot_mode && sim_time >= 8.0 && !shot_taken { shot_taken = true; vk_request_shot(".debug_screenshots/vk.jpg") }
+			if shot_mode && sim_time >= 8.5 { should_quit = true }
 		}
 
 		game_update(dt)

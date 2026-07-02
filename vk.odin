@@ -17,6 +17,7 @@ import vk "vendor:vulkan"
 
 FRAMES_IN_FLIGHT :: 2
 BINDLESS_MAX     :: 64
+HDR_FORMAT       :: vk.Format.R16G16B16A16_SFLOAT // offscreen scene/bloom targets
 VALIDATION_LAYER :: "VK_LAYER_KHRONOS_validation"
 
 vkc: struct {
@@ -42,6 +43,12 @@ vkc: struct {
 	desc_set:    vk.DescriptorSet,
 	pipe_layout: vk.PipelineLayout,
 	buf_next:    u32,
+
+	// offscreen HDR targets (IMG_SPECS in render.odin) + the one shared sampler
+	sampler:   vk.Sampler,
+	imgs:      [Img]vk.Image,
+	img_views: [Img]vk.ImageView,
+	img_mem:   vk.DeviceMemory,
 
 	// per-frame-in-flight
 	cmd_pool:    vk.CommandPool,
@@ -140,10 +147,17 @@ vk_init :: proc() {
 		runtimeDescriptorArray                        = true,
 		descriptorBindingPartiallyBound               = true,
 		descriptorBindingStorageBufferUpdateAfterBind = true,
+		descriptorBindingSampledImageUpdateAfterBind  = true,
 		shaderStorageBufferArrayNonUniformIndexing    = true,
 		scalarBlockLayout                             = true,
 	}
-	feat2 := vk.PhysicalDeviceFeatures2{sType = .PHYSICAL_DEVICE_FEATURES_2, pNext = &feat12, features = {vertexPipelineStoresAndAtomics = true}}
+	feat2 := vk.PhysicalDeviceFeatures2{
+		sType = .PHYSICAL_DEVICE_FEATURES_2,
+		pNext = &feat12,
+		// fragment stores: the frag shaders read the (writable-declared) bindless storage buffers;
+		// sampled-image dynamic indexing: bloom.frag picks its source texture from a push constant.
+		features = {vertexPipelineStoresAndAtomics = true, fragmentStoresAndAtomics = true, shaderSampledImageArrayDynamicIndexing = true},
+	}
 	if gpuav_mode {
 		// Enable exactly the features GPU-Assisted validation instruments with, so it doesn't
 		// force-adjust the device on create (which the layer warns about). Only for the pass.
@@ -187,19 +201,36 @@ vk_init :: proc() {
 	}
 
 	bindless_init()
+	create_images()
 	fmt.println("vulkan: initialized", vkc.validated ? "(validation ON)" : "(no validation)")
 }
 
-// One descriptor set: an array of storage buffers, partially-bound + update-after-bind.
+// One descriptor set, two bindings: 0 = an array of storage buffers, 1 = the offscreen HDR
+// targets as combined image samplers (one immutable linear-clamp sampler for all of them).
+// Both partially-bound + update-after-bind.
 bindless_init :: proc() {
-	binding := vk.DescriptorSetLayoutBinding{binding = 0, descriptorType = .STORAGE_BUFFER, descriptorCount = BINDLESS_MAX, stageFlags = {.COMPUTE, .VERTEX, .FRAGMENT}}
-	bflags := vk.DescriptorBindingFlags{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND}
-	fci := vk.DescriptorSetLayoutBindingFlagsCreateInfo{sType = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, bindingCount = 1, pBindingFlags = &bflags}
-	lci := vk.DescriptorSetLayoutCreateInfo{sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO, pNext = &fci, flags = {.UPDATE_AFTER_BIND_POOL}, bindingCount = 1, pBindings = &binding}
+	smp := vk.SamplerCreateInfo{
+		sType = .SAMPLER_CREATE_INFO, magFilter = .LINEAR, minFilter = .LINEAR, mipmapMode = .NEAREST,
+		addressModeU = .CLAMP_TO_EDGE, addressModeV = .CLAMP_TO_EDGE, addressModeW = .CLAMP_TO_EDGE,
+	}
+	vkok(vk.CreateSampler(vkc.device, &smp, nil, &vkc.sampler), "CreateSampler")
+	samplers: [len(Img)]vk.Sampler
+	for &s in samplers { s = vkc.sampler }
+
+	bindings := [2]vk.DescriptorSetLayoutBinding{
+		{binding = 0, descriptorType = .STORAGE_BUFFER, descriptorCount = BINDLESS_MAX, stageFlags = {.COMPUTE, .VERTEX, .FRAGMENT}},
+		{binding = 1, descriptorType = .COMBINED_IMAGE_SAMPLER, descriptorCount = len(Img), stageFlags = {.FRAGMENT}, pImmutableSamplers = &samplers[0]},
+	}
+	bflags := [2]vk.DescriptorBindingFlags{{.PARTIALLY_BOUND, .UPDATE_AFTER_BIND}, {.PARTIALLY_BOUND, .UPDATE_AFTER_BIND}}
+	fci := vk.DescriptorSetLayoutBindingFlagsCreateInfo{sType = .DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO, bindingCount = 2, pBindingFlags = &bflags[0]}
+	lci := vk.DescriptorSetLayoutCreateInfo{sType = .DESCRIPTOR_SET_LAYOUT_CREATE_INFO, pNext = &fci, flags = {.UPDATE_AFTER_BIND_POOL}, bindingCount = 2, pBindings = &bindings[0]}
 	vkok(vk.CreateDescriptorSetLayout(vkc.device, &lci, nil, &vkc.set_layout), "CreateDescriptorSetLayout")
 
-	psize := vk.DescriptorPoolSize{type = .STORAGE_BUFFER, descriptorCount = BINDLESS_MAX}
-	pci := vk.DescriptorPoolCreateInfo{sType = .DESCRIPTOR_POOL_CREATE_INFO, flags = {.UPDATE_AFTER_BIND}, maxSets = 1, poolSizeCount = 1, pPoolSizes = &psize}
+	psizes := [2]vk.DescriptorPoolSize{
+		{type = .STORAGE_BUFFER, descriptorCount = BINDLESS_MAX},
+		{type = .COMBINED_IMAGE_SAMPLER, descriptorCount = len(Img)},
+	}
+	pci := vk.DescriptorPoolCreateInfo{sType = .DESCRIPTOR_POOL_CREATE_INFO, flags = {.UPDATE_AFTER_BIND}, maxSets = 1, poolSizeCount = 2, pPoolSizes = &psizes[0]}
 	vkok(vk.CreateDescriptorPool(vkc.device, &pci, nil, &vkc.desc_pool), "CreateDescriptorPool")
 
 	dai := vk.DescriptorSetAllocateInfo{sType = .DESCRIPTOR_SET_ALLOCATE_INFO, descriptorPool = vkc.desc_pool, descriptorSetCount = 1, pSetLayouts = &vkc.set_layout}
@@ -293,6 +324,79 @@ alloc_buffers :: proc() {
 
 align_up :: proc(v, a: vk.DeviceSize) -> vk.DeviceSize { return (v + a - 1) & ~(a - 1) }
 
+// ── offscreen images ─────────────────────────────────────────────────────────
+// Backs the IMG_SPECS list in render.odin (indexed by Img). All targets are HDR_FORMAT
+// color-attachment + sampled, sub-allocated from ONE memory block, and registered into
+// binding 1 at their enum ordinal — shaders address them by the IMG_* constants.
+
+ImgSpec :: struct { div: u32 } // extent = swapchain extent / div
+
+img_extent :: proc(im: Img) -> vk.Extent2D {
+	d := IMG_SPECS[im].div
+	return {max(vkc.extent.width / d, 1), max(vkc.extent.height / d, 1)}
+}
+
+create_images :: proc() {
+	reqs: [Img]vk.MemoryRequirements
+	for im in Img {
+		e := img_extent(im)
+		ici := vk.ImageCreateInfo{
+			sType = .IMAGE_CREATE_INFO, imageType = .D2, format = HDR_FORMAT,
+			extent = {e.width, e.height, 1}, mipLevels = 1, arrayLayers = 1, samples = {._1},
+			tiling = .OPTIMAL, usage = {.COLOR_ATTACHMENT, .SAMPLED}, sharingMode = .EXCLUSIVE, initialLayout = .UNDEFINED,
+		}
+		vkok(vk.CreateImage(vkc.device, &ici, nil, &vkc.imgs[im]), "CreateImage")
+		vk.GetImageMemoryRequirements(vkc.device, vkc.imgs[im], &reqs[im])
+	}
+	total: vk.DeviceSize
+	bits: u32 = 0xFFFFFFFF
+	for im in Img { total = align_up(total, reqs[im].alignment) + reqs[im].size; bits &= reqs[im].memoryTypeBits }
+	mai := vk.MemoryAllocateInfo{sType = .MEMORY_ALLOCATE_INFO, allocationSize = total, memoryTypeIndex = find_mem_type(bits, {.DEVICE_LOCAL})}
+	vkok(vk.AllocateMemory(vkc.device, &mai, nil, &vkc.img_mem), "AllocateMemory(images)")
+	off: vk.DeviceSize
+	for im in Img {
+		off = align_up(off, reqs[im].alignment)
+		vk.BindImageMemory(vkc.device, vkc.imgs[im], vkc.img_mem, off)
+		off += reqs[im].size
+	}
+	for im in Img {
+		ivci := vk.ImageViewCreateInfo{sType = .IMAGE_VIEW_CREATE_INFO, image = vkc.imgs[im], viewType = .D2, format = HDR_FORMAT, subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1}}
+		vkok(vk.CreateImageView(vkc.device, &ivci, nil, &vkc.img_views[im]), "CreateImageView(offscreen)")
+		info := vk.DescriptorImageInfo{imageView = vkc.img_views[im], imageLayout = .SHADER_READ_ONLY_OPTIMAL}
+		w := vk.WriteDescriptorSet{sType = .WRITE_DESCRIPTOR_SET, dstSet = vkc.desc_set, dstBinding = 1, dstArrayElement = u32(im), descriptorCount = 1, descriptorType = .COMBINED_IMAGE_SAMPLER, pImageInfo = &info}
+		vk.UpdateDescriptorSets(vkc.device, 1, &w, 0, nil)
+	}
+}
+
+destroy_images :: proc() {
+	for im in Img {
+		vk.DestroyImageView(vkc.device, vkc.img_views[im], nil)
+		vk.DestroyImage(vkc.device, vkc.imgs[im], nil)
+	}
+	vk.FreeMemory(vkc.device, vkc.img_mem, nil)
+}
+
+// Open dynamic rendering onto an offscreen HDR target. Contents are discarded (every pass
+// starts with an opaque fullscreen draw), so the UNDEFINED transition only needs the
+// execution dependency against last frame's sampling of this image.
+img_pass_begin :: proc(cmd: vk.CommandBuffer, im: Img) {
+	image_barrier(cmd, vkc.imgs[im], .UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL, {}, {.COLOR_ATTACHMENT_WRITE}, {.FRAGMENT_SHADER}, {.COLOR_ATTACHMENT_OUTPUT})
+	e := img_extent(im)
+	color := vk.RenderingAttachmentInfo{sType = .RENDERING_ATTACHMENT_INFO, imageView = vkc.img_views[im], imageLayout = .COLOR_ATTACHMENT_OPTIMAL, loadOp = .DONT_CARE, storeOp = .STORE}
+	ri := vk.RenderingInfo{sType = .RENDERING_INFO, renderArea = {extent = e}, layerCount = 1, colorAttachmentCount = 1, pColorAttachments = &color}
+	vk.CmdBeginRendering(cmd, &ri)
+	vp := vk.Viewport{width = f32(e.width), height = f32(e.height), maxDepth = 1}
+	sc := vk.Rect2D{extent = e}
+	vk.CmdSetViewport(cmd, 0, 1, &vp)
+	vk.CmdSetScissor(cmd, 0, 1, &sc)
+}
+
+// Close the offscreen pass and hand the image to fragment sampling.
+img_pass_end :: proc(cmd: vk.CommandBuffer, im: Img) {
+	vk.CmdEndRendering(cmd)
+	image_barrier(cmd, vkc.imgs[im], .COLOR_ATTACHMENT_OPTIMAL, .SHADER_READ_ONLY_OPTIMAL, {.COLOR_ATTACHMENT_WRITE}, {.SHADER_SAMPLED_READ}, {.COLOR_ATTACHMENT_OUTPUT}, {.FRAGMENT_SHADER})
+}
+
 // ── pipelines ────────────────────────────────────────────────────────────────
 
 make_compute_pipeline :: proc(path: string) -> vk.Pipeline {
@@ -309,7 +413,7 @@ make_compute_pipeline :: proc(path: string) -> vk.Pipeline {
 	return p
 }
 
-make_graphics_pipeline :: proc(vert, frag: string, blend: Blend) -> vk.Pipeline {
+make_graphics_pipeline :: proc(vert, frag: string, blend: Blend, hdr: bool) -> vk.Pipeline {
 	vmod := load_spv(vert)
 	if vmod == 0 { return 0 }
 	fmod := load_spv(frag)
@@ -337,7 +441,7 @@ make_graphics_pipeline :: proc(vert, frag: string, blend: Blend) -> vk.Pipeline 
 	cb := vk.PipelineColorBlendStateCreateInfo{sType = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, attachmentCount = 1, pAttachments = &att}
 	dyns := [?]vk.DynamicState{.VIEWPORT, .SCISSOR}
 	dyn := vk.PipelineDynamicStateCreateInfo{sType = .PIPELINE_DYNAMIC_STATE_CREATE_INFO, dynamicStateCount = len(dyns), pDynamicStates = raw_data(dyns[:])}
-	color_fmt := vkc.format
+	color_fmt := hdr ? HDR_FORMAT : vkc.format
 	pr := vk.PipelineRenderingCreateInfo{sType = .PIPELINE_RENDERING_CREATE_INFO, colorAttachmentCount = 1, pColorAttachmentFormats = &color_fmt}
 
 	ci := vk.GraphicsPipelineCreateInfo{
@@ -360,15 +464,16 @@ make_graphics_pipeline :: proc(vert, frag: string, blend: Blend) -> vk.Pipeline 
 }
 
 // Schema + storage for the PIPE_SPECS list in render.odin (indexed by the Pipe enum there).
+// hdr: render into the HDR offscreen format instead of the swapchain format.
 Blend :: enum { None, Alpha, Premul, Add }
-PipeSpec :: struct { compute: bool, shaders: []string, blend: Blend }
+PipeSpec :: struct { compute: bool, shaders: []string, blend: Blend, hdr: bool }
 pipelines: [Pipe]vk.Pipeline
 
 // Build every PIPE_SPECS pipeline into `out`; ok=false if any shader failed to compile.
 build_pipelines :: proc(out: ^[Pipe]vk.Pipeline) -> (ok: bool) {
 	ok = true
 	for spec, p in PIPE_SPECS {
-		out[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend)
+		out[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend, spec.hdr)
 		if out[p] == 0 { ok = false }
 	}
 	return
@@ -586,6 +691,8 @@ recreate_swapchain :: proc() {
 	for s in vkc.render_done { vk.DestroySemaphore(vkc.device, s, nil) }
 	vk.DestroySwapchainKHR(vkc.device, vkc.swapchain, nil)
 	create_swapchain()
+	destroy_images() // offscreen targets track the swapchain extent
+	create_images()
 }
 
 image_barrier :: proc(cmd: vk.CommandBuffer, image: vk.Image, old, new: vk.ImageLayout, src_access, dst_access: vk.AccessFlags2, src_stage, dst_stage: vk.PipelineStageFlags2) {

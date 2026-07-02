@@ -16,8 +16,12 @@ import "core:strings"
 // src : glslc shader stage. Compiles to shaders/spv/<src>.spv.
 SHADERS := [][2]string{
 	{"physics.comp", "compute"},
-	{"circle.vert", "vertex"},
-	{"circle.frag", "fragment"},
+	{"fs_tri.vert", "vertex"},
+	{"city.frag", "fragment"},
+	{"body.vert", "vertex"},
+	{"body.frag", "fragment"},
+	{"bloom.frag", "fragment"},
+	{"composite.frag", "fragment"},
 }
 
 sh :: proc(cmd: string) -> int {
