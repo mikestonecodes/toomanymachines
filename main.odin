@@ -15,10 +15,18 @@ win_w, win_h: u32
 mouse_scale:  f32 = 1
 should_quit:  bool
 sim_time:     f32
+gpuav_mode:   bool // `gpuav` build-step pass: enable GPU-Assisted validation (see vk.odin)
 g_ctx:        runtime.Context // for "system"-convention Vulkan callbacks
 
 main :: proc() {
 	g_ctx = context
+	shot_mode: bool // headless: drive + screenshot + exit
+	for a in os.args[1:] {
+		switch a {
+		case "gpuav": gpuav_mode = true
+		case "shot":  shot_mode = true
+		}
+	}
 	if !SDL.Init({.VIDEO}) { fmt.panicf("SDL_Init: %s", SDL.GetError()) }
 	if !SDL.Vulkan_LoadLibrary(nil) { fmt.panicf("Vulkan_LoadLibrary: %s", SDL.GetError()) }
 	window = SDL.CreateWindow("toomanymachines", 960, 600, {.VULKAN, .RESIZABLE, .HIGH_PIXEL_DENSITY})
@@ -28,8 +36,6 @@ main :: proc() {
 	vk_init()
 	gpu_init()
 	game_init()
-
-	shot_mode := len(os.args) > 1 && os.args[1] == "shot" // headless: drive + screenshot + exit
 
 	last := time.tick_now()
 	frame_n := 0
@@ -71,21 +77,22 @@ main :: proc() {
 		input.aim = {mx * mouse_scale, my * mouse_scale}
 		input.fire = .LEFT in btn
 
-		if shot_mode {
+		if shot_mode || gpuav_mode { // headless drive: sweep-fire so the GPU work is exercised
 			input.fire = true
 			ang := f32(frame_n) * 0.06
 			input.aim = player_pos + [2]f32{math.cos(ang), math.sin(ang)} * 400
-			if frame_n == 100 { vk_request_shot(".debug_screenshots/vk.jpg") }
-			if frame_n >= 115 { should_quit = true }
+			if shot_mode && frame_n == 100 { vk_request_shot(".debug_screenshots/vk.jpg") }
+			if frame_n >= (shot_mode ? 115 : 90) { should_quit = true }
 		}
 
 		game_update(dt)
 		vk_render(dt)
 
 		frame_n += 1
-		if frame_n % 30 == 0 { hot_reload_poll() } // live .glsl reload
+		if frame_n % 30 == 0 && !gpuav_mode { hot_reload_poll() } // live .glsl reload
 		free_all(context.temp_allocator)
 	}
+	if gpuav_mode { fmt.println("GPU-AV pass: clean (no runtime validation errors)") }
 }
 
 update_size :: proc() {

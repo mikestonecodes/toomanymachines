@@ -15,11 +15,14 @@ Modern, bindless Vulkan — deliberately small:
 - **GPU sim**: the horde + bullets run entirely in a GLSL compute shader
   (`shaders/physics.comp`) over a bucket grid; the CPU only drives the player.
 - **Data-driven**: buffers live in `BUF_SPECS`, pipelines in `PIPE_SPECS` (`pipelines.odin`).
-- **Odin → GLSL**: the `Body`/`Push` structs are generated from the Odin definitions into
-  `shaders/gen.glsl`, `#include`d by the shaders (glslc `-I`).
-- **Shader build**: `glslc -Werror` → `spirv-val` → `spirv-opt --validate-after-all`, plus
-  Vulkan **validation layers** at runtime.
-- **Hot reload**: editing any `.glsl` rebuilds the pipelines in-app, no restart.
+- **Separate build step**: `build_shaders.sh` reads the Odin structs (`gpu/types.odin`) via
+  `tools/gen_glsl.odin` → `shaders/gen.glsl`, then compiles + validates each GLSL shader
+  (`glslc -Werror` → `spirv-val` → `spirv-opt --validate-after-all` → `naga` advisory) into
+  `shaders/spv/`. **The game only reads the compiled `.spv`** — no compiler in the game.
+- **Odin → GLSL**: `Body`/`Push` are defined once in `gpu/types.odin` and injected into the
+  shaders via `gen.glsl` (`#include`d, glslc `-I`).
+- **Hot reload**: editing any `.glsl` re-runs `build_shaders.sh` and rebuilds the pipelines
+  in-app, no restart. Plus Vulkan **validation layers** at runtime.
 
 ## Controls
 
@@ -38,7 +41,10 @@ Modern, bindless Vulkan — deliberately small:
 | `main.odin`             | window + loop + input                                    |
 | `vk.odin`               | Vulkan backend: bootstrap, bindless, buffers, pipelines, frame |
 | `pipelines.odin`        | data-driven buffer + pipeline tables, GPU structs        |
-| `shaders.odin`          | Odin→GLSL codegen + glslc build/validate chain + hot reload |
+| `shaders.odin`          | loads compiled `.spv` + hot-reload trigger               |
+| `gpu/types.odin`        | shared GPU structs (`Body`, `Push`) — single source      |
+| `tools/gen_glsl.odin`   | build step: Odin structs → `shaders/gen.glsl`            |
+| `build_shaders.sh`      | build step: GLSL → validated SPIR-V in `shaders/spv/`    |
 | `car.odin`              | CPU game: player movement + bullet spawning              |
 | `shaders/common.glsl`   | shared shader contract (bindless decls, push constant, consts) |
 | `shaders/physics.comp`  | GPU sim: bucket grid + chase/separate/shoot/respawn      |

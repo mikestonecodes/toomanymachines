@@ -71,6 +71,7 @@ vk_init :: proc() {
 		if has_layer(VALIDATION_LAYER) {
 			append(&layers, cstring(VALIDATION_LAYER))
 			append(&exts, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
+			append(&exts, vk.EXT_VALIDATION_FEATURES_EXTENSION_NAME)
 			vkc.validated = true
 		} else {
 			fmt.println("vulkan: validation layer not installed (sudo pacman -S vulkan-validation-layers)")
@@ -78,7 +79,18 @@ vk_init :: proc() {
 	}
 
 	app := vk.ApplicationInfo{sType = .APPLICATION_INFO, pApplicationName = "toomanymachines", apiVersion = vk.API_VERSION_1_3}
+	// Enable every validation feature that produces actionable output — best-practices +
+	// synchronization2 on top of the core checks — plus GPU-Assisted (runtime descriptor/OOB
+	// checks) ONLY for the `gpuav` build-step pass (it's heavy and emits its own setup notes,
+	// which the callback allowlists). DEBUG_PRINTF is the one feature we never enable: it is
+	// mutually exclusive with GPU_ASSISTED, and we prefer GPU-AV's OOB checks over shader printf.
+	F :: vk.ValidationFeatureEnableEXT
+	val_enables: [dynamic]F
+	append(&val_enables, F.BEST_PRACTICES, F.SYNCHRONIZATION_VALIDATION)
+	if gpuav_mode { append(&val_enables, F.GPU_ASSISTED, F.GPU_ASSISTED_RESERVE_BINDING_SLOT) }
+	val_features := vk.ValidationFeaturesEXT{sType = .VALIDATION_FEATURES_EXT, enabledValidationFeatureCount = u32(len(val_enables)), pEnabledValidationFeatures = raw_data(val_enables)}
 	dbg_ci := debug_messenger_ci()
+	dbg_ci.pNext = &val_features
 	ici := vk.InstanceCreateInfo{
 		sType                   = .INSTANCE_CREATE_INFO,
 		pApplicationInfo        = &app,
@@ -196,7 +208,7 @@ bindless_register :: proc(buf: vk.Buffer, size: vk.DeviceSize) -> u32 {
 // ── pipelines ────────────────────────────────────────────────────────────────
 
 make_compute_pipeline :: proc(path: string) -> vk.Pipeline {
-	mod := load_shader_module(path, stage_of(path))
+	mod := load_spv(path)
 	if mod == 0 { return 0 }
 	defer vk.DestroyShaderModule(vkc.device, mod, nil)
 	ci := vk.ComputePipelineCreateInfo{
@@ -210,9 +222,9 @@ make_compute_pipeline :: proc(path: string) -> vk.Pipeline {
 }
 
 make_graphics_pipeline :: proc(vert, frag: string) -> vk.Pipeline {
-	vmod := load_shader_module(vert, "vertex")
+	vmod := load_spv(vert)
 	if vmod == 0 { return 0 }
-	fmod := load_shader_module(frag, "fragment")
+	fmod := load_spv(frag)
 	if fmod == 0 { vk.DestroyShaderModule(vkc.device, vmod, nil); return 0 }
 	defer vk.DestroyShaderModule(vkc.device, vmod, nil)
 	defer vk.DestroyShaderModule(vkc.device, fmod, nil)
@@ -296,7 +308,9 @@ vk_render :: proc(dt: f32) {
 	// compute writes → vertex reads the body buffer
 	mem_barrier(cmd, {.COMPUTE_SHADER}, {.SHADER_WRITE}, {.VERTEX_SHADER}, {.SHADER_READ})
 
-	image_barrier(cmd, vkc.images[img], .UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL, {}, {.COLOR_ATTACHMENT_WRITE}, {.TOP_OF_PIPE}, {.COLOR_ATTACHMENT_OUTPUT})
+	// srcStage = COLOR_ATTACHMENT_OUTPUT (not TOP_OF_PIPE) so the layout transition is
+	// ordered after the acquire semaphore's wait stage — else sync-val flags WAR on the image.
+	image_barrier(cmd, vkc.images[img], .UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL, {}, {.COLOR_ATTACHMENT_WRITE}, {.COLOR_ATTACHMENT_OUTPUT}, {.COLOR_ATTACHMENT_OUTPUT})
 
 	color := vk.RenderingAttachmentInfo{sType = .RENDERING_ATTACHMENT_INFO, imageView = vkc.views[img], imageLayout = .COLOR_ATTACHMENT_OPTIMAL, loadOp = .CLEAR, storeOp = .STORE, clearValue = {color = {float32 = {0.05, 0.06, 0.09, 1}}}}
 	ri := vk.RenderingInfo{sType = .RENDERING_INFO, renderArea = {extent = vkc.extent}, layerCount = 1, colorAttachmentCount = 1, pColorAttachments = &color}
@@ -413,7 +427,16 @@ find_queue_family :: proc(d: vk.PhysicalDevice) -> (u32, bool) {
 create_swapchain :: proc() {
 	caps: vk.SurfaceCapabilitiesKHR
 	vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vkc.phys, vkc.surface, &caps)
-	vkc.format = .B8G8R8A8_UNORM
+
+	// Query supported surface formats (best practice) and pick BGRA8-UNORM, else the first.
+	fn: u32
+	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.phys, vkc.surface, &fn, nil)
+	formats := make([]vk.SurfaceFormatKHR, fn, context.temp_allocator)
+	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.phys, vkc.surface, &fn, raw_data(formats))
+	chosen := formats[0]
+	for f in formats { if f.format == .B8G8R8A8_UNORM && f.colorSpace == .COLORSPACE_SRGB_NONLINEAR { chosen = f; break } }
+	vkc.format = chosen.format
+
 	vkc.extent = caps.currentExtent
 	if vkc.extent.width == max(u32) { vkc.extent = {win_w, win_h} }
 	count := caps.minImageCount + 1
@@ -424,7 +447,7 @@ create_swapchain :: proc() {
 		surface          = vkc.surface,
 		minImageCount    = count,
 		imageFormat      = vkc.format,
-		imageColorSpace  = .COLORSPACE_SRGB_NONLINEAR,
+		imageColorSpace  = chosen.colorSpace,
 		imageExtent      = vkc.extent,
 		imageArrayLayers = 1,
 		imageUsage       = {.COLOR_ATTACHMENT, .TRANSFER_DST, .TRANSFER_SRC},
@@ -478,6 +501,15 @@ debug_messenger_ci :: proc() -> vk.DebugUtilsMessengerCreateInfoEXT {
 		pfnUserCallback = proc "system" (severity: vk.DebugUtilsMessageSeverityFlagsEXT, types: vk.DebugUtilsMessageTypeFlagsEXT, data: ^vk.DebugUtilsMessengerCallbackDataEXT, user: rawptr) -> b32 {
 			context = g_ctx
 			fmt.eprintln("VK:", data.pMessage)
+			// The GPU-Assisted-validation setup notes (only seen in the `gpuav` pass) are config
+			// advice, not bugs — allowlisted here, each with its reason. Everything else is zero
+			// tolerance: abort on any error or core/sync validation message.
+			id := data.pMessageIdName != nil ? string(data.pMessageIdName) : ""
+			switch id {
+			case "VALIDATION-SETTINGS":            return false // GPU-AV: "core check + GPU-AV both on → slow"
+			case "WARNING-Setting-Limit-Adjusted": return false // GPU-AV: auto-adjusted a reserved binding slot
+			}
+			if .ERROR in severity || .VALIDATION in types { os.exit(1) }
 			return false
 		},
 	}

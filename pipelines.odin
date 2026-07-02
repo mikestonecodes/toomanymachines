@@ -1,6 +1,11 @@
 package main
 
+import gpu "gpu"
 import vk "vendor:vulkan"
+
+// GPU structs come from the shared gpu package (also read by the shader build step).
+Body :: gpu.Body
+Push :: gpu.Push
 
 // Data-driven GPU resources (like the old render.odin): list buffers in BUF_SPECS
 // and pipelines in PIPE_SPECS; gpu_init creates + bindlessly registers each buffer
@@ -13,12 +18,6 @@ GRID_CELLS :: GRID_SIZE * GRID_SIZE
 CELL_CAP   :: 32
 MODE_COUNT :: 3
 BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS
-
-// GPU structs — injected into GLSL via shaders/gen.glsl (see GLSL_STRUCTS).
-Body :: struct { pos, vel: [2]f32, radius, life: f32, kind: u32 }
-Push :: struct { screen, player: [2]f32, dt, time, cell_size: f32, mode, body_i, gcount_i, gitem_i: u32 }
-
-GLSL_STRUCTS := [?]GlslStruct{{type_info_of(Body), "Body"}, {type_info_of(Push), "Push"}}
 
 // ── buffer table ──
 Res :: enum { Body, GridCount, GridItem }
@@ -43,13 +42,42 @@ PIPE_SPECS := [Pipe]PipeSpec{
 pipelines: [Pipe]vk.Pipeline
 
 gpu_init :: proc() {
-	write_gen_glsl() // Odin structs → shaders/gen.glsl
+	// Create the buffers, then back all buffers of a memory class (host-visible vs
+	// device-local) from ONE allocation, sub-allocated at aligned offsets — avoids the
+	// per-buffer dedicated allocations that best-practices validation flags.
+	reqs: [Res]vk.MemoryRequirements
 	for spec, r in BUF_SPECS {
-		buffers[r], buf_mem[r], buf_map[r] = create_buffer(vk.DeviceSize(spec.size), spec.host_visible)
-		buf_index[r] = bindless_register(buffers[r], vk.DeviceSize(spec.size))
+		bci := vk.BufferCreateInfo{sType = .BUFFER_CREATE_INFO, size = vk.DeviceSize(spec.size), usage = {.STORAGE_BUFFER, .TRANSFER_DST, .TRANSFER_SRC}, sharingMode = .EXCLUSIVE}
+		vkok(vk.CreateBuffer(vkc.device, &bci, nil, &buffers[r]), "CreateBuffer")
+		vk.GetBufferMemoryRequirements(vkc.device, buffers[r], &reqs[r])
 	}
+	classes := [2]bool{true, false}
+	for host in classes {
+		total: vk.DeviceSize
+		type_bits: u32 = 0xFFFFFFFF
+		for spec, r in BUF_SPECS { if spec.host_visible == host { total = align_up(total, reqs[r].alignment) + reqs[r].size; type_bits &= reqs[r].memoryTypeBits } }
+		if total == 0 { continue }
+		props: vk.MemoryPropertyFlags = host ? {.HOST_VISIBLE, .HOST_COHERENT} : {.DEVICE_LOCAL}
+		mai := vk.MemoryAllocateInfo{sType = .MEMORY_ALLOCATE_INFO, allocationSize = total, memoryTypeIndex = find_mem_type(type_bits, props)}
+		block: vk.DeviceMemory
+		vkok(vk.AllocateMemory(vkc.device, &mai, nil, &block), "AllocateMemory")
+		mapped: rawptr
+		if host { vk.MapMemory(vkc.device, block, 0, total, {}, &mapped) }
+		off: vk.DeviceSize
+		for spec, r in BUF_SPECS {
+			if spec.host_visible != host { continue }
+			off = align_up(off, reqs[r].alignment)
+			vk.BindBufferMemory(vkc.device, buffers[r], block, off)
+			buf_mem[r] = block
+			if host { buf_map[r] = rawptr(uintptr(mapped) + uintptr(off)) }
+			off += reqs[r].size
+		}
+	}
+	for r in Res { buf_index[r] = bindless_register(buffers[r], vk.DeviceSize(BUF_SPECS[r].size)) }
 	if !build_pipelines(&pipelines) { panic("shader compilation failed at startup — see .shadercache/build.log") }
 }
+
+align_up :: proc(v, a: vk.DeviceSize) -> vk.DeviceSize { return (v + a - 1) & ~(a - 1) }
 
 build_pipelines :: proc(out: ^[Pipe]vk.Pipeline) -> (ok: bool) {
 	ok = true

@@ -1,7 +1,7 @@
 /toomanymachines
 *.o
-.shadercache/
 shaders/gen.glsl
+shaders/spv/
 .debug_screenshots/
 odin-launcher.reload.log
 .wgpu-backup/
