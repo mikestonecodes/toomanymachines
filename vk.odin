@@ -72,6 +72,7 @@ vk_init :: proc() {
 			append(&layers, cstring(VALIDATION_LAYER))
 			append(&exts, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
 			append(&exts, vk.EXT_VALIDATION_FEATURES_EXTENSION_NAME)
+			append(&exts, vk.EXT_LAYER_SETTINGS_EXTENSION_NAME)
 			vkc.validated = true
 		} else {
 			fmt.println("vulkan: validation layer not installed (sudo pacman -S vulkan-validation-layers)")
@@ -79,16 +80,39 @@ vk_init :: proc() {
 	}
 
 	app := vk.ApplicationInfo{sType = .APPLICATION_INFO, pApplicationName = "toomanymachines", apiVersion = vk.API_VERSION_1_3}
-	// Enable every validation feature that produces actionable output — best-practices +
-	// synchronization2 on top of the core checks — plus GPU-Assisted (runtime descriptor/OOB
-	// checks) ONLY for the `gpuav` build-step pass (it's heavy and emits its own setup notes,
-	// which the callback allowlists). DEBUG_PRINTF is the one feature we never enable: it is
-	// mutually exclusive with GPU_ASSISTED, and we prefer GPU-AV's OOB checks over shader printf.
+	// Two distinct validation configs. Normal launch: best-practices + synchronization2 on top
+	// of the core checks. `gpuav` build-step pass: GPU-Assisted (runtime descriptor/OOB) ALONE —
+	// the layer is (correctly) slow and noisy if core checks run alongside GPU-AV, so we disable
+	// core checks for that pass; the normal launch still does them. DEBUG_PRINTF is never enabled
+	// (mutually exclusive with GPU_ASSISTED — we prefer GPU-AV's OOB checks over shader printf).
 	F :: vk.ValidationFeatureEnableEXT
+	FD :: vk.ValidationFeatureDisableEXT
 	val_enables: [dynamic]F
-	append(&val_enables, F.BEST_PRACTICES, F.SYNCHRONIZATION_VALIDATION)
-	if gpuav_mode { append(&val_enables, F.GPU_ASSISTED, F.GPU_ASSISTED_RESERVE_BINDING_SLOT) }
-	val_features := vk.ValidationFeaturesEXT{sType = .VALIDATION_FEATURES_EXT, enabledValidationFeatureCount = u32(len(val_enables)), pEnabledValidationFeatures = raw_data(val_enables)}
+	val_disables: [dynamic]FD
+	if gpuav_mode {
+		append(&val_enables, F.GPU_ASSISTED, F.GPU_ASSISTED_RESERVE_BINDING_SLOT)
+		append(&val_disables, FD.CORE_CHECKS)
+	} else {
+		append(&val_enables, F.BEST_PRACTICES, F.SYNCHRONIZATION_VALIDATION)
+	}
+	val_features := vk.ValidationFeaturesEXT{
+		sType                          = .VALIDATION_FEATURES_EXT,
+		enabledValidationFeatureCount  = u32(len(val_enables)),
+		pEnabledValidationFeatures     = raw_data(val_enables),
+		disabledValidationFeatureCount = u32(len(val_disables)),
+		pDisabledValidationFeatures    = raw_data(val_disables),
+	}
+	// GPU-AV defaults to validating ray-query/trace-ray/mesh-shading; this device has none of
+	// those, so the layer would warn that it's disabling each. Turn them off up front instead.
+	ls_off := b32(false)
+	ls_layer := cstring(VALIDATION_LAYER)
+	ls_settings := [?]vk.LayerSettingEXT{
+		{pLayerName = ls_layer, pSettingName = "gpuav_validate_ray_query", type = .BOOL32, valueCount = 1, pValues = &ls_off},
+		{pLayerName = ls_layer, pSettingName = "gpuav_validate_trace_ray", type = .BOOL32, valueCount = 1, pValues = &ls_off},
+		{pLayerName = ls_layer, pSettingName = "gpuav_mesh_shading", type = .BOOL32, valueCount = 1, pValues = &ls_off},
+	}
+	ls_ci := vk.LayerSettingsCreateInfoEXT{sType = .LAYER_SETTINGS_CREATE_INFO_EXT, settingCount = len(ls_settings), pSettings = raw_data(ls_settings[:])}
+	if gpuav_mode { val_features.pNext = &ls_ci }
 	dbg_ci := debug_messenger_ci()
 	dbg_ci.pNext = &val_features
 	ici := vk.InstanceCreateInfo{
@@ -108,9 +132,10 @@ vk_init :: proc() {
 	pick_physical_device()
 
 	feat13 := vk.PhysicalDeviceVulkan13Features{sType = .PHYSICAL_DEVICE_VULKAN_1_3_FEATURES, dynamicRendering = true, synchronization2 = true, shaderDemoteToHelperInvocation = true}
+	feat11 := vk.PhysicalDeviceVulkan11Features{sType = .PHYSICAL_DEVICE_VULKAN_1_1_FEATURES, pNext = &feat13}
 	feat12 := vk.PhysicalDeviceVulkan12Features{
 		sType                                         = .PHYSICAL_DEVICE_VULKAN_1_2_FEATURES,
-		pNext                                         = &feat13,
+		pNext                                         = &feat11,
 		descriptorIndexing                            = true,
 		runtimeDescriptorArray                        = true,
 		descriptorBindingPartiallyBound               = true,
@@ -119,6 +144,20 @@ vk_init :: proc() {
 		scalarBlockLayout                             = true,
 	}
 	feat2 := vk.PhysicalDeviceFeatures2{sType = .PHYSICAL_DEVICE_FEATURES_2, pNext = &feat12, features = {vertexPipelineStoresAndAtomics = true}}
+	if gpuav_mode {
+		// Enable exactly the features GPU-Assisted validation instruments with, so it doesn't
+		// force-adjust the device on create (which the layer warns about). Only for the pass.
+		feat2.features.fragmentStoresAndAtomics = true
+		feat2.features.shaderInt64 = true
+		feat2.features.shaderInt16 = true
+		feat12.timelineSemaphore = true
+		feat12.vulkanMemoryModel = true
+		feat12.vulkanMemoryModelDeviceScope = true
+		feat12.bufferDeviceAddress = true
+		feat12.storageBuffer8BitAccess = true
+		feat12.shaderInt8 = true
+		feat11.storageBuffer16BitAccess = true
+	}
 	prio: f32 = 1
 	qci := vk.DeviceQueueCreateInfo{sType = .DEVICE_QUEUE_CREATE_INFO, queueFamilyIndex = vkc.qfamily, queueCount = 1, pQueuePriorities = &prio}
 	dev_exts := [?]cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME}
@@ -205,6 +244,50 @@ bindless_register :: proc(buf: vk.Buffer, size: vk.DeviceSize) -> u32 {
 	return idx
 }
 
+// Storage backing the BUF_SPECS list in render.odin (indexed by the Res enum there).
+BufSpec :: struct { size: u64, host_visible: bool }
+buffers:   [Res]vk.Buffer
+buf_mem:   [Res]vk.DeviceMemory
+buf_map:   [Res]rawptr
+buf_index: [Res]u32 // slot in the bindless array
+
+// Create every BUF_SPECS buffer, then back all buffers of a memory class (host-visible vs
+// device-local) from ONE allocation, sub-allocated at aligned offsets — avoids the per-buffer
+// dedicated allocations that best-practices validation flags — and register each bindlessly.
+alloc_buffers :: proc() {
+	reqs: [Res]vk.MemoryRequirements
+	for spec, r in BUF_SPECS {
+		bci := vk.BufferCreateInfo{sType = .BUFFER_CREATE_INFO, size = vk.DeviceSize(spec.size), usage = {.STORAGE_BUFFER, .TRANSFER_DST, .TRANSFER_SRC}, sharingMode = .EXCLUSIVE}
+		vkok(vk.CreateBuffer(vkc.device, &bci, nil, &buffers[r]), "CreateBuffer")
+		vk.GetBufferMemoryRequirements(vkc.device, buffers[r], &reqs[r])
+	}
+	classes := [2]bool{true, false}
+	for host in classes {
+		total: vk.DeviceSize
+		type_bits: u32 = 0xFFFFFFFF
+		for spec, r in BUF_SPECS { if spec.host_visible == host { total = align_up(total, reqs[r].alignment) + reqs[r].size; type_bits &= reqs[r].memoryTypeBits } }
+		if total == 0 { continue }
+		props: vk.MemoryPropertyFlags = host ? {.HOST_VISIBLE, .HOST_COHERENT} : {.DEVICE_LOCAL}
+		mai := vk.MemoryAllocateInfo{sType = .MEMORY_ALLOCATE_INFO, allocationSize = total, memoryTypeIndex = find_mem_type(type_bits, props)}
+		block: vk.DeviceMemory
+		vkok(vk.AllocateMemory(vkc.device, &mai, nil, &block), "AllocateMemory")
+		mapped: rawptr
+		if host { vk.MapMemory(vkc.device, block, 0, total, {}, &mapped) }
+		off: vk.DeviceSize
+		for spec, r in BUF_SPECS {
+			if spec.host_visible != host { continue }
+			off = align_up(off, reqs[r].alignment)
+			vk.BindBufferMemory(vkc.device, buffers[r], block, off)
+			buf_mem[r] = block
+			if host { buf_map[r] = rawptr(uintptr(mapped) + uintptr(off)) }
+			off += reqs[r].size
+		}
+	}
+	for r in Res { buf_index[r] = bindless_register(buffers[r], vk.DeviceSize(BUF_SPECS[r].size)) }
+}
+
+align_up :: proc(v, a: vk.DeviceSize) -> vk.DeviceSize { return (v + a - 1) & ~(a - 1) }
+
 // ── pipelines ────────────────────────────────────────────────────────────────
 
 make_compute_pipeline :: proc(path: string) -> vk.Pipeline {
@@ -221,7 +304,7 @@ make_compute_pipeline :: proc(path: string) -> vk.Pipeline {
 	return p
 }
 
-make_graphics_pipeline :: proc(vert, frag: string) -> vk.Pipeline {
+make_graphics_pipeline :: proc(vert, frag: string, blend: Blend) -> vk.Pipeline {
 	vmod := load_spv(vert)
 	if vmod == 0 { return 0 }
 	fmod := load_spv(frag)
@@ -238,11 +321,13 @@ make_graphics_pipeline :: proc(vert, frag: string) -> vk.Pipeline {
 	vp := vk.PipelineViewportStateCreateInfo{sType = .PIPELINE_VIEWPORT_STATE_CREATE_INFO, viewportCount = 1, scissorCount = 1}
 	rs := vk.PipelineRasterizationStateCreateInfo{sType = .PIPELINE_RASTERIZATION_STATE_CREATE_INFO, polygonMode = .FILL, frontFace = .COUNTER_CLOCKWISE, lineWidth = 1}
 	ms := vk.PipelineMultisampleStateCreateInfo{sType = .PIPELINE_MULTISAMPLE_STATE_CREATE_INFO, rasterizationSamples = {._1}}
-	att := vk.PipelineColorBlendAttachmentState{
-		blendEnable         = true,
-		srcColorBlendFactor = .ONE, dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA, colorBlendOp = .ADD,
-		srcAlphaBlendFactor = .ONE, dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA, alphaBlendOp = .ADD,
-		colorWriteMask      = {.R, .G, .B, .A},
+	// src/dst color+alpha factors per blend mode (all .ADD). None → opaque.
+	att := vk.PipelineColorBlendAttachmentState{colorWriteMask = {.R, .G, .B, .A}, blendEnable = blend != .None, colorBlendOp = .ADD, alphaBlendOp = .ADD, srcAlphaBlendFactor = .ONE}
+	switch blend {
+	case .None:
+	case .Alpha:  att.srcColorBlendFactor = .SRC_ALPHA; att.dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA; att.dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA
+	case .Premul: att.srcColorBlendFactor = .ONE;       att.dstColorBlendFactor = .ONE_MINUS_SRC_ALPHA; att.dstAlphaBlendFactor = .ONE_MINUS_SRC_ALPHA
+	case .Add:    att.srcColorBlendFactor = .ONE;       att.dstColorBlendFactor = .ONE;                 att.dstAlphaBlendFactor = .ONE
 	}
 	cb := vk.PipelineColorBlendStateCreateInfo{sType = .PIPELINE_COLOR_BLEND_STATE_CREATE_INFO, attachmentCount = 1, pAttachments = &att}
 	dyns := [?]vk.DynamicState{.VIEWPORT, .SCISSOR}
@@ -269,60 +354,73 @@ make_graphics_pipeline :: proc(vert, frag: string) -> vk.Pipeline {
 	return p
 }
 
-// ── frame: compute sim → draw ────────────────────────────────────────────────
+// Schema + storage for the PIPE_SPECS list in render.odin (indexed by the Pipe enum there).
+Blend :: enum { None, Alpha, Premul, Add }
+PipeSpec :: struct { compute: bool, shaders: []string, blend: Blend }
+pipelines: [Pipe]vk.Pipeline
 
-vk_render :: proc(dt: f32) {
+// Build every PIPE_SPECS pipeline into `out`; ok=false if any shader failed to compile.
+build_pipelines :: proc(out: ^[Pipe]vk.Pipeline) -> (ok: bool) {
+	ok = true
+	for spec, p in PIPE_SPECS {
+		out[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend)
+		if out[p] == 0 { ok = false }
+	}
+	return
+}
+
+// Rebuild all pipelines in place (hot reload). On a shader compile error, keep the running set.
+rebuild_pipelines :: proc() {
+	vk.DeviceWaitIdle(vkc.device)
+	newp: [Pipe]vk.Pipeline
+	if !build_pipelines(&newp) {
+		for p in Pipe { if newp[p] != 0 { vk.DestroyPipeline(vkc.device, newp[p], nil) } }
+		return
+	}
+	for p in Pipe { vk.DestroyPipeline(vkc.device, pipelines[p], nil) }
+	pipelines = newp
+}
+
+// ── frame scaffolding: acquire → record → submit → present ────────────────────
+// render() (render.odin) records the actual sim/draw between frame_begin and frame_end.
+
+// Wait the frame fence, acquire the next swapchain image, open the command buffer and bind the
+// bindless set. ok=false means the swapchain went out of date (recreated) — skip this frame.
+frame_begin :: proc() -> (cmd: vk.CommandBuffer, img: u32, ok: bool) {
 	fence := vkc.in_flight[vkc.frame]
 	vk.WaitForFences(vkc.device, 1, &fence, true, max(u64))
-
-	img: u32
 	acq := vk.AcquireNextImageKHR(vkc.device, vkc.swapchain, max(u64), vkc.img_avail[vkc.frame], 0, &img)
 	if acq == .ERROR_OUT_OF_DATE_KHR { recreate_swapchain(); return }
 	if acq != .SUCCESS && acq != .SUBOPTIMAL_KHR { vkok(acq, "AcquireNextImage") }
 	vk.ResetFences(vkc.device, 1, &fence)
 
-	cmd := vkc.cmds[vkc.frame]
+	cmd = vkc.cmds[vkc.frame]
 	vk.ResetCommandBuffer(cmd, {})
 	begin := vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}}
 	vk.BeginCommandBuffer(cmd, &begin)
-
 	vk.CmdBindDescriptorSets(cmd, .COMPUTE, vkc.pipe_layout, 0, 1, &vkc.desc_set, 0, nil)
 	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, vkc.pipe_layout, 0, 1, &vkc.desc_set, 0, nil)
+	ok = true
+	return
+}
 
-	w, h := f32(win_w), f32(win_h)
-	cell := max(f32(2 * ENEMY_R_MAX + 2), max(w, h) / f32(GRID_SIZE))
-	pc := Push{
-		screen = {w, h}, player = player_pos, dt = dt, time = sim_time, cell_size = cell,
-		body_i = buf_index[.Body], gcount_i = buf_index[.GridCount], gitem_i = buf_index[.GridItem],
-	}
-
-	// Sim: clear → scatter → step, barrier between passes.
-	vk.CmdBindPipeline(cmd, .COMPUTE, pipelines[.Physics])
-	groups := (u32(max(GRID_CELLS, BODY_COUNT)) + 63) / 64
-	for m in 0 ..< MODE_COUNT {
-		pc.mode = u32(m)
-		vk.CmdPushConstants(cmd, vkc.pipe_layout, {.COMPUTE, .VERTEX, .FRAGMENT}, 0, size_of(Push), &pc)
-		vk.CmdDispatch(cmd, groups, 1, 1)
-		mem_barrier(cmd, {.COMPUTE_SHADER}, {.SHADER_WRITE, .SHADER_READ}, {.COMPUTE_SHADER}, {.SHADER_WRITE, .SHADER_READ})
-	}
-	// compute writes → vertex reads the body buffer
-	mem_barrier(cmd, {.COMPUTE_SHADER}, {.SHADER_WRITE}, {.VERTEX_SHADER}, {.SHADER_READ})
-
-	// srcStage = COLOR_ATTACHMENT_OUTPUT (not TOP_OF_PIPE) so the layout transition is
-	// ordered after the acquire semaphore's wait stage — else sync-val flags WAR on the image.
+// Transition the swapchain image to a color target and open dynamic rendering (clear + viewport).
+pass_begin :: proc(cmd: vk.CommandBuffer, img: u32) {
+	// srcStage = COLOR_ATTACHMENT_OUTPUT (not TOP_OF_PIPE) so the layout transition is ordered
+	// after the acquire semaphore's wait stage — else sync-val flags WAR on the image.
 	image_barrier(cmd, vkc.images[img], .UNDEFINED, .COLOR_ATTACHMENT_OPTIMAL, {}, {.COLOR_ATTACHMENT_WRITE}, {.COLOR_ATTACHMENT_OUTPUT}, {.COLOR_ATTACHMENT_OUTPUT})
-
 	color := vk.RenderingAttachmentInfo{sType = .RENDERING_ATTACHMENT_INFO, imageView = vkc.views[img], imageLayout = .COLOR_ATTACHMENT_OPTIMAL, loadOp = .CLEAR, storeOp = .STORE, clearValue = {color = {float32 = {0.05, 0.06, 0.09, 1}}}}
 	ri := vk.RenderingInfo{sType = .RENDERING_INFO, renderArea = {extent = vkc.extent}, layerCount = 1, colorAttachmentCount = 1, pColorAttachments = &color}
 	vk.CmdBeginRendering(cmd, &ri)
-	vp := vk.Viewport{width = w, height = h, maxDepth = 1}
+	vp := vk.Viewport{width = f32(win_w), height = f32(win_h), maxDepth = 1}
 	sc := vk.Rect2D{extent = vkc.extent}
 	vk.CmdSetViewport(cmd, 0, 1, &vp)
 	vk.CmdSetScissor(cmd, 0, 1, &sc)
-	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Circle])
-	vk.CmdDraw(cmd, 6, u32(BODY_COUNT), 0, 0)
-	vk.CmdEndRendering(cmd)
+}
 
+// Close rendering and transition the image to present (or, for a screenshot, copy it out first).
+pass_end :: proc(cmd: vk.CommandBuffer, img: u32) {
+	vk.CmdEndRendering(cmd)
 	if shot.want {
 		ensure_shot_buf(vkc.extent.width, vkc.extent.height)
 		image_barrier(cmd, vkc.images[img], .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL, {.COLOR_ATTACHMENT_WRITE}, {.TRANSFER_READ}, {.COLOR_ATTACHMENT_OUTPUT}, {.COPY})
@@ -332,21 +430,25 @@ vk_render :: proc(dt: f32) {
 	} else {
 		image_barrier(cmd, vkc.images[img], .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR, {.COLOR_ATTACHMENT_WRITE}, {}, {.COLOR_ATTACHMENT_OUTPUT}, {.BOTTOM_OF_PIPE})
 	}
-	vk.EndCommandBuffer(cmd)
+}
 
+// Submit the command buffer, save a pending screenshot, and present.
+frame_end :: proc(cmd: vk.CommandBuffer, img: u32) {
+	img := img
+	vk.EndCommandBuffer(cmd)
+	fence := vkc.in_flight[vkc.frame]
 	wait := vk.SemaphoreSubmitInfo{sType = .SEMAPHORE_SUBMIT_INFO, semaphore = vkc.img_avail[vkc.frame], stageMask = {.COLOR_ATTACHMENT_OUTPUT}}
 	signal := vk.SemaphoreSubmitInfo{sType = .SEMAPHORE_SUBMIT_INFO, semaphore = vkc.render_done[img], stageMask = {.ALL_COMMANDS}}
 	ci := vk.CommandBufferSubmitInfo{sType = .COMMAND_BUFFER_SUBMIT_INFO, commandBuffer = cmd}
 	submit := vk.SubmitInfo2{sType = .SUBMIT_INFO_2, waitSemaphoreInfoCount = 1, pWaitSemaphoreInfos = &wait, commandBufferInfoCount = 1, pCommandBufferInfos = &ci, signalSemaphoreInfoCount = 1, pSignalSemaphoreInfos = &signal}
 	vkok(vk.QueueSubmit2(vkc.queue, 1, &submit, fence), "QueueSubmit2")
 
-	present := vk.PresentInfoKHR{sType = .PRESENT_INFO_KHR, waitSemaphoreCount = 1, pWaitSemaphores = &vkc.render_done[img], swapchainCount = 1, pSwapchains = &vkc.swapchain, pImageIndices = &img}
 	if shot.want {
 		vk.WaitForFences(vkc.device, 1, &fence, true, max(u64))
 		save_shot()
 		shot.want = false
 	}
-
+	present := vk.PresentInfoKHR{sType = .PRESENT_INFO_KHR, waitSemaphoreCount = 1, pWaitSemaphores = &vkc.render_done[img], swapchainCount = 1, pSwapchains = &vkc.swapchain, pImageIndices = &img}
 	pres := vk.QueuePresentKHR(vkc.queue, &present)
 	if pres == .ERROR_OUT_OF_DATE_KHR || pres == .SUBOPTIMAL_KHR { recreate_swapchain() }
 
@@ -501,14 +603,9 @@ debug_messenger_ci :: proc() -> vk.DebugUtilsMessengerCreateInfoEXT {
 		pfnUserCallback = proc "system" (severity: vk.DebugUtilsMessageSeverityFlagsEXT, types: vk.DebugUtilsMessageTypeFlagsEXT, data: ^vk.DebugUtilsMessengerCallbackDataEXT, user: rawptr) -> b32 {
 			context = g_ctx
 			fmt.eprintln("VK:", data.pMessage)
-			// The GPU-Assisted-validation setup notes (only seen in the `gpuav` pass) are config
-			// advice, not bugs — allowlisted here, each with its reason. Everything else is zero
-			// tolerance: abort on any error or core/sync validation message.
-			id := data.pMessageIdName != nil ? string(data.pMessageIdName) : ""
-			switch id {
-			case "VALIDATION-SETTINGS":            return false // GPU-AV: "core check + GPU-AV both on → slow"
-			case "WARNING-Setting-Limit-Adjusted": return false // GPU-AV: auto-adjusted a reserved binding slot
-			}
+			// Zero tolerance: abort on any error or core/sync validation message. Nothing is
+			// allowlisted — the GPU-AV pass is configured (vk_init) so the layer has no setup
+			// notes to emit. If a new message appears, fix the root cause, don't silence it here.
 			if .ERROR in severity || .VALIDATION in types { os.exit(1) }
 			return false
 		},

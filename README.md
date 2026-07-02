@@ -14,15 +14,16 @@ Modern, bindless Vulkan — deliberately small:
   buffer never touches a descriptor layout.
 - **GPU sim**: the horde + bullets run entirely in a GLSL compute shader
   (`shaders/physics.comp`) over a bucket grid; the CPU only drives the player.
-- **Data-driven**: buffers live in `BUF_SPECS`, pipelines in `PIPE_SPECS` (`pipelines.odin`).
+- **Data-driven**: buffers live in `BUF_SPECS`, pipelines in `PIPE_SPECS` (`render.odin`).
 - **Separate build step**: `tools/build.odin` reads the Odin structs (`gpu/types.odin`) via
   `tools/gen_glsl.odin` → `shaders/gen.glsl`, then compiles + validates each GLSL shader
   (`glslc -Werror` → `spirv-val`) into `shaders/spv/`. **The game only reads the compiled
   `.spv`** — no compiler in the game.
 - **Odin → GLSL**: `Body`/`Push` are defined once in `gpu/types.odin` and injected into the
   shaders via `gen.glsl` (`#include`d, glslc `-I`).
-- **Hot reload**: editing any `.glsl` re-runs `tools/build.odin` and rebuilds the pipelines
-  in-app, no restart. Plus Vulkan **validation layers** at runtime.
+- **Hot reload**: the game watches its compiled `.spv` and reloads pipelines when they change.
+  Under `./run.sh watch` the watcher recompiles GLSL → SPIR-V (+ naga) on save, so editing a
+  `.glsl` reloads in-app, no restart. Plus Vulkan **validation layers** at runtime.
 
 ## Controls
 
@@ -40,7 +41,7 @@ Modern, bindless Vulkan — deliberately small:
 |-------------------------|---------------------------------------------------------|
 | `main.odin`             | window + loop + input                                    |
 | `vk.odin`               | Vulkan backend: bootstrap, bindless, buffers, pipelines, frame |
-| `pipelines.odin`        | data-driven buffer + pipeline tables, GPU structs        |
+| `render.odin`           | high-level surface: buffer list, pipeline list, init, render() |
 | `shaders.odin`          | loads compiled `.spv` + hot-reload trigger               |
 | `gpu/types.odin`        | shared GPU structs (`Body`, `Push`) — single source      |
 | `tools/gen_glsl.odin`   | build step: Odin structs → `shaders/gen.glsl`            |
@@ -48,14 +49,14 @@ Modern, bindless Vulkan — deliberately small:
 | `car.odin`              | CPU game: player movement + bullet spawning              |
 | `shaders/common.glsl`   | shared shader contract (bindless decls, push constant, consts) |
 | `shaders/physics.comp`  | GPU sim: bucket grid + chase/separate/shoot/respawn      |
-| `shaders/circle.{vert,frag}` | instanced circle-SDF render                        |
+| `shaders/circle.glsl`   | instanced circle-SDF render (vertex + fragment, one file) |
 | `tools/odin-watch.odin` | inotify watcher (rebuilds the binary on `.odin` edits)   |
 
 ## Run
 
 ```
 ./run.sh          # build + run (Vulkan validation ON)
-./run.sh watch    # rebuild + relaunch on .odin edits; .glsl hot-reloads in-app
+./run.sh watch    # watcher: recompile shaders (+naga) on .glsl, rebuild binary on .odin
 ./run.sh shot     # headless drive + screenshot → .debug_screenshots/
 ```
 

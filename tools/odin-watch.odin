@@ -1,8 +1,8 @@
 package main
 
-// Minimal live-reload watcher: watch one directory with inotify, and on any
-// .odin/.wgsl save rebuild + relaunch the app. The project is flat (all sources in
-// the root), so no recursive directory scan is needed.
+// Minimal live-reload watcher. Two inotify watches: the root dir for .odin saves (→ rebuild +
+// relaunch the app) and shaders/ for GLSL saves (→ recompile SPIR-V + naga; the running game
+// notices the new .spv and reloads its pipelines itself). Flat project, no recursive scan.
 //
 //   odin run tools/odin-watch.odin -file -- <dir>
 
@@ -56,14 +56,22 @@ build :: proc() {
 	}
 }
 
+// Recompile GLSL → SPIR-V (+ naga); the running game reloads the new .spv on its own.
+compile_shaders :: proc() {
+	fmt.println("Recompiling shaders...")
+	run("odin run tools/build.odin -file -- shaders")
+}
+
 main :: proc() {
 	watch_dir = len(os.args) > 1 ? os.args[1] : "."
-	fmt.printf("Watching %s for .odin/.wgsl changes\n", watch_dir)
+	fmt.printf("Watching %s (.odin) + %s/shaders (.glsl)\n", watch_dir, watch_dir)
 
 	fd := inotify_init()
 	if fd < 0 { fmt.println("ERROR: inotify_init failed"); return }
 	dir_c := strings.clone_to_cstring(watch_dir, context.temp_allocator)
 	if inotify_add_watch(fd, dir_c, WATCH_MASK) < 0 { fmt.println("ERROR: add_watch failed"); return }
+	sh_c := strings.clone_to_cstring(fmt.tprintf("%s/shaders", watch_dir), context.temp_allocator)
+	if inotify_add_watch(fd, sh_c, WATCH_MASK) < 0 { fmt.println("ERROR: add_watch shaders failed"); return }
 
 	build()  // initial build + launch
 
@@ -74,7 +82,8 @@ main :: proc() {
 		if poll(&fds[0], 1, -1) <= 0 || (fds[0].revents & POLLIN) == 0 { continue }
 		time.sleep(120 * time.Millisecond)  // debounce editors writing several files
 
-		relevant := false
+		rebuild := false
+		shaders := false
 		for {
 			n := read(fd, &buf[0], EVENT_BUF_LEN)
 			if n <= 0 { break }
@@ -83,12 +92,17 @@ main :: proc() {
 				ev := (^Inotify_Event)(&buf[i])
 				if ev.len > 0 {
 					name := string(cstring(&buf[i + size_of(Inotify_Event)]))
-					if strings.has_suffix(name, ".odin") || strings.has_suffix(name, ".wgsl") { relevant = true }
+					if strings.has_suffix(name, ".odin") {
+						rebuild = true
+					} else if (strings.has_suffix(name, ".glsl") || strings.has_suffix(name, ".comp")) && name != "gen.glsl" {
+						shaders = true // GLSL source; gen.glsl is generated, ignore it
+					}
 				}
 				i += size_of(Inotify_Event) + int(ev.len)
 			}
 			if int(n) < EVENT_BUF_LEN { break }  // drained
 		}
-		if relevant { build() }
+		if shaders { compile_shaders() } // rewrites .spv → the running game reloads
+		if rebuild { build() }            // rebuild + relaunch the binary
 	}
 }

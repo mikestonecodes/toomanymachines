@@ -29,12 +29,15 @@ main :: proc() {
 	}
 	if !SDL.Init({.VIDEO}) { fmt.panicf("SDL_Init: %s", SDL.GetError()) }
 	if !SDL.Vulkan_LoadLibrary(nil) { fmt.panicf("Vulkan_LoadLibrary: %s", SDL.GetError()) }
-	window = SDL.CreateWindow("toomanymachines", 960, 600, {.VULKAN, .RESIZABLE, .HIGH_PIXEL_DENSITY})
+	// The gpuav + shot passes drive the sim off-screen — hidden window, no flash on the desktop.
+	flags := SDL.WindowFlags{.VULKAN, .RESIZABLE, .HIGH_PIXEL_DENSITY}
+	if gpuav_mode || shot_mode { flags += {.HIDDEN} }
+	window = SDL.CreateWindow("toomanymachines", 960, 600, flags)
 	if window == nil { fmt.panicf("CreateWindow: %s", SDL.GetError()) }
 	update_size()
 
 	vk_init()
-	gpu_init()
+	render_init()
 	game_init()
 
 	last := time.tick_now()
@@ -86,10 +89,12 @@ main :: proc() {
 		}
 
 		game_update(dt)
-		vk_render(dt)
+		render(dt)
 
 		frame_n += 1
-		if frame_n % 30 == 0 && !gpuav_mode { hot_reload_poll() } // live .glsl reload
+		when ODIN_DEBUG { // shader hot reload is a dev-only convenience; no file polling in release
+			if frame_n % 30 == 0 && !gpuav_mode { hot_reload_poll() }
+		}
 		free_all(context.temp_allocator)
 	}
 	if gpuav_mode { fmt.println("GPU-AV pass: clean (no runtime validation errors)") }
