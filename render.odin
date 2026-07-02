@@ -1,6 +1,5 @@
 package main
 
-import gpu "gpu"
 import vk "vendor:vulkan"
 
 // The high-level render description — nothing but the buffer list, the pipeline list, init,
@@ -8,9 +7,18 @@ import vk "vendor:vulkan"
 // the frame's acquire/barrier/submit/present scaffolding) lives in vk.odin behind the helpers
 // called below. Constants MUST match shaders/common.glsl.
 
-// GPU structs come from the shared gpu package (also read by the shader build step).
-Body :: gpu.Body
-Push :: gpu.Push
+// ── GPU types → GLSL ──────────────────────────────────────────────────────────
+// tools/build.odin copies the block between the @glsl markers verbatim into the shader-gen step
+// (tools/gen), which reflects it: each struct → a GLSL `struct`; the one named `Push` → the
+// push-constant block; a struct whose fields are ALL `v_`-prefixed → a vertex↔fragment varying
+// include (shaders/<Name>.glsl); every other struct + a raw `uint` array → the bindless buffers.
+// Keep the block self-contained (builtins only), one struct per line. Scalar layout — Odin default
+// alignment matches GLSL `scalar`; never add `_pad`.
+// @glsl
+Push     :: struct { screen, player: [2]f32, dt, time, cell_size: f32, mode: u32 }
+Body     :: struct { pos, vel: [2]f32, radius, life: f32, kind: u32 }
+CircleIO :: struct { v_local: [2]f32, v_radius: f32, v_kind: u32 }
+// @glsl-end
 
 GRID_SIZE  :: 32
 GRID_CELLS :: GRID_SIZE * GRID_SIZE
@@ -18,13 +26,15 @@ CELL_CAP   :: 32
 MODE_COUNT :: 3
 BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS
 
-// ── buffers ── add one = one row; alloc_buffers creates it and hands it a bindless slot in
-// buf_index, which you pass to shaders via push constants. (BufSpec + storage live in vk.odin.)
+// ── buffers ── the single source of truth. Each row: GLSL accessor macro, element type (its
+// bindless view), byte size, host-visible. WRITE IN ENUM ORDER — the row order is the bindless
+// slot. tools/gen emits the views + a `<macro>` for each (BODIES = bodyBuf[0].v, …), so shaders
+// just say BODIES/GCOUNT/GITEM. Add a buffer = add a row here and nothing else.
 Res :: enum { Body, GridCount, GridItem }
 BUF_SPECS := [Res]BufSpec{
-	.Body      = {u64(size_of(Body) * BODY_COUNT), true}, // host-visible: CPU writes player + bullets
-	.GridCount = {u64(4 * GRID_CELLS), false},
-	.GridItem  = {u64(4 * GRID_CELLS * CELL_CAP), false},
+	.Body      = { "BODIES", Body, u64(size_of(Body) * BODY_COUNT), true  }, // host-visible: CPU writes player + bullets
+	.GridCount = { "GCOUNT", u32,  u64(4 * GRID_CELLS),             false },
+	.GridItem  = { "GITEM",  u32,  u64(4 * GRID_CELLS * CELL_CAP),  false },
 }
 
 // ── pipelines ── add one = one row + its compiled .spv stages. `compute` picks the type;
@@ -48,10 +58,7 @@ render :: proc(dt: f32) {
 
 	w, h := f32(win_w), f32(win_h)
 	cell := max(f32(2 * ENEMY_R_MAX + 2), max(w, h) / f32(GRID_SIZE))
-	pc := Push{
-		screen = {w, h}, player = player_pos, dt = dt, time = sim_time, cell_size = cell,
-		body_i = buf_index[.Body], gcount_i = buf_index[.GridCount], gitem_i = buf_index[.GridItem],
-	}
+	pc := Push{ screen = {w, h}, player = player_pos, dt = dt, time = sim_time, cell_size = cell }
 
 	vk.CmdBindPipeline(cmd, .COMPUTE, pipelines[.Physics])
 	groups := (u32(max(GRID_CELLS, BODY_COUNT)) + 63) / 64

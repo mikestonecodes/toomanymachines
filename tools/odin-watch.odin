@@ -56,10 +56,23 @@ build :: proc() {
 	}
 }
 
+// A GLSL source (stage file or shared include), but not the generated gen.glsl.
+is_shader_src :: proc(name: string) -> bool {
+	if name == "gen.glsl" { return false }
+	for ext in ([]string{".vert", ".frag", ".comp", ".glsl"}) { if strings.has_suffix(name, ext) { return true } }
+	return false
+}
+
 // Recompile GLSL → SPIR-V (+ naga); the running game reloads the new .spv on its own.
 compile_shaders :: proc() {
 	fmt.println("Recompiling shaders...")
 	run("odin run tools/build.odin -file -- shaders")
+}
+
+// render.odin changed: regenerate the GLSL from its @glsl block, then recompile shaders.
+regen_shaders :: proc() {
+	fmt.println("Regenerating shader types + recompiling shaders...")
+	run("odin run tools/build.odin -file -- regen")
 }
 
 main :: proc() {
@@ -84,6 +97,7 @@ main :: proc() {
 
 		rebuild := false
 		shaders := false
+		regen := false
 		for {
 			n := read(fd, &buf[0], EVENT_BUF_LEN)
 			if n <= 0 { break }
@@ -94,15 +108,17 @@ main :: proc() {
 					name := string(cstring(&buf[i + size_of(Inotify_Event)]))
 					if strings.has_suffix(name, ".odin") {
 						rebuild = true
-					} else if (strings.has_suffix(name, ".glsl") || strings.has_suffix(name, ".comp")) && name != "gen.glsl" {
-						shaders = true // GLSL source; gen.glsl is generated, ignore it
+						if name == "render.odin" { regen = true } // its @glsl block feeds the GLSL gen
+					} else if is_shader_src(name) {
+						shaders = true
 					}
 				}
 				i += size_of(Inotify_Event) + int(ev.len)
 			}
 			if int(n) < EVENT_BUF_LEN { break }  // drained
 		}
-		if shaders { compile_shaders() } // rewrites .spv → the running game reloads
-		if rebuild { build() }            // rebuild + relaunch the binary
+		if regen         { regen_shaders() }  // render.odin's @glsl block → regen GLSL + recompile
+		else if shaders  { compile_shaders() } // rewrites .spv → the running game reloads
+		if rebuild       { build() }           // rebuild + relaunch the binary
 	}
 }

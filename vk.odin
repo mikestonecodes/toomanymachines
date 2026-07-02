@@ -244,12 +244,14 @@ bindless_register :: proc(buf: vk.Buffer, size: vk.DeviceSize) -> u32 {
 	return idx
 }
 
-// Storage backing the BUF_SPECS list in render.odin (indexed by the Res enum there).
-BufSpec :: struct { size: u64, host_visible: bool }
-buffers:   [Res]vk.Buffer
-buf_mem:   [Res]vk.DeviceMemory
-buf_map:   [Res]rawptr
-buf_index: [Res]u32 // slot in the bindless array
+// Backs the BUF_SPECS list in render.odin (indexed by Res). `glsl`/`elem` are read only by the
+// shader generator (tools/build.odin parses them out of render.odin); the game just needs size +
+// host-visibility. Buffers register in Res order, so a buffer's bindless slot IS its Res ordinal —
+// which is why shaders can address them by a literal slot (tools/gen bakes it into the macros).
+BufSpec :: struct { glsl: string, elem: typeid, size: u64, host_visible: bool }
+buffers: [Res]vk.Buffer
+buf_mem: [Res]vk.DeviceMemory
+buf_map: [Res]rawptr
 
 // Create every BUF_SPECS buffer, then back all buffers of a memory class (host-visible vs
 // device-local) from ONE allocation, sub-allocated at aligned offsets — avoids the per-buffer
@@ -283,7 +285,10 @@ alloc_buffers :: proc() {
 			off += reqs[r].size
 		}
 	}
-	for r in Res { buf_index[r] = bindless_register(buffers[r], vk.DeviceSize(BUF_SPECS[r].size)) }
+	for spec, r in BUF_SPECS {
+		slot := bindless_register(buffers[r], vk.DeviceSize(spec.size))
+		assert(int(slot) == int(r)) // shaders address buffers by literal slot = Res ordinal
+	}
 }
 
 align_up :: proc(v, a: vk.DeviceSize) -> vk.DeviceSize { return (v + a - 1) & ~(a - 1) }
