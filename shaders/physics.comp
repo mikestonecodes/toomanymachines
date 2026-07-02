@@ -1,0 +1,100 @@
+#version 460
+#include "common.glsl"
+
+// GPU sim: clear → scatter → step, one dispatch per mode (pc.mode). Bucket grid
+// (GCOUNT + GITEM indices). Every body only writes itself → no data races.
+
+layout(local_size_x = 64) in;
+
+uint cell_of(vec2 p) {
+	ivec2 c = clamp(ivec2(p / pc.cell_size), ivec2(0), ivec2(int(GRID_SIZE) - 1));
+	return uint(c.y) * GRID_SIZE + uint(c.x);
+}
+
+float hash1(uint n) {
+	uint x = n * 747796405u + 2891336453u;
+	x = ((x >> ((x >> 28u) + 4u)) ^ x) * 277803737u;
+	x = (x >> 22u) ^ x;
+	return float(x) / 4294967296.0;
+}
+
+Body spawn_enemy(uint id) {
+	uint s = id * 2654435761u + uint(pc.time * 120.0);
+	float r = ENEMY_R_MIN + hash1(s) * (ENEMY_R_MAX - ENEMY_R_MIN);
+	float t = hash1(s + 1u);
+	vec2 p;
+	uint side = uint(hash1(s + 2u) * 4.0);
+	if      (side == 0u) p = vec2(t * pc.screen.x, -r);
+	else if (side == 1u) p = vec2(t * pc.screen.x, pc.screen.y + r);
+	else if (side == 2u) p = vec2(-r, t * pc.screen.y);
+	else                 p = vec2(pc.screen.x + r, t * pc.screen.y);
+	Body b;
+	b.pos = p; b.vel = vec2(0.0); b.radius = r; b.life = 0.0; b.kind = KIND_ENEMY;
+	return b;
+}
+
+void main() {
+	uint id = gl_GlobalInvocationID.x;
+
+	if (pc.mode == 0u) { // clear grid
+		if (id < GRID_CELLS) { atomicExchange(GCOUNT[id], 0u); }
+		return;
+	}
+	if (id >= BODY_COUNT) { return; }
+
+	if (pc.mode == 1u) { // scatter into the bucket grid
+		Body b = BODIES[id];
+		if (b.kind == KIND_DEAD) { return; }
+		uint cell = cell_of(b.pos);
+		uint slot = atomicAdd(GCOUNT[cell], 1u);
+		if (slot < CELL_CAP) { GITEM[cell * CELL_CAP + slot] = id; }
+		return;
+	}
+
+	// mode 2: step
+	Body b = BODIES[id];
+
+	if (b.kind == KIND_BULLET) {
+		b.pos += b.vel * pc.dt;
+		b.life -= pc.dt;
+		if (b.life <= 0.0 || b.pos.x < -20.0 || b.pos.y < -20.0 || b.pos.x > pc.screen.x + 20.0 || b.pos.y > pc.screen.y + 20.0) {
+			b.kind = KIND_DEAD;
+		}
+		BODIES[id] = b;
+		return;
+	}
+	if (b.kind != KIND_ENEMY) { return; } // player is CPU-driven; dead idle
+
+	vec2 to = pc.player - b.pos;
+	float pd = length(to);
+	if (pd > 0.001) { b.pos += (to / pd) * ENEMY_SPEED * pc.dt; }
+	if (pd < b.radius + CAR_RADIUS) { BODIES[id] = spawn_enemy(id); return; }
+
+	int cx = int(clamp(b.pos.x / pc.cell_size, 0.0, float(GRID_SIZE) - 1.0));
+	int cy = int(clamp(b.pos.y / pc.cell_size, 0.0, float(GRID_SIZE) - 1.0));
+	for (int dy = -1; dy <= 1; dy++) {
+		int ny = cy + dy;
+		if (ny < 0 || ny >= int(GRID_SIZE)) { continue; }
+		for (int dx = -1; dx <= 1; dx++) {
+			int nx = cx + dx;
+			if (nx < 0 || nx >= int(GRID_SIZE)) { continue; }
+			uint cell = uint(ny) * GRID_SIZE + uint(nx);
+			uint cnt = min(GCOUNT[cell], CELL_CAP);
+			for (uint k = 0u; k < cnt; k++) {
+				uint j = GITEM[cell * CELL_CAP + k];
+				if (j == id) { continue; }
+				Body o = BODIES[j];
+				vec2 off = b.pos - o.pos;
+				float d = length(off);
+				if (o.kind == KIND_BULLET) {
+					if (d < b.radius + o.radius) { BODIES[id] = spawn_enemy(id); return; }
+				} else if (o.kind == KIND_ENEMY) {
+					float md = b.radius + o.radius;
+					if (d < md && d > 0.001) { b.pos += (off / d) * (md - d) * 0.5; }
+				}
+			}
+		}
+	}
+	b.pos = clamp(b.pos, vec2(b.radius), pc.screen - vec2(b.radius));
+	BODIES[id] = b;
+}

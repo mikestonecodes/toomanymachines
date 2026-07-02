@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=toomanymachines
+Comment=Top-down circle shooter — drive the red car, mow down the blue horde
+Terminal=true
+TryExec=odin
+Exec=/home/mike/Source/toomanymachines/run.sh
+Path=/home/mike/Source/toomanymachines
+Icon=input-gaming
+Categories=Game;
+StartupNotify=true
+SingleMainWindow=true
