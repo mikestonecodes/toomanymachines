@@ -3,7 +3,7 @@ package main
 // Build step (1/2): read the Odin GPU structs via reflection and emit them as GLSL
 // into shaders/gen.glsl (which shaders/common.glsl #includes). Run standalone:
 //   odin run tools/gen_glsl.odin -file
-// build_shaders.sh then compiles the GLSL → SPIR-V.
+// tools/build.odin then compiles the GLSL → SPIR-V.
 
 import "core:fmt"
 import "core:os"

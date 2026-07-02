@@ -43,7 +43,7 @@ hot_reload_poll :: proc() {
 	if sum != hot_stamp {
 		hot_stamp = sum
 		fmt.println("hot reload: recompiling shaders")
-		if libc.system(strings.clone_to_cstring("odin run tools/build.odin -file", context.temp_allocator)) == 0 {
+		if libc.system(strings.clone_to_cstring("odin run tools/build.odin -file -- shaders", context.temp_allocator)) == 0 {
 			rebuild_pipelines()
 		} else {
 			fmt.eprintln("hot reload: shader build failed — keeping current pipelines")

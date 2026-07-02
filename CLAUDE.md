@@ -39,6 +39,6 @@
 - Each unique concept exists once, unique code stays inline
 
 ## Build / Test
-- `./run.sh` runs `odin run tools/build.odin -file -- --gen` (Odin structs → `gen.glsl` → `shaders/spv/`) then builds + runs with Vulkan validation ON. `.glsl` edits hot-reload in-app (mtime poll → re-run `tools/build.odin` → reload pipelines); `.odin` edits need a rebuild — `./run.sh watch` (the watcher rebuilds the binary on `.odin`, ignores `.glsl`). A struct change in `gpu/types.odin` needs a full `./run.sh` to regenerate `gen.glsl`.
+- `./run.sh` is a thin wrapper over `tools/build.odin` (the whole pipeline: regen `gen.glsl` from the Odin structs → compile `shaders/spv/` → `odin build` the game → run, Vulkan validation ON). `.glsl` edits hot-reload in-app (mtime poll → re-run `tools/build.odin -- shaders` → reload pipelines); `.odin` edits need a rebuild — `./run.sh watch` (the watcher rebuilds the binary on `.odin`, ignores `.glsl`). A struct change in `gpu/types.odin` needs a full `./run.sh` to regenerate `gen.glsl`.
 - `./run.sh shot` drives the game headless and writes `.debug_screenshots/vk.jpg` — use it to verify rendering actually looks right (validation-clean ≠ visible). Edit the drive sweep in `main.odin` (gated by the `shot` arg); trigger a capture with `vk_request_shot(path)`.
 - Shaders are read from `shaders/` at runtime — always run from the project root.

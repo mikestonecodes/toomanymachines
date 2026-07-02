@@ -15,13 +15,13 @@ Modern, bindless Vulkan — deliberately small:
 - **GPU sim**: the horde + bullets run entirely in a GLSL compute shader
   (`shaders/physics.comp`) over a bucket grid; the CPU only drives the player.
 - **Data-driven**: buffers live in `BUF_SPECS`, pipelines in `PIPE_SPECS` (`pipelines.odin`).
-- **Separate build step**: `build_shaders.sh` reads the Odin structs (`gpu/types.odin`) via
+- **Separate build step**: `tools/build.odin` reads the Odin structs (`gpu/types.odin`) via
   `tools/gen_glsl.odin` → `shaders/gen.glsl`, then compiles + validates each GLSL shader
-  (`glslc -Werror` → `spirv-val` → `spirv-opt --validate-after-all` → `naga` advisory) into
-  `shaders/spv/`. **The game only reads the compiled `.spv`** — no compiler in the game.
+  (`glslc -Werror` → `spirv-val`) into `shaders/spv/`. **The game only reads the compiled
+  `.spv`** — no compiler in the game.
 - **Odin → GLSL**: `Body`/`Push` are defined once in `gpu/types.odin` and injected into the
   shaders via `gen.glsl` (`#include`d, glslc `-I`).
-- **Hot reload**: editing any `.glsl` re-runs `build_shaders.sh` and rebuilds the pipelines
+- **Hot reload**: editing any `.glsl` re-runs `tools/build.odin` and rebuilds the pipelines
   in-app, no restart. Plus Vulkan **validation layers** at runtime.
 
 ## Controls
@@ -44,7 +44,7 @@ Modern, bindless Vulkan — deliberately small:
 | `shaders.odin`          | loads compiled `.spv` + hot-reload trigger               |
 | `gpu/types.odin`        | shared GPU structs (`Body`, `Push`) — single source      |
 | `tools/gen_glsl.odin`   | build step: Odin structs → `shaders/gen.glsl`            |
-| `build_shaders.sh`      | build step: GLSL → validated SPIR-V in `shaders/spv/`    |
+| `tools/build.odin`      | build step: GLSL → validated SPIR-V in `shaders/spv/`    |
 | `car.odin`              | CPU game: player movement + bullet spawning              |
 | `shaders/common.glsl`   | shared shader contract (bindless decls, push constant, consts) |
 | `shaders/physics.comp`  | GPU sim: bucket grid + chase/separate/shoot/respawn      |
