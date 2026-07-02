@@ -5,5 +5,4 @@ shaders/spv/
 .debug_screenshots/
 odin-launcher.reload.log
 .wgpu-backup/
-shaders/CircleIO.glsl
 tools/gen/types.gen.odin

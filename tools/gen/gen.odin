@@ -9,6 +9,7 @@ package main
 //   • otherwise                      → a struct, and a bindless buffer element
 // Run via `odin run tools/gen` (tools/build.odin does this after regenerating types.gen.odin).
 
+import "base:intrinsics"
 import "core:fmt"
 import "core:os"
 import "core:reflect"
@@ -18,13 +19,13 @@ main :: proc() {
 	b: strings.Builder
 	strings.write_string(&b, "// AUTO-GENERATED from render.odin (@glsl block) — do not edit.\n")
 
-	for tid in GLSL_TYPES { // structs — everything that isn't a varying
+	for tid in GLSL_TYPES { // one GLSL struct per @glsl struct
 		name, info := reflect_struct(tid)
-		if is_varying(info) { continue }
 		fmt.sbprintf(&b, "struct %s {{\n", name)
 		for i in 0 ..< info.field_count { fmt.sbprintf(&b, "\t%s %s;\n", glsl_type(info.types[i]), info.names[i]) }
 		strings.write_string(&b, "};\n")
 	}
+	emit_consts(&b) // gameplay/layout constants (resolved values) from the @glsl blocks
 	seen: [dynamic]string // bindless views: one storage-buffer array per distinct element type
 	for gb in GLSL_BUFFERS {
 		view := glsl_typename(type_info_of(gb.elem))
@@ -33,33 +34,14 @@ main :: proc() {
 		if !found { append(&seen, view); emit_buffer(&b, view) }
 	}
 	for tid in GLSL_TYPES { // the push-constant block
-		name, info := reflect_struct(tid)
-		if !is_varying(info) && name == "Push" { fmt.sbprintf(&b, "layout(push_constant, scalar) uniform PushBlock {{ %s pc; }};\n", name) }
+		name, _ := reflect_struct(tid)
+		if name == "Push" { fmt.sbprintf(&b, "layout(push_constant, scalar) uniform PushBlock {{ %s pc; }};\n", name) }
 	}
 	// accessor macros — literal slot = row order (matches the Res ordinal / registration order)
 	for gb, i in GLSL_BUFFERS {
 		fmt.sbprintf(&b, "#define %s %s[%d].v\n", gb.glsl, buf_var(glsl_typename(type_info_of(gb.elem))), i)
 	}
 	write("shaders/gen.glsl", strings.to_string(b))
-
-	for tid in GLSL_TYPES { // varyings → one include each; the stage #defines VARYING out|in
-		name, info := reflect_struct(tid)
-		if !is_varying(info) { continue }
-		vb: strings.Builder
-		strings.write_string(&vb, "// AUTO-GENERATED from render.odin — do not edit. Stage #defines VARYING as out|in.\n")
-		for i in 0 ..< info.field_count {
-			flat := glsl_int(info.types[i]) ? "flat " : ""
-			fmt.sbprintf(&vb, "layout(location = %d) VARYING %s%s %s;\n", i, flat, glsl_type(info.types[i]), info.names[i])
-		}
-		write(fmt.tprintf("shaders/%s.glsl", name), strings.to_string(vb))
-	}
-}
-
-// A struct whose fields are ALL `v_`-prefixed is a vertex↔fragment interface, not a data struct.
-is_varying :: proc(info: reflect.Type_Info_Struct) -> bool {
-	if info.field_count == 0 { return false }
-	for i in 0 ..< info.field_count { if !strings.has_prefix(info.names[i], "v_") { return false } }
-	return true
 }
 
 // The bindless storage-buffer array + its typed view, named from the element type:
@@ -72,6 +54,23 @@ emit_buffer :: proc(b: ^strings.Builder, t: string) {
 }
 
 buf_var :: proc(t: string) -> string { return fmt.tprintf("%s%sBuf", strings.to_lower(t[:1], context.temp_allocator), t[1:]) }
+
+// Emit an Odin constant as GLSL, type + value resolved by the compiler: f32/f64 → `const float`,
+// anything else → `const uint`. (emit_consts is generated in types.gen.odin — one call per const.)
+emit_const :: proc(b: ^strings.Builder, name: string, value: $T) {
+	when intrinsics.type_is_float(T) {
+		fmt.sbprintf(b, "const float %s = %s;\n", name, glsl_float(f64(value)))
+	} else {
+		fmt.sbprintf(b, "const uint %s = %du;\n", name, u64(value))
+	}
+}
+
+// GLSL float literal — ensure a decimal point so glslc doesn't read it as an int (18 → 18.0).
+glsl_float :: proc(v: f64) -> string {
+	s := fmt.tprintf("%v", v)
+	if strings.index_any(s, ".eE") < 0 { s = fmt.tprintf("%s.0", s) }
+	return s
+}
 
 reflect_struct :: proc(tid: typeid) -> (name: string, info: reflect.Type_Info_Struct) {
 	ti := type_info_of(tid)
@@ -106,16 +105,4 @@ glsl_type :: proc(ti: ^reflect.Type_Info) -> string {
 		}
 	}
 	return "float"
-}
-
-// Integer varyings must be `flat` — they can't be interpolated.
-glsl_int :: proc(ti: ^reflect.Type_Info) -> bool {
-	#partial switch v in ti.variant {
-	case reflect.Type_Info_Integer:
-		return true
-	case reflect.Type_Info_Array:
-		_, is_int := v.elem.variant.(reflect.Type_Info_Integer)
-		return is_int
-	}
-	return false
 }

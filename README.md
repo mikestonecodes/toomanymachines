@@ -19,8 +19,9 @@ Modern, bindless Vulkan — deliberately small:
   block into `tools/gen`, which reflects them → `shaders/gen.glsl`, then compiles + validates each
   GLSL shader (`glslc -Werror` → `spirv-val`) into `shaders/spv/`. **The game only reads the
   compiled `.spv`** — no compiler in the game.
-- **Odin → GLSL**: `Body`/`Push`/`CircleIO` are defined once in render.odin and reflected into the
-  shader `#include`s (structs, bindless buffers, push block, varyings) — one source of truth.
+- **Odin → GLSL**: the CPU↔GPU contract (`Body`/`Push` structs, buffers, push block, gameplay
+  constants) is defined once in Odin `@glsl` blocks and reflected into `gen.glsl` — one source of
+  truth. (Vertex→fragment varyings stay shader-side, in each pipeline's `.vert`/`.frag`.)
 - **Hot reload**: the game watches its compiled `.spv` and reloads pipelines when they change.
   Under `./run.sh watch` the watcher recompiles GLSL → SPIR-V (+ naga) on save, so editing a
   `.glsl` reloads in-app, no restart. Plus Vulkan **validation layers** at runtime.
@@ -43,12 +44,12 @@ Modern, bindless Vulkan — deliberately small:
 | `vk.odin`               | Vulkan backend: bootstrap, bindless, buffers, pipelines, frame |
 | `render.odin`           | high-level surface: buffer list, pipeline list, init, render() |
 | `shaders.odin`          | loads compiled `.spv` + hot-reload trigger               |
-| `tools/gen/`            | reflects render.odin's GPU structs → `shaders/gen.glsl` + varyings |
+| `tools/gen/`            | reflects the `@glsl` blocks → `shaders/gen.glsl`         |
 | `tools/build.odin`      | build step: GLSL → validated SPIR-V in `shaders/spv/`    |
 | `car.odin`              | CPU game: player movement + bullet spawning              |
 | `shaders/common.glsl`   | shared shader contract (bindless decls, push constant, consts) |
 | `shaders/physics.comp`  | GPU sim: bucket grid + chase/separate/shoot/respawn      |
-| `shaders/circle.{vert,frag}` | instanced circle-SDF render (`circle_io.glsl` = shared varyings) |
+| `shaders/circle.{vert,frag}` | instanced circle-SDF render (own vertex→fragment varyings) |
 | `tools/odin-watch.odin` | inotify watcher (rebuilds the binary on `.odin` edits)   |
 
 ## Run

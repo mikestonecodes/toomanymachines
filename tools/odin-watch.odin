@@ -108,7 +108,7 @@ main :: proc() {
 					name := string(cstring(&buf[i + size_of(Inotify_Event)]))
 					if strings.has_suffix(name, ".odin") {
 						rebuild = true
-						if name == "render.odin" { regen = true } // its @glsl block feeds the GLSL gen
+						regen = true // any .odin may hold an @glsl block that feeds the GLSL gen
 					} else if is_shader_src(name) {
 						shaders = true
 					}

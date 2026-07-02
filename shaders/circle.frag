@@ -1,8 +1,10 @@
 #version 460
 #include "common.glsl"
-#define VARYING in
-#include "CircleIO.glsl"
 
+// Vertex → fragment interface (must match circle.vert's `out`s).
+layout(location = 0) in vec2      v_local;
+layout(location = 1) in float     v_radius;
+layout(location = 2) in flat uint v_kind;
 layout(location = 0) out vec4 o_color;
 
 vec3 color_of(uint k) {

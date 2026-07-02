@@ -1,7 +1,10 @@
 #version 460
 #include "common.glsl"
-#define VARYING out
-#include "CircleIO.glsl"
+
+// Vertex → fragment interface (must match circle.frag's `in`s).
+layout(location = 0) out vec2      v_local;
+layout(location = 1) out float     v_radius;
+layout(location = 2) out flat uint v_kind;
 
 // One instanced quad per body, read straight from the bindless body buffer.
 const vec2 CORNERS[6] = vec2[6](

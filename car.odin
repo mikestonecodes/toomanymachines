@@ -6,22 +6,26 @@ import "core:math/rand"
 // CPU side of the game. The horde + bullets simulate on the GPU (physics.comp); the
 // CPU only drives the player and spawns bullets, writing those bodies directly into
 // the host-visible GPU body buffer (buf_map[.Body]). Layout: [0] player, [1..) enemies,
-// [rest] bullets. Constants MUST match shaders/common.glsl.
+// [rest] bullets.
 
-MAX_ENEMIES :: 150
-MAX_BULLETS :: 128
-ENEMY_LO    :: 1
-BULLET_LO   :: 1 + MAX_ENEMIES
-
+// Constants the shaders also need — tools/build.odin generates these into GLSL (u32 → `const
+// uint`, f32 → `const float`). No hand-kept "MUST match": this IS the source.
+// @glsl
 KIND_PLAYER :: u32(0)
 KIND_ENEMY  :: u32(1)
 KIND_BULLET :: u32(2)
 KIND_DEAD   :: u32(3)
+MAX_ENEMIES :: 150
+MAX_BULLETS :: 128
+CAR_RADIUS  :: f32(18)
+ENEMY_R_MIN :: f32(9)
+ENEMY_R_MAX :: f32(20)
+// @glsl-end
 
+// CPU-only.
+ENEMY_LO      :: 1
+BULLET_LO     :: 1 + MAX_ENEMIES
 CAR_SPEED     :: f32(380)
-CAR_RADIUS    :: f32(18)
-ENEMY_R_MIN   :: f32(9)
-ENEMY_R_MAX   :: f32(20)
 BULLET_SPEED  :: f32(780)
 BULLET_RADIUS :: f32(5)
 BULLET_LIFE   :: f32(1.5)

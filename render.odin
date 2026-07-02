@@ -8,23 +8,26 @@ import vk "vendor:vulkan"
 // called below. Constants MUST match shaders/common.glsl.
 
 // ── GPU types → GLSL ──────────────────────────────────────────────────────────
-// tools/build.odin copies the block between the @glsl markers verbatim into the shader-gen step
-// (tools/gen), which reflects it: each struct → a GLSL `struct`; the one named `Push` → the
-// push-constant block; a struct whose fields are ALL `v_`-prefixed → a vertex↔fragment varying
-// include (shaders/<Name>.glsl); every other struct + a raw `uint` array → the bindless buffers.
-// Keep the block self-contained (builtins only), one struct per line. Scalar layout — Odin default
-// alignment matches GLSL `scalar`; never add `_pad`.
+// The CPU↔GPU contract: tools/build.odin copies the block between the @glsl markers verbatim into
+// the shader-gen step (tools/gen), which reflects it into shaders/gen.glsl — each struct → a GLSL
+// `struct`; the one named `Push` → the push-constant block. (Buffers come from BUF_SPECS; gameplay
+// constants from other files' @glsl blocks. Vertex↔fragment varyings are NOT here — they're purely
+// shader-side, declared in the graphics pipeline's own .vert/.frag.) Keep the block self-contained
+// (builtins only), one struct per line. Scalar layout — Odin default alignment matches GLSL `scalar`.
 // @glsl
-Push     :: struct { screen, player: [2]f32, dt, time, cell_size: f32, mode: u32 }
-Body     :: struct { pos, vel: [2]f32, radius, life: f32, kind: u32 }
-CircleIO :: struct { v_local: [2]f32, v_radius: f32, v_kind: u32 }
+Push :: struct { screen, player: [2]f32, dt, time, cell_size: f32, mode: u32 }
+Body :: struct { pos, vel: [2]f32, radius, life: f32, kind: u32 }
 // @glsl-end
 
-GRID_SIZE  :: 32
-GRID_CELLS :: GRID_SIZE * GRID_SIZE
-CELL_CAP   :: 32
-MODE_COUNT :: 3
-BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS
+// Grid / layout constants shared with the shaders — generated into GLSL (see the @glsl note above).
+// @glsl
+GRID_SIZE   :: 32
+GRID_CELLS  :: GRID_SIZE * GRID_SIZE
+CELL_CAP    :: 32
+BODY_COUNT  :: 1 + MAX_ENEMIES + MAX_BULLETS
+ENEMY_SPEED :: f32(100)
+// @glsl-end
+MODE_COUNT :: 3 // CPU-only: number of compute passes per frame
 
 // ── buffers ── the single source of truth. Each row: GLSL accessor macro, element type (its
 // bindless view), byte size, host-visible. WRITE IN ENUM ORDER — the row order is the bindless
