@@ -69,12 +69,14 @@ void main() {
 	// Lights SCATTER through them (the bloom term), so the frame reads gritty and
 	// glowing at once — fog dims the dark, but everything bright shines through it.
 	{
+		// octaves rotated against each other — a shared axis-aligned value-noise lattice
+		// at this contrast prints a faint square-blob GRID over the open desert
 		vec2 wf = pc.cam + (gl_FragCoord.xy - pc.screen * 0.5) * ZOOM;
-		float fn = vnoise(wf * 0.0035 + vec2(pc.time * 22.0, -pc.time * 14.0) * 0.006) * 0.6
-		         + vnoise(wf * 0.0011 + vec2(-pc.time * 9.0, pc.time * 7.0) * 0.006) * 0.4;
-		float fog = smoothstep(0.25, 0.85, fn) * 0.34;
+		float fn = vnoise(rot2(0.62) * wf * 0.0033 + vec2(pc.time * 22.0, -pc.time * 14.0) * 0.006) * 0.55
+		         + vnoise(rot2(-1.21) * wf * 0.0011 + vec2(-pc.time * 9.0, pc.time * 7.0) * 0.006) * 0.45;
+		float fog = smoothstep(0.32, 0.95, fn) * 0.24;
 		col = mix(col, vec3(0.085, 0.080, 0.075), fog);
-		col += bloom * fog * 2.4; // light scattered in the dust
+		col += bloom * fog * 1.8; // light scattered in the dust
 	}
 
 	// ACES tonemap, then sRGB-encode (the swapchain is UNORM — the display decodes ~2.2)

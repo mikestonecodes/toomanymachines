@@ -105,7 +105,9 @@ void ship(vec2 p, Body b) {
 		float wHalo = LASER_W * pc.laser;
 		add += (vec3(1.3, 1.0, 0.7) + PAL_EMBER * 0.5) * exp(-bd * bd / (wCore * wCore * 2.0)) * 1.3 * pc.laser;
 		add += PAL_ACCENT * exp(-bd * bd / (wHalo * wHalo)) * 0.30 * pc.laser;
-		add += PAL_EMBER * exp(-bd / (wHalo * 2.0)) * 0.08 * pc.laser;
+		// wide veil MUST reach zero inside the quad — an exp(-d/k) tail never does, and
+		// its cutoff at the huge beam quad's edge reads as a giant transparent rectangle
+		add += PAL_EMBER * exp(-bd * bd / (wHalo * wHalo * 4.0)) * 0.08 * pc.laser;
 		// hot star at the emitter
 		float ed = length(p - a0);
 		add += (PAL_EMBER * 1.5 + vec3(0.7)) * exp(-ed * ed / (50.0 * pc.laser + 8.0)) * pc.laser;
@@ -159,23 +161,36 @@ void ship(vec2 p, Body b) {
 			add += (PAL_EMBER * 1.6 + vec3(0.4)) * exp(-fl * fl / 6.0) * pc.boost;
 		}
 	}
-	// drift SMOKE + SPARKS off the rear wheels while the tail is loose — big and readable
+	// drift SMOKE + SPARKS off the rear wheels while the tail is loose — big and
+	// readable, and SIDE-LOADED: the drift throws the car's weight onto the outside
+	// wheel (the same side the body rolls toward, sign of `lean`), so that tire does
+	// nearly all the smoking and grinding; the unloaded side just wisps.
 	float slip = clamp(abs(lean) * 1.5, 0.0, 1.0);
 	if (slip > 0.2) {
 		for (float s = -1.0; s <= 1.0; s += 2.0) {
+			float sw = clamp(0.5 + s * lean * 1.6, 0.06, 1.0); // this wheel's share of the load
 			vec2 wp = vec2(-13.5, s * 12.5);
 			for (float i = 0.0; i < 4.0; i += 1.0) { // fat tire smoke billowing behind
 				float ph3 = fract(pc.time * 1.6 + i * 0.25 + s * 0.17);
 				vec2 sp3 = wp + vec2(-8.0 - ph3 * 40.0, s * (2.0 + ph3 * 9.0) * sin(pc.time * 2.6 + i));
-				lay(vec3(0.21, 0.205, 0.20), slip * (1.0 - ph3) * 0.6 * soft(length(p - sp3) - (4.0 + ph3 * 13.0)));
+				lay(vec3(0.21, 0.205, 0.20), slip * sw * (1.0 - ph3) * 0.7 * soft(length(p - sp3) - (4.0 + ph3 * 13.0)));
 			}
-			float spk = hash21(floor((p - wp) / 3.0) + floor(pc.time * 30.0) * vec2(3.0, 7.0) + s); // grinding sparks
-			add += (PAL_EMBER * 1.3 + vec3(0.4)) * step(0.962, spk) * slip * 3.0 * step(length(p - wp), 22.0);
-			for (float i = 0.0; i < 2.0; i += 1.0) { // spark STREAKS fanning back off the patch
-				uint si2 = uint(pc.time * 25.0) * 13u + uint(i) * 7u + uint(s + 1.0);
-				vec2 dir2 = normalize(vec2(-1.0, s * (0.2 + 0.6 * hash1(si2))));
-				float sd2 = sd_seg(p - wp, vec2(0.0), dir2 * (12.0 + 16.0 * hash1(si2 + 3u)));
-				add += (PAL_EMBER * 1.5 + vec3(0.4)) * exp(-sd2 * sd2 * 0.8) * slip * hash1(si2 + 5u) * 1.6;
+			// PARTICLE sparks: discrete embers torn off the contact patch, each flying a
+			// decelerating arc backward, curling to the drift side, cooling white-hot →
+			// red as it dies. Purely time-derived (respawn cycles re-roll a hash), no
+			// state; the loaded wheel sheds nearly all of them. Dim into the bloom feed.
+			for (float i = 0.0; i < 7.0; i += 1.0) {
+				float rate = 4.6 + 1.3 * fract(i * 0.61 + s * 0.5);
+				float ph4 = fract(pc.time * rate + i * 0.37); // this ember's life, 0 → 1
+				uint sk = uint(floor(pc.time * rate + i * 0.37)) * 97u + uint(i) * 13u + uint(s + 1.0) * 7u;
+				if (hash1(sk) > slip * sw) { continue; }      // the load gates how many fly
+				vec2 dir3 = normalize(vec2(-1.0, s * (hash1(sk + 1u) * 0.9 - 0.15)));
+				float v0 = 30.0 + 60.0 * hash1(sk + 2u);
+				vec2 pp = wp + dir3 * v0 * ph4 * (1.0 - 0.45 * ph4); // decelerating flight
+				pp.y += s * ph4 * ph4 * 6.0;                          // curling out with the slide
+				float dd = dot(p - pp, p - pp);
+				vec3 emb = mix(PAL_EMBER * 1.3 + vec3(0.45), PAL_ACCENT * 0.8, ph4); // white-hot → red
+				add += emb * exp(-dd / (1.6 + 2.2 * ph4)) * (1.0 - ph4);
 			}
 		}
 	}
@@ -372,7 +387,7 @@ void turret(vec2 p, Body b) {
 		float flick = 0.85 + 0.30 * sin(pc.time * 47.0 + dot(p, bd2) * 0.03);
 		add += (vec3(1.3, 1.0, 0.7) + PAL_EMBER * 0.5) * exp(-bd * bd / (30.0 * flick)) * 1.5 * env;
 		add += PAL_ACCENT * exp(-bd * bd / (TWR_W * TWR_W)) * 0.35 * env;
-		add += PAL_EMBER * exp(-bd / (TWR_W * 2.5)) * 0.10 * env;
+		add += PAL_EMBER * exp(-bd * bd / (TWR_W * TWR_W * 6.25)) * 0.10 * env; // veil: gaussian, dies inside the quad
 	}
 	if (length(p) > r * 3.5) { return; } // beyond the fortress: fire only
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
@@ -391,7 +406,9 @@ void turret(vec2 p, Body b) {
 	// the eye: steady ember + a wide warning pool — the tower itself NEVER flashes;
 	// only its rounds and ricochets move
 	add += PAL_ACCENT * soft(length(p) - r * 0.30);
-	add += PAL_ACCENT * 0.22 * exp(-dot(p, p) / (r * r * 8.0)); // the warning pool on the ground
+	// the warning pool on the ground — cut to zero before the quad edge, or the idle
+	// r*4 quad clips it into a faint red BOX sitting on the street
+	add += PAL_ACCENT * 0.22 * exp(-dot(p, p) / (r * r * 8.0)) * smoothstep(r * 3.6, r * 2.2, length(p));
 }
 
 void helper(vec2 p, Body b) {
@@ -462,29 +479,29 @@ void wreck(vec2 p, Body b) {
 }
 
 void bullet(vec2 p) {
-	// COMET TRACER: a white-hot needle core in a hot sheath that tapers into a long
-	// fluttering flame tail, sparks tumbling off the wake and a glinting nose star.
-	// The crisp sprite BASE carries the design (the bloom pass smears anything big);
-	// only a whisper of emissive rides on top so the head glows without blobbing.
-	float flut = sin(p.x * 0.35 + pc.time * 34.0 + float(v_id)) * 1.1;
-	vec2 q = vec2(p.x, p.y + flut * smoothstep(0.0, -22.0, p.x)); // tail flutters, nose stays rigid
-	float x = clamp(q.x, -42.0, 6.0);
-	float t = (6.0 - x) / 48.0;                    // 0 at the nose → 1 at the tail tip
-	float spine = length(q - vec2(x, 0.0));
-	float d = spine - mix(6.2, 0.5, t * t);        // tapering profile
-	// past the shell the sheath breaks into licked flame streaming backward
-	d += smoothstep(-5.0, -26.0, q.x) * vnoise(vec2(q.x * 0.22 - pc.time * 26.0, q.y * 0.5 + float(v_id % 91u))) * 3.2;
-	lay(vec3(0.02), soft(d - 2.2) * (1.0 - t));    // dark rim seats the head on the ground
-	lay(mix(vec3(1.20, 0.44, 0.10), vec3(0.30, 0.045, 0.02), smoothstep(0.0, 0.9, t)), soft(d)); // hot → cooling sheath
-	lay(vec3(1.55, 1.48, 1.30), soft(spine - mix(3.6, 0.0, smoothstep(0.0, 0.5, t)))); // white core, front half only
-	// sparks shedding off the wake
-	float spk = hash21(floor(q / 2.5) + floor(pc.time * 28.0) * vec2(3.0, 7.0) + float(v_id % 97u));
-	add += (PAL_EMBER * 1.4 + vec3(0.5)) * step(0.962, spk) * step(q.x, -6.0) * step(spine, 9.0) * 1.5;
-	// glinting 4-point star on the nose + a small hot halo around the head
-	float nd = length(p - vec2(6.5, 0.0));
-	float star = 1.0 + 0.5 * cos(atan(p.y, p.x - 6.5) * 4.0 + pc.time * 40.0 + float(v_id));
-	add += vec3(1.25, 1.05, 0.75) * exp(-nd * nd / (6.0 * star)) * 0.9;
-	add += PAL_EMBER * exp(-spine * spine / 90.0) * 0.35 * (1.0 - t);
+	// JUICY PLASMA ORB: a squishy living ball — the rim wobbles with two rolling
+	// harmonics and the molten core breathes inside it, trailing a short pulsing
+	// wake. All in crisp BASE color (the bloom pass gets only a whisper), so it's
+	// juicy without ever being a bright smear.
+	float t = pc.time * 8.0 + float(v_id) * 1.7;
+	vec2 q = p - vec2(2.0, 0.0);
+	float r = length(q);
+	float ang = atan(q.y, q.x);
+	float wob = 1.0 + 0.15 * sin(ang * 3.0 + t) + 0.09 * sin(ang * 5.0 - t * 1.3); // living rim
+	float d = r - 6.8 * wob;
+	// the TRAIL: a LONG tapering ember streak with a pulsing width — dark ember body,
+	// a hot bright line down its core — the round's SPEED has to read on screen
+	float x2 = clamp(p.x, -86.0, -2.0);
+	float tt = (-2.0 - x2) / 84.0; // 0 at the orb → 1 at the tail tip
+	float tw = mix(5.2, 0.8, tt) * (1.0 + 0.16 * sin(tt * 11.0 - t * 1.4));
+	float td = length(p - vec2(x2, 0.0)) - tw;
+	lay(mix(vec3(0.95, 0.34, 0.08), vec3(0.26, 0.045, 0.02), smoothstep(0.0, 0.8, tt)), soft(td) * (1.0 - tt * tt));
+	lay(mix(vec3(1.40, 0.85, 0.35), vec3(0.70, 0.16, 0.04), tt), soft(td + tw * 0.55) * (1.0 - tt)); // hot core line
+	add += PAL_EMBER * exp(-td * td / 40.0) * 0.12 * (1.0 - tt); // whisper of heat down the trail
+	lay(vec3(0.02), soft(d - 2.4));            // ink rim seats it on any ground
+	lay(vec3(1.22, 0.46, 0.11), soft(d));      // hot shell, wobbling
+	lay(vec3(1.55, 1.48, 1.30), soft(r - 3.9 * (1.0 + 0.14 * sin(t * 2.3)) * wob)); // breathing core
+	add += vec3(1.10, 0.80, 0.50) * exp(-r * r / 42.0) * 0.18; // the merest halo
 }
 
 void burst(vec2 p, Body b) {

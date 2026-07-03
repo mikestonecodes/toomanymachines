@@ -91,7 +91,7 @@ SHIP_BOOST_MAX :: f32(1150)
 SHIP_DRAG      :: f32(1.15) // 1/s forward decay — stops when you let off
 SHIP_GRIP      :: f32(9.0)  // 1/s lateral bleed — HIGH: corners on rails, no drift-drag
 SHIP_TURN      :: f32(3.4)  // rad/s max yaw
-BULLET_SPEED   :: f32(1050)
+BULLET_SPEED   :: f32(1650) // FAST — a slow shell reads mushy; the round should CRACK out
 BULLET_RADIUS  :: f32(11)
 FIRE_INTERVAL  :: f32(0.24) // heavy but generous — a steady thump of shells
 CITY_R0        :: f32(5200) // starting city radius — BIG for now, to test the city itself

@@ -14,7 +14,7 @@
 // (bldg_pen in common.glsl) — courtyards are visual depth, not walkable space.
 //
 // The look is night: near-black grit, and LIGHT — lit windows, lane strips, plaza
-// lamps, tower beams, wasteland crystals, the pit furnace — carried on heavy bloom,
+// lamps, tower beams, desert marker lamps, the pit furnace — carried on heavy bloom,
 // with dust sheets drifting through every big glow.
 
 layout(location = 0) out vec4 o_color;
@@ -207,9 +207,13 @@ vec3 ground_col(vec2 w, vec2 s) {
 	float a = atan(q.y, q.x);
 	float lastDep = uintBitsToFloat(STATS[1]);
 	float pulse = exp(-max(pc.time - lastDep, 0.0) * 2.2); // flares when a corpse drops in
-	// the dust field: two wind sheets sliding against each other
-	float dustM = (0.5 + 0.5 * sin((w.x * 0.55 + w.y * 0.45) * 0.004 + pc.time * 0.55))
-	            * (0.5 + 0.5 * sin((w.x * 0.25 - w.y * 0.65) * 0.009 - pc.time * 0.85));
+	// the dust field: two soft noise sheets sliding against each other. The octaves are
+	// ROTATED against each other and kept gentle — value noise lives on an axis-aligned
+	// lattice, and at high contrast that lattice prints a faint GRID of square blobs
+	// over the open sand.
+	float dustM = smoothstep(0.35, 0.90,
+		vnoise(rot2(0.55) * w * 0.0031 + vec2(pc.time * 0.13, -pc.time * 0.08)) * 0.55
+		+ vnoise(rot2(-1.13) * w * 0.0009 + vec2(-pc.time * 0.06, pc.time * 0.05)) * 0.45);
 
 	if (cr < PIT_R) { // ── the pit: floor below grade (leans the other way), a furnace at the heart
 		vec2 gf = w - vec2(0.0, LEAN) * 0.55;
@@ -250,27 +254,30 @@ vec3 ground_col(vec2 w, vec2 s) {
 	vec3 blk = city_block(w);
 	float pen = bldg_pen(w);
 
-	// ── wasteland: layered sediment, ripples, craters, scrap — all under drifting dust.
-	// Broad hue drift between dry umber and cold sage-grey earth — desaturated COLOR
-	// texture, value stays flat so nothing competes with the accents.
-	vec3 dirt = mix(vec3(0.069, 0.058, 0.042), vec3(0.051, 0.058, 0.049), vnoise(w * 0.0016))
-	          * (0.66 + 0.34 * hash21(floor(w / 148.0)));
-	dirt *= 0.90 + 0.10 * sin((w.x * 0.35 + w.y * 0.85) * 0.0021 + 2.0 * sin(w.y * 0.0009)); // sediment bands
-	dirt *= 0.94 + 0.06 * sin(dot(w, vec2(0.72, 0.69)) * 0.055 + sin(w.x * 0.013));          // wind ripples
-	dirt *= 0.92 + 0.08 * hash21(floor(w / 9.0));                                            // grain
-	dirt = mix(dirt, vec3(0.02), step(0.982, hash21(floor(w / 15.0))) * 0.7);                // scrap
-	{ // craters
-		vec2 cc = floor(w / 760.0);
-		float chh = hash21(cc * 7.3 + 0.7);
-		if (chh > 0.62) {
-			vec2 cp = (cc + 0.5 + (vec2(hash21(cc + 4.0), hash21(cc + 11.0)) - 0.5) * 0.5) * 760.0;
-			float cd = length(w - cp) - (90.0 + 140.0 * fract(chh * 9.0));
-			dirt *= 1.0 - (1.0 - smoothstep(-60.0, 6.0, cd)) * 0.35;          // bowl shadow
-			dirt *= 1.0 + (1.0 - smoothstep(0.0, 14.0, abs(cd))) * 0.55;      // bright rim
-			if (fract(chh * 5.0) > 0.7) { dirt += vec3(0.085, 0.082, 0.078) * exp(-max(cd + 60.0, 0.0) * 0.03) * (0.5 + dustM); } // fresh one, still dusted
+	// ── the DESERT: dark rolling sand under drifting dust, clay pans in the lows.
+	// Warm sand only; smooth noise only.
+	// ── calm rolling night sand: NOTHING periodic. Every wave/band system tried here
+	// (crossed sines, parallel dunes, ripple stitching) read as artificial LINES from
+	// the straight-down camera. The ground is pure rotated-octave noise — broad basins,
+	// rolling swells, small hummocks, grain — so no direction and no stripe can print.
+	vec3 dirt = vec3(0.076, 0.060, 0.043) * (0.74 + 0.26 * vnoise(rot2(-0.4) * w * 0.0004 + 7.0)); // broad basins
+	dirt *= 0.88 + 0.12 * vnoise(rot2(0.9) * w * 0.0013 + 3.0);  // rolling swells
+	dirt *= 0.93 + 0.07 * vnoise(rot2(1.7) * w * 0.006 + 11.0);  // hummocks
+	dirt *= 0.962 + 0.038 * vnoise(rot2(0.3) * w * 0.07);        // grain — smooth
+	{ // CLAY PANS in the low basins — broad pale dry-mud sheets, only faintly veined:
+		// no crater rings, no rock blobs — the desert is dunes and pans, nothing stamped
+		// a WIDE mask ramp + a fine contour warp: a steep threshold draws its own
+		// iso-contour as a hard edge across the sand
+		float pan = smoothstep(0.52, 0.86, vnoise(rot2(-1.0) * w * 0.00055 + 91.0)
+		                                 + (vnoise(rot2(0.35) * w * 0.0026) - 0.5) * 0.22);
+		if (pan > 0.001) {
+			vec3 clay = vec3(0.087, 0.073, 0.056) * (0.92 + 0.08 * vnoise(rot2(0.8) * w * 0.005 + 3.0));
+			clay *= 0.89 + 0.11 * smoothstep(0.0, 0.06, abs(vnoise(rot2(-0.6) * w * 0.021) - 0.5)); // faint vein shading
+			dirt = mix(dirt, clay, pan);
 		}
 	}
-	dirt = mix(dirt, vec3(0.143, 0.127, 0.101), dustM * 0.30); // the dust sheets — warm tan
+	dirt = mix(dirt, vec3(0.118, 0.098, 0.074), dustM * 0.20); // wind-borne sand sheets — a WHISPER,
+	// not a milk wash: the desert stays dark night ground
 	{ // scattered marker lamps blinking in the dust
 		vec2 lc = floor(w / 340.0);
 		float lh = hash21(lc * 5.1 + 2.2);
@@ -281,31 +288,15 @@ vec3 ground_col(vec2 w, vec2 s) {
 			dirt += PAL_LAMP * 0.12 * exp(-ld2 / 2600.0) * (0.5 + dustM); // pool lit through dust
 		}
 	}
-	{ // crystal fields — red light growing out of the dirt
-		vec2 cell = floor(w / 540.0);
-		float ch = hash21(cell * 3.7 + 1.3);
-		if (ch > 0.55) {
-			vec2 cp = (cell + 0.5 + (vec2(hash21(cell + 9.0), hash21(cell + 17.0)) - 0.5) * 0.6) * 540.0;
-			float cd = 1e9;
-			for (float i = 0.0; i < 4.0; i += 1.0) {
-				vec2 spike = cp + rot2(hash21(cell + i) * TAU) * vec2(20.0 + 30.0 * hash21(cell + i + 30.0), 0.0);
-				cd = min(cd, sd_seg(w, cp, spike) - 6.0);
-			}
-			const vec3 CRYS = vec3(0.42, 0.50, 0.58); // pale glacier — cool, desaturated, never the accent
-			dirt = mix(dirt, vec3(0.098, 0.103, 0.110), 1.0 - smoothstep(-1.0, 2.0, cd));
-			dirt += CRYS * 0.28 * exp(-max(cd, 0.0) * 0.05) * (0.5 + dustM);
-			dirt += CRYS * 0.9 * (1.0 - smoothstep(-4.0, 1.0, cd));
-		}
-	}
 
 	// ── city ground: worn concrete field with expansion joints, patches, manholes
 	vec3 pave = vec3(0.047, 0.044, 0.040) * (0.84 + 0.28 * hash21(floor(w / 124.0)));
 	vec2 jl = fract(w / 124.0) * 124.0;
 	float joint = min(min(jl.x, 124.0 - jl.x), min(jl.y, 124.0 - jl.y));
 	pave *= 0.72 + 0.28 * smoothstep(0.0, 2.8, joint);
-	pave *= 0.90 + 0.10 * hash21(floor(w / 8.0));
+	pave *= 0.92 + 0.08 * vnoise(w * 0.14);                                               // fine grain — smooth
 	pave = mix(pave, pave * vec3(1.30, 0.94, 0.70), vnoise(w * 0.006 + 31.0) * 0.35);     // old rust bleed
-	pave = mix(pave, pave * 0.45, smoothstep(0.72, 0.98, hash21(floor(w / 51.0))) * 0.8); // patched scars
+	pave = mix(pave, pave * 0.55, smoothstep(0.58, 0.82, vnoise(w * 0.012 + 17.0)) * 0.6); // worn stains — no cell squares
 	{ // manholes
 		vec2 mc = floor(w / 300.0);
 		if (hash21(mc * 4.9 + 8.8) > 0.9) {
@@ -348,16 +339,19 @@ vec3 ground_col(vec2 w, vec2 s) {
 	// ── streets: scarred asphalt + emissive lane strips + curbs + crossing lamps
 	float roadMix = smoothstep(pc.city_r + 420.0, pc.city_r, cr);
 	float rmask = smoothstep(STREET_HW, STREET_HW - 6.0, sd) * roadMix;
-	vec3 road = vec3(0.027, 0.025, 0.024) * (0.85 + 0.15 * hash21(floor(w / 31.0))); // dark warm asphalt — never blue
-	road *= 0.90 + 0.10 * hash21(floor(w / 8.0));
-	road = mix(road, road * 0.5, smoothstep(0.8, 0.98, hash21(floor(w / 39.0))) * 0.7); // scorch/oil
+	vec3 road = vec3(0.027, 0.025, 0.024) * (0.85 + 0.15 * vnoise(w * 0.030)); // dark warm asphalt — never blue
+	road *= 0.92 + 0.08 * vnoise(w * 0.15);                                    // fine grain — smooth
+	road = mix(road, road * 0.55, smoothstep(0.55, 0.85, vnoise(w * 0.016 + 5.0)) * 0.65); // oil bleeds — no cell squares
 	col = mix(col, road, rmask);
 	col += vec3(0.105, 0.092, 0.079) * (1.0 - smoothstep(1.0, 2.6, abs(sd - (STREET_HW - 4.0)))) * roadMix; // warm stone curb
-	{ // lane paint down the middle — pale worn dashes, not a light show
+	{ // lane paint: EURO single centerline — one continuous worn line down the middle,
+		// broken CLEAN of every crossing (paint never runs through an intersection)
 		float ringd = abs(cr - max(round(cr / RING_SP), 1.0) * RING_SP);
-		float along = ringd < spoke_dist(w) ? a * cr : cr;
-		float dash = step(fract(along / 120.0), 0.5);
-		col += vec3(0.152, 0.138, 0.106) * (1.0 - smoothstep(1.2, 3.0, sd)) * dash * roadMix; // worn cream paint
+		float spoked = spoke_dist(w);
+		float other = ringd < spoked ? spoked : ringd; // distance to the CROSSING street's centerline
+		float gap = smoothstep(STREET_HW + 14.0, STREET_HW + 58.0, other);
+		float wear = 0.75 + 0.25 * vnoise(w * 0.02 + 7.0); // scuffed, not stenciled
+		col += vec3(0.152, 0.138, 0.106) * (1.0 - smoothstep(0.9, 2.2, sd)) * gap * wear * roadMix;
 	}
 
 	{ // rubber on the road: the persistent skid decal grid the CPU stamps (Res.Skid)
@@ -450,7 +444,8 @@ void main() {
 			col += vec3(1.0, 0.92, 0.75) * beam * 0.06; // spill catches facades too
 		}
 		col += PAL_EMBER * exp(-r2 / 5200.0) * (0.14 + 0.03 * sin(pc.time * 9.0)) * onGround;
-		col += PAL_ACCENT * pc.muzzle * exp(-r2 / 12000.0) * 0.5 * onGround;
+		// (no red muzzle strobe on the ground — the car flashing red on every shot read
+		// as the car being HIT; the barrel's own flash is enough)
 		if (pc.laser > 0.05) {
 			vec2 off = pc.aim - pc.player;
 			float ol = max(length(off), 0.001);

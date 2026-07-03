@@ -41,10 +41,12 @@ float hash21(vec2 p) {
 
 mat2 rot2(float a) { float c = cos(a), s = sin(a); return mat2(c, s, -s, c); }
 
-// smooth value noise — effects must ROLL, not show hash-cell pixels
+// smooth value noise — effects must ROLL, not show hash-cell pixels. QUINTIC fade
+// (C2): the cubic's gradient jumps at every lattice edge, and any steep contrast
+// curve turns those into long straight CREASES across broad fields (dust, fog, sand)
 float vnoise(vec2 p) {
 	vec2 i = floor(p), f = fract(p);
-	f = f * f * (3.0 - 2.0 * f);
+	f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
 	return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
 	           mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
 }

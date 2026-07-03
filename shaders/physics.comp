@@ -450,7 +450,7 @@ void main() {
 							float tHit = pow(clamp((d - 10.0) / (BOOM_R - 10.0), 0.0, 1.0), 1.6666667) * BOOM_T;
 							b.life = 0.02 + max(tHit - 0.08, 0.0) * 6.0; // life decays at 6/s; the
 							// red flash fires instantly on death, so barely lead the front
-							b.vel += (off / d) * 320.0;
+							b.vel += (off / d) * 130.0; // a firm shove, not a launch — bodies stay near the blast
 						}
 					} else if (o.kind == KIND_ENEMY || o.kind == KIND_PLAYER || o.kind == KIND_TURRET) {
 						float md = b.radius + o.radius;
