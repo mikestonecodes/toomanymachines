@@ -39,17 +39,46 @@ vec3 roof_col(vec2 g, House hs) {
 	vec2 lg = vec2(hs.lc.x, (fract(hs.lc.y / 110.0) - 0.5) * 110.0);
 	float sx = hs.lc.x / hs.ext.x; // -1..1 across the wall band
 	float sy = lg.y / 55.0;        // -1..1 within the segment
-	// greys per house — GENTLE value steps, so the perimeter reads as houses, not patchwork
-	vec3 base = mix(vec3(0.118, 0.114, 0.110), vec3(0.138, 0.132, 0.124), step(0.6, fract(hs.seed * 7.7)));
-	base = mix(base, vec3(0.100, 0.098, 0.096), step(0.80, fract(hs.seed * 13.1)));
-	base = mix(base, vec3(0.165, 0.158, 0.150), step(0.90, fract(hs.seed * 23.9))); // pale concrete
-	base = mix(base, vec3(0.070, 0.068, 0.070), step(0.96, fract(hs.seed * 41.3))); // dark slate
+	// tints — GENTLE value steps with faint desaturated hues (dusty umber, taupe,
+	// oxblood — NEVER anything blue-ish). A SOLID giant wears ONE paint over its whole
+	// deck (one building, one color — detail comes from plating, not patches);
+	// ordinary houses roll the tint per TERRACE RUN (~3 neighbors share a family, so
+	// adjacent houses don't flip color), and each house only nudges the VALUE.
+	bool solid = hs.ext.x > 70.0; // a full-plot giant: ONE building, ONE roof deck
+	float hseed = hs.seed;
+	vec2 qc = g - vec2(WORLD * 0.5);
+	float rr = length(qc);
+	float arc = (atan(qc.y, qc.x) - SPIRAL * rr) * rr;
+	{
+		vec3 blk = city_block(g);
+		float ns = blk.x * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5;
+		float jw = blk.y - ns * floor(blk.y / ns);
+		float bseed = hash21(vec2(blk.x, jw) * 3.1 + 9.2); // = house_at's bseed, per plot
+		hseed = solid ? bseed : hash21(vec2(floor(hs.lc.y / 330.0), bseed * 91.0));
+	}
+	// tints per house — GENTLE value steps with faint desaturated hues, the whole
+	// family leaning warm/reddish (NEVER anything blue-ish)
+	vec3 base = mix(vec3(0.126, 0.110, 0.094), vec3(0.140, 0.130, 0.110), step(0.55, fract(hseed * 7.7)));
+	base = mix(base, vec3(0.100, 0.094, 0.082), step(0.72, fract(hseed * 13.1))); // warm taupe
+	base = mix(base, vec3(0.176, 0.156, 0.132), step(0.86, fract(hseed * 23.9))); // warm pale concrete
+	base = mix(base, vec3(0.080, 0.061, 0.055), step(0.94, fract(hseed * 41.3))); // dark oxblood
+	if (!solid) { base *= 0.94 + 0.12 * fract(hs.seed * 9.1); } // per-house VALUE nudge only
 	vec3 col = base * (0.88 + 0.18 * hs.h);
-	col *= 0.975 + 0.025 * hash21(floor(g / 9.0));            // faint grit — CLEAN surfaces
+	col *= 0.965 + 0.035 * vnoise(g * 0.18 + hseed * 40.0);   // fine grit — SMOOTH, no hash squares
 	col *= 0.965 + 0.035 * vnoise(g * 0.05 + hs.seed * 30.0); // broad subtle sheen
-	bool solid = hs.ext.x > 70.0; // a full-plot giant: ONE building, ONE roof
-	// party walls between the perimeter segments (110px pitch — matches house_at)
-	if (!solid) { col *= 0.86 + 0.14 * smoothstep(0.0, 1.6, abs(fract(hs.lc.y / 110.0) - 0.5) * 110.0); }
+	// party walls between the perimeter segments (110px pitch — matches house_at's
+	// seed boundaries EXACTLY, so every tint/height step lands on a wall line).
+	// A giant's deck instead shows machined PLATING in the block's polar frame
+	// (concentric + radial → always street-parallel/perpendicular): coarse expansion
+	// joints, a finer panel sub-grid, and a whisper of per-plate value wobble —
+	// DETAIL without any color change.
+	if (!solid) { col *= 0.86 + 0.14 * smoothstep(0.0, 1.6, (0.5 - abs(fract(hs.lc.y / 110.0) - 0.5)) * 110.0); }
+	else {
+		col *= 0.96 + 0.08 * hash21(vec2(floor(arc / 110.0), floor(rr / 96.0)) + fract(hseed * 17.0)); // plate wobble
+		float sm = min((0.5 - abs(fract(arc / 110.0) - 0.5)) * 110.0,
+		               (0.5 - abs(fract(rr / 96.0) - 0.5)) * 96.0);
+		col *= 0.90 + 0.10 * smoothstep(0.0, 1.4, sm); // expansion joints
+	}
 
 	float edge = hs.sd; // ≤ 0 inside the building
 	if (hs.h > 0.55) { // ── a TALL one: terraced setbacks PARALLEL to the street —
@@ -60,22 +89,8 @@ vec3 roof_col(vec2 g, House hs) {
 		col = mix(col, base * 1.50, step(wallD2 * 0.70, dep));
 		col = mix(col, vec3(0.03), (1.0 - smoothstep(0.0, 2.0, abs(dep - wallD2 * 0.38))) * 0.8);
 		col = mix(col, vec3(0.03), (1.0 - smoothstep(0.0, 2.0, abs(dep - wallD2 * 0.70))) * 0.8);
-		float cv = fract(hs.seed * 23.3);
 		if (solid) { lg = hs.lc; } // the giant's crown features anchor at the block center
-		if (cv > 0.60 && (!solid || length(hs.lc) < 200.0)) { // ── HELIPAD crown: pad circle + ring + the H, corner lights
-			float hd2 = length(lg);
-			float pad = min(hs.ext.x * 0.5, 24.0) + 6.0;
-			col = mix(col, vec3(0.072, 0.070, 0.068), 1.0 - smoothstep(pad - 2.0, pad, hd2));
-			col = mix(col, vec3(0.160, 0.156, 0.150), (1.0 - smoothstep(0.0, 2.0, abs(hd2 - pad))) * 0.85);
-			float bars = min(sd_box(lg - vec2(pad * 0.34, 0.0), vec2(2.0, pad * 0.42)),
-			                 sd_box(lg + vec2(pad * 0.34, 0.0), vec2(2.0, pad * 0.42)));
-			bars = min(bars, sd_box(lg, vec2(pad * 0.34, 2.0)));
-			col = mix(col, vec3(0.165, 0.160, 0.155), 1.0 - smoothstep(0.0, 1.5, bars));
-			for (float i = 0.0; i < 4.0; i += 1.0) { // dim pad lights
-				vec2 lq = lg - rot2(i * TAU / 4.0 + 0.785) * vec2(pad * 0.92, 0.0);
-				col += PAL_LAMP * 0.7 * exp(-dot(lq, lq) / 5.0);
-			}
-		} else if (!solid || length(hs.lc) < 200.0) { // ── antenna mast + steady service light
+		if (!solid || length(hs.lc) < 200.0) { // ── antenna mast + steady service light
 			float md = length(lg);
 			col = mix(col, vec3(0.04), 1.0 - smoothstep(2.0, 4.0, md));
 			col += PAL_LAMP * 1.3 * exp(-md * md / 16.0);
@@ -83,6 +98,7 @@ vec3 roof_col(vec2 g, House hs) {
 		}
 	} else if (hs.dis < 0.5 && !solid && hs.ext.x < 48.0) { // residential: pitched roof (matches house_h)
 		float lit = dot(hs.u, normalize(SUN));
+		col *= vec3(1.12, 0.94, 0.80);                                        // faded terracotta tile
 		col *= 0.86 + 0.22 * sign(sx) * lit;                                  // two slopes, gentle
 		col *= 0.82 + 0.18 * smoothstep(0.0, 1.8, abs(fract(hs.lc.y / 12.0) - 0.5) * 12.0); // tile rows
 		col *= 1.0 - (1.0 - smoothstep(0.5, 2.5, abs(hs.lc.x))) * 0.45;       // dark ridge line
@@ -111,28 +127,35 @@ vec3 roof_col(vec2 g, House hs) {
 			col += PAL_LAMP * 1.0 * exp(-dot(lg, lg) / 30.0); // steady roof lamp
 		}
 	}
-	// ── rooftop CLUTTER on every flat roof: spinning exhaust fans, AC units, dim
-	// service lights — placed on a WORLD grid so nothing warps around the block
-	if (hs.dis > 0.5 || hs.h > 0.55) {
-		vec2 cell = floor(g / 34.0);
-		vec2 cp = (cell + 0.5) * 34.0 + (vec2(hash21(cell + 1.7), hash21(cell + 8.3)) - 0.5) * 12.0;
-		if (hs.sd < -14.0) {
-			float chc = hash21(cell + hs.seed * 61.0);
-			vec2 lp = g - cp;
-			if (chc > 0.82) { // AC unit: boxy housing with vent fins
-				float bd = sd_box(lp, vec2(9.0, 6.5)) - 1.0;
-				col = mix(col, vec3(0.140, 0.137, 0.133) * (0.9 + 0.2 * fract(chc * 9.0)), 1.0 - smoothstep(-1.0, 1.0, bd));
-				col = mix(col, vec3(0.03), (1.0 - smoothstep(0.0, 1.8, abs(bd))) * 0.6);
-				if (abs(lp.x) < 8.0 && abs(lp.y) < 5.0) { col *= 0.82 + 0.18 * smoothstep(0.0, 1.0, abs(fract(lp.y / 3.2) - 0.5) * 3.2); }
-			} else if (chc > 0.70) { // exhaust FAN: round housing, slowly spinning blades
-				float fd = length(lp) - 8.5;
-				col = mix(col, vec3(0.082, 0.080, 0.078), 1.0 - smoothstep(-1.0, 1.0, fd));
-				col = mix(col, vec3(0.150, 0.147, 0.143), (1.0 - smoothstep(0.0, 1.6, abs(fd))) * 0.8);
-				float blades = step(0.25, cos(atan(lp.y, lp.x) * 3.0 + pc.time * (4.0 + 3.0 * fract(chc * 5.0))));
-				col = mix(col, vec3(0.045), blades * step(length(lp), 7.0) * 0.75);
-				col = mix(col, vec3(0.13), 1.0 - smoothstep(0.0, 1.5, length(lp) - 1.5)); // hub
-			} else if (chc > 0.64) { // service light: a dim neutral point
-				col += PAL_LAMP * 0.8 * exp(-dot(lp, lp) / 6.0);
+	// long pipe runs striding the giant decks section to section (skirting the crown)
+	if (solid && fract(hseed * 9.3) > 0.45 && length(hs.lc) > 205.0) {
+		float pipe = abs(fract(rr / 96.0) * 96.0 - 22.0);
+		col = mix(col, base * 0.5, smoothstep(2.8, 1.4, pipe));
+		col = mix(col, base * 1.55, smoothstep(1.1, 0.2, pipe)); // lit crown of the pipe
+	}
+	// ── the DECK language — no scattered furniture: flat roofs are corrugated metal
+	// sheeting laid WITH the street, broken by long mullioned skylight lanes, stitched
+	// rows of round vent throats, and a rare service light. Everything is continuous
+	// and architectural, one roll per 110×96 plate — nothing sits at a random angle.
+	if (!(hs.dis < 0.5 && !solid && hs.ext.x < 48.0)) { // pitched roofs keep their tiles
+		if (hs.sd < -12.0) {
+			col *= 1.0 + 0.040 * sin(rr * TAU / 9.0); // corrugation ribs, street-parallel
+			float rs = hash21(vec2(floor(arc / 110.0), floor(rr / 96.0)) + fract(hs.seed * 13.0));
+			float rowy = fract(rr / 96.0) * 96.0;     // radial position within this plate row
+			if (rs < 0.30) { // a SKYLIGHT LANE runs down the plate: dark glass, mullioned panes
+				float ld = abs(rowy - 34.0) - 4.5;
+				float pane = step(0.18, fract(arc / 26.0));
+				col = mix(col, vec3(0.031, 0.029, 0.027) + vec3(0.05) * pane, 1.0 - smoothstep(-1.0, 1.0, ld));
+				col = mix(col, vec3(0.02), (1.0 - smoothstep(0.0, 1.4, abs(ld))) * 0.7);
+				if (fract(rs * 23.0) > 0.5) { col += PAL_LAMP * 0.22 * pane * (1.0 - smoothstep(-2.0, 0.5, ld)); } // lit from inside
+			} else if (rs < 0.48) { // a VENT ROW stitched along the plate: round throats
+				vec2 vp = vec2((fract(arc / 24.0) - 0.5) * 24.0, rowy - 62.0);
+				float vd = length(vp) - 3.0;
+				col = mix(col, base * 0.5, 1.0 - smoothstep(-1.0, 1.0, vd));
+				col = mix(col, base * 1.45, (1.0 - smoothstep(0.0, 1.2, abs(vd))) * 0.8);
+			} else if (rs < 0.56) { // a service light at the plate heart
+				vec2 lp2 = vec2((fract(arc / 110.0) - 0.5) * 110.0, rowy - 48.0);
+				col += PAL_LAMP * 0.8 * exp(-dot(lp2, lp2) / 7.0);
 			}
 		}
 	}
@@ -156,7 +179,9 @@ vec3 wall_col(vec2 g, House hs, float t) {
 	vec2 n = eu < ev ? hs.u * sign(hs.lc.x) : v * sign(hs.lc.y);
 	float along = eu < ev ? hs.lc.y : hs.lc.x;
 	float lit = 0.55 + 0.45 * clamp(dot(n, normalize(SUN)), -1.0, 1.0);
-	vec3 col = vec3(0.062, 0.054, 0.050) * lit * (0.6 + 0.5 * t);
+	// masonry per house: dusty brick or warm taupe render — faint desaturated hues, never blue
+	vec3 mas = mix(vec3(0.069, 0.055, 0.044), vec3(0.058, 0.052, 0.044), step(0.55, fract(hs.seed * 11.3)));
+	vec3 col = mas * lit * (0.6 + 0.5 * t);
 	col *= 0.90 + 0.10 * hash21(floor(g / 7.0)); // grime
 	float fl = fract(t / 0.12); // floor bands
 	col *= 0.80 + 0.25 * smoothstep(0.06, 0.22, fl) * smoothstep(0.95, 0.80, fl);
@@ -225,8 +250,11 @@ vec3 ground_col(vec2 w, vec2 s) {
 	vec3 blk = city_block(w);
 	float pen = bldg_pen(w);
 
-	// ── wasteland: layered sediment, ripples, craters, scrap — all under drifting dust
-	vec3 dirt = vec3(0.060, 0.056, 0.050) * (0.66 + 0.34 * hash21(floor(w / 148.0)));
+	// ── wasteland: layered sediment, ripples, craters, scrap — all under drifting dust.
+	// Broad hue drift between dry umber and cold sage-grey earth — desaturated COLOR
+	// texture, value stays flat so nothing competes with the accents.
+	vec3 dirt = mix(vec3(0.069, 0.058, 0.042), vec3(0.051, 0.058, 0.049), vnoise(w * 0.0016))
+	          * (0.66 + 0.34 * hash21(floor(w / 148.0)));
 	dirt *= 0.90 + 0.10 * sin((w.x * 0.35 + w.y * 0.85) * 0.0021 + 2.0 * sin(w.y * 0.0009)); // sediment bands
 	dirt *= 0.94 + 0.06 * sin(dot(w, vec2(0.72, 0.69)) * 0.055 + sin(w.x * 0.013));          // wind ripples
 	dirt *= 0.92 + 0.08 * hash21(floor(w / 9.0));                                            // grain
@@ -242,7 +270,7 @@ vec3 ground_col(vec2 w, vec2 s) {
 			if (fract(chh * 5.0) > 0.7) { dirt += vec3(0.085, 0.082, 0.078) * exp(-max(cd + 60.0, 0.0) * 0.03) * (0.5 + dustM); } // fresh one, still dusted
 		}
 	}
-	dirt = mix(dirt, vec3(0.130, 0.122, 0.110), dustM * 0.30); // the dust sheets themselves
+	dirt = mix(dirt, vec3(0.143, 0.127, 0.101), dustM * 0.30); // the dust sheets — warm tan
 	{ // scattered marker lamps blinking in the dust
 		vec2 lc = floor(w / 340.0);
 		float lh = hash21(lc * 5.1 + 2.2);
@@ -263,18 +291,20 @@ vec3 ground_col(vec2 w, vec2 s) {
 				vec2 spike = cp + rot2(hash21(cell + i) * TAU) * vec2(20.0 + 30.0 * hash21(cell + i + 30.0), 0.0);
 				cd = min(cd, sd_seg(w, cp, spike) - 6.0);
 			}
-			dirt = mix(dirt, vec3(0.105, 0.102, 0.100), 1.0 - smoothstep(-1.0, 2.0, cd));
-			dirt += PAL_LAMP * 0.28 * exp(-max(cd, 0.0) * 0.05) * (0.5 + dustM);
-			dirt += PAL_LAMP * 0.9 * (1.0 - smoothstep(-4.0, 1.0, cd));
+			const vec3 CRYS = vec3(0.42, 0.50, 0.58); // pale glacier — cool, desaturated, never the accent
+			dirt = mix(dirt, vec3(0.098, 0.103, 0.110), 1.0 - smoothstep(-1.0, 2.0, cd));
+			dirt += CRYS * 0.28 * exp(-max(cd, 0.0) * 0.05) * (0.5 + dustM);
+			dirt += CRYS * 0.9 * (1.0 - smoothstep(-4.0, 1.0, cd));
 		}
 	}
 
 	// ── city ground: worn concrete field with expansion joints, patches, manholes
-	vec3 pave = vec3(0.046, 0.044, 0.045) * (0.84 + 0.28 * hash21(floor(w / 124.0)));
+	vec3 pave = vec3(0.047, 0.044, 0.040) * (0.84 + 0.28 * hash21(floor(w / 124.0)));
 	vec2 jl = fract(w / 124.0) * 124.0;
 	float joint = min(min(jl.x, 124.0 - jl.x), min(jl.y, 124.0 - jl.y));
 	pave *= 0.72 + 0.28 * smoothstep(0.0, 2.8, joint);
 	pave *= 0.90 + 0.10 * hash21(floor(w / 8.0));
+	pave = mix(pave, pave * vec3(1.30, 0.94, 0.70), vnoise(w * 0.006 + 31.0) * 0.35);     // old rust bleed
 	pave = mix(pave, pave * 0.45, smoothstep(0.72, 0.98, hash21(floor(w / 51.0))) * 0.8); // patched scars
 	{ // manholes
 		vec2 mc = floor(w / 300.0);
@@ -289,7 +319,7 @@ vec3 ground_col(vec2 w, vec2 s) {
 
 	if (pen > 0.0) {
 		// ── courtyard between the terrace rows: packed grit, junk, a faint light spill
-		col = vec3(0.028, 0.027, 0.026) * (0.75 + 0.25 * hash21(floor(w / 33.0)));
+		col = vec3(0.031, 0.028, 0.022) * (0.75 + 0.25 * hash21(floor(w / 33.0)));
 		col *= 0.90 + 0.10 * hash21(floor(w / 7.0));
 		col = mix(col, vec3(0.02), step(0.97, hash21(floor(w / 13.0))) * 0.6); // junk piles
 		float spill = hash21(floor(w / 90.0) + 3.3);
@@ -301,10 +331,10 @@ vec3 ground_col(vec2 w, vec2 s) {
 			// ── PLAZA: a round paved square carved into its block, ringed by houses —
 			// concentric paver courses, a monument dais at the heart, a lamp ring
 			float ang2 = atan(w.y - pz.y, w.x - pz.x);
-			col = vec3(0.060, 0.057, 0.054) * (0.82 + 0.18 * hash21(floor(vec2(hd, ang2 * hd) / 24.0)));
+			col = vec3(0.066, 0.060, 0.049) * (0.82 + 0.18 * hash21(floor(vec2(hd, ang2 * hd) / 24.0))); // warm sandstone pavers
 			col *= 0.88 + 0.12 * smoothstep(0.0, 2.0, abs(fract(hd / 42.0) - 0.5) * 42.0); // courses
 			float dd = hd - 40.0; // monument dais
-			col = mix(col, vec3(0.078, 0.073, 0.068), 1.0 - smoothstep(-1.5, 1.0, dd));
+			col = mix(col, vec3(0.083, 0.074, 0.061), 1.0 - smoothstep(-1.5, 1.0, dd));
 			col = mix(col, vec3(0.02), (1.0 - smoothstep(0.0, 2.0, abs(dd))) * 0.8);
 			col += PAL_LAMP * 1.2 * exp(-hd * hd / 240.0); // the monument lantern
 			for (float i = 0.0; i < 5.0; i += 1.0) { // lamp ring
@@ -318,16 +348,16 @@ vec3 ground_col(vec2 w, vec2 s) {
 	// ── streets: scarred asphalt + emissive lane strips + curbs + crossing lamps
 	float roadMix = smoothstep(pc.city_r + 420.0, pc.city_r, cr);
 	float rmask = smoothstep(STREET_HW, STREET_HW - 6.0, sd) * roadMix;
-	vec3 road = vec3(0.030, 0.028, 0.030) * (0.85 + 0.15 * hash21(floor(w / 31.0)));
+	vec3 road = vec3(0.027, 0.025, 0.024) * (0.85 + 0.15 * hash21(floor(w / 31.0))); // dark warm asphalt — never blue
 	road *= 0.90 + 0.10 * hash21(floor(w / 8.0));
 	road = mix(road, road * 0.5, smoothstep(0.8, 0.98, hash21(floor(w / 39.0))) * 0.7); // scorch/oil
 	col = mix(col, road, rmask);
-	col += vec3(0.10, 0.09, 0.09) * (1.0 - smoothstep(1.0, 2.6, abs(sd - (STREET_HW - 4.0)))) * roadMix; // curb
+	col += vec3(0.105, 0.092, 0.079) * (1.0 - smoothstep(1.0, 2.6, abs(sd - (STREET_HW - 4.0)))) * roadMix; // warm stone curb
 	{ // lane paint down the middle — pale worn dashes, not a light show
 		float ringd = abs(cr - max(round(cr / RING_SP), 1.0) * RING_SP);
 		float along = ringd < spoke_dist(w) ? a * cr : cr;
 		float dash = step(fract(along / 120.0), 0.5);
-		col += vec3(0.135, 0.130, 0.122) * (1.0 - smoothstep(1.2, 3.0, sd)) * dash * roadMix;
+		col += vec3(0.152, 0.138, 0.106) * (1.0 - smoothstep(1.2, 3.0, sd)) * dash * roadMix; // worn cream paint
 	}
 
 	{ // rubber on the road: the persistent skid decal grid the CPU stamps (Res.Skid)
@@ -388,12 +418,12 @@ void main() {
 		} else { // the block PLINTH — its rim IS the collision face
 			float pen = bldg_pen(gh);
 			if (tHit > 0.04) { // slab top: packed yard grit between the houses
-				col = vec3(0.042, 0.039, 0.036) * (0.75 + 0.25 * hash21(floor(gh / 33.0)));
+				col = vec3(0.045, 0.041, 0.032) * (0.75 + 0.25 * hash21(floor(gh / 33.0)));
 				col *= 0.90 + 0.10 * hash21(floor(gh / 7.0));
 				col = mix(col, vec3(0.02), step(0.97, hash21(floor(gh / 13.0))) * 0.6); // junk
 				col *= 0.70 + 0.30 * smoothstep(0.0, 30.0, pen); // dark edging at the rim
 			} else { // slab wall face — the wall you bump into
-				col = vec3(0.058, 0.055, 0.052) * (0.65 + 0.35 * smoothstep(0.0, 0.07, tHit));
+				col = vec3(0.061, 0.056, 0.045) * (0.65 + 0.35 * smoothstep(0.0, 0.07, tHit));
 				col += PAL_LAMP * 0.05;
 			}
 		}

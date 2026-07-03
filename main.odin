@@ -105,11 +105,24 @@ main :: proc() {
 		if resized { resized = false; update_size(); vk_resize() }
 		frame_n += 1
 		// Shader hot reload: pick up .spv the watcher recompiled (the human's watch loop runs the
-		// release build, so this can't be ODIN_DEBUG-gated). Skipped during the headless gpuav drive.
-		if frame_n % 30 == 0 && !gpuav_mode { hot_reload_poll() }
+		// release build, so this can't be ODIN_DEBUG-gated). Skipped for BOTH headless passes:
+		// they capture/validate exactly what their own build just produced, and a live watch
+		// session recompiling alongside must not yank the pipelines mid-drive (a reload racing
+		// the screenshot copy was intermittently killing the capture).
+		if frame_n % 30 == 0 && !gpuav_mode && !shot_mode { hot_reload_poll() }
 		free_all(context.temp_allocator)
 	}
-	if gpuav_mode { fmt.println("GPU-AV pass: clean (no runtime validation errors)") }
+	// Headless passes exit HERE, deterministically. The game never tears its Vulkan
+	// objects down (process exit is the cleanup), so past this point only driver/SDL
+	// atexit handlers would run — and those intermittently crash when another game
+	// process (the human's watch session) holds the GPU, failing the build step with
+	// a bogus non-zero exit AFTER validation already passed clean. Nothing validated
+	// is skipped: the debug callback aborts the instant anything is wrong mid-run.
+	if gpuav_mode { fmt.println("GPU-AV pass: clean (no runtime validation errors)"); os.exit(0) }
+	if shot_mode { // exit 0 ONLY with a capture on disk — a quit without one must fail LOUD
+		if shot.path == "" || shot.want { fmt.eprintln("shot: exited without a capture"); os.exit(1) }
+		os.exit(0)
+	}
 }
 
 update_size :: proc() {

@@ -13,6 +13,7 @@ import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:sys/linux"
 import "core:time"
 
 // src : glslc shader stage. Compiles to shaders/spv/<src>.spv.
@@ -40,7 +41,12 @@ must :: proc(cmd: string) {
 }
 
 // Regenerate the shared GLSL from the @glsl blocks, then compile every shader to SPIR-V.
+// The whole producer path holds the build lock: a `./run.sh shot` (Claude's verify loop)
+// runs ALONGSIDE a live `watch` session (the human playing), and both regenerate
+// gen.glsl + shaders/spv/* — unserialized they interleave writes into the same files.
 prep :: proc() {
+	build_lock()
+	defer build_unlock()
 	gen_types()                // @glsl blocks → tools/gen/types.gen.odin
 	must("odin run tools/gen") // reflect them → shaders/gen.glsl + accessors
 	build_shaders(soft)        // GLSL → shaders/spv/*.spv (naga cross-check in watch mode)
@@ -49,15 +55,35 @@ prep :: proc() {
 // Compile every shader to shaders/spv/*.spv with validation on (glslc -Werror + spirv-val).
 // naga=true additionally cross-checks each SPIR-V with naga — advisory (it can't parse all the
 // legal SPIR-V glslc emits for the bindless design), so its output is shown, never gated.
+// Each .spv is compiled + validated as a .tmp.spv and RENAMED into place: the rename is
+// atomic, so the running game's hot-reload (and a concurrent headless pass loading its
+// pipelines) can never read a half-written shader.
 build_shaders :: proc(naga: bool) {
 	os.make_directory("shaders/spv")
 	for s in SHADERS {
 		src, stage := s[0], s[1]
-		must(fmt.tprintf("glslc -I shaders --target-env=vulkan1.3 -Werror -fshader-stage=%s shaders/%s -o shaders/spv/%s.spv", stage, src, src))
-		must(fmt.tprintf("spirv-val shaders/spv/%s.spv", src))
-		if naga { sh(fmt.tprintf("naga shaders/spv/%s.spv", src)) } // advisory cross-check
+		must(fmt.tprintf("glslc -I shaders --target-env=vulkan1.3 -Werror -fshader-stage=%s shaders/%s -o shaders/spv/%s.tmp.spv", stage, src, src))
+		must(fmt.tprintf("spirv-val shaders/spv/%s.tmp.spv", src))
+		if naga { sh(fmt.tprintf("naga shaders/spv/%s.tmp.spv", src)) } // advisory cross-check
+		must(fmt.tprintf("mv shaders/spv/%s.tmp.spv shaders/spv/%s.spv", src, src))
 	}
 	fmt.println("shaders → shaders/spv/")
+}
+
+// Cross-process build lock (flock on a root-level lock file): serializes every shader/
+// gen producer across concurrent tools/build.odin processes. Released automatically on
+// process exit, so a crashed builder can never wedge the other one.
+lock_fd := linux.Fd(-1)
+build_lock :: proc() {
+	if lock_fd < 0 {
+		fd, err := linux.open(".build.lock", {.RDWR, .CREAT}, {.IRUSR, .IWUSR})
+		if err != .NONE { return } // lockless fallback — same behavior as before the lock existed
+		lock_fd = fd
+	}
+	_ = linux.flock(lock_fd, {.EX}) // blocks until the other builder finishes
+}
+build_unlock :: proc() {
+	if lock_fd >= 0 { _ = linux.flock(lock_fd, {.UN}) }
 }
 
 // Scan every .odin in the project root for `// @glsl … // @glsl-end` blocks (structs + constants,
@@ -238,7 +264,7 @@ watch :: proc() {
 			if int(n) < 4096 { break }
 		}
 		if odin      { prep(); launch() }   // .odin → regen GLSL, recompile shaders, rebuild + relaunch
-		else if glsl { build_shaders(true) } // .glsl → recompile .spv; the running game reloads it
+		else if glsl { build_lock(); build_shaders(true); build_unlock() } // .glsl → recompile .spv; the running game reloads it
 	}
 }
 

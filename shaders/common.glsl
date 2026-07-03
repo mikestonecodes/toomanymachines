@@ -20,7 +20,7 @@ const vec3 PAL_MID    = vec3(0.165, 0.150, 0.160);
 const vec3 PAL_ACCENT = vec3(1.00, 0.155, 0.06);
 const vec3 PAL_EMBER  = vec3(1.00, 0.46, 0.12);  // hot metal — a shade of the accent, not gold
 const vec3 PAL_WINDOW = vec3(1.00, 0.42, 0.13);  // reserved: gameplay-relevant warm lights only
-const vec3 PAL_LAMP   = vec3(0.55, 0.53, 0.50);  // neutral practicals — windows, lamps, beacons:
+const vec3 PAL_LAMP   = vec3(0.58, 0.545, 0.46); // warm ivory practicals — windows, lamps, beacons:
                                                  // decoration NEVER spends the accent budget
 
 const float TAU = 6.2831853;

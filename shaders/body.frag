@@ -19,8 +19,8 @@ layout(location = 0) out vec4 o_color;
 
 // the invaders' paint (linear; the composite sRGB-encodes) — dusty greys, red markings:
 // everything lives in the 60/30/10 palette, hue is reserved for the accents
-const vec3 BOT_KHAKI  = vec3(0.30, 0.28, 0.25);  // dust-grey plate
-const vec3 BOT_OLIVE  = vec3(0.17, 0.16, 0.145); // darker grey plate
+const vec3 BOT_KHAKI  = vec3(0.305, 0.285, 0.232); // dusty khaki plate
+const vec3 BOT_OLIVE  = vec3(0.168, 0.166, 0.128); // faded olive plate
 const vec3 BOT_ORANGE = vec3(0.72, 0.14, 0.05);  // red unit marking
 const vec3 BOT_LINE   = vec3(0.045, 0.045, 0.040); // panel lining / lower struts
 
@@ -462,12 +462,29 @@ void wreck(vec2 p, Body b) {
 }
 
 void bullet(vec2 p) {
-	// a SPRITE round, zero bloom feed — the bloom pass was what smeared every design
-	// into a blob. Dark rim → hot shell → solid white core: pure crisp base color.
-	float d = sd_seg(p, vec2(5.0, 0.0), vec2(-9.0, 0.0));
-	lay(vec3(0.02), soft(d - 8.0));             // dark rim: separates it from the ground
-	lay(vec3(1.05, 0.38, 0.12), soft(d - 6.0)); // hot shell
-	lay(vec3(1.5, 1.45, 1.35), soft(d - 3.4));  // solid white core
+	// COMET TRACER: a white-hot needle core in a hot sheath that tapers into a long
+	// fluttering flame tail, sparks tumbling off the wake and a glinting nose star.
+	// The crisp sprite BASE carries the design (the bloom pass smears anything big);
+	// only a whisper of emissive rides on top so the head glows without blobbing.
+	float flut = sin(p.x * 0.35 + pc.time * 34.0 + float(v_id)) * 1.1;
+	vec2 q = vec2(p.x, p.y + flut * smoothstep(0.0, -22.0, p.x)); // tail flutters, nose stays rigid
+	float x = clamp(q.x, -42.0, 6.0);
+	float t = (6.0 - x) / 48.0;                    // 0 at the nose → 1 at the tail tip
+	float spine = length(q - vec2(x, 0.0));
+	float d = spine - mix(6.2, 0.5, t * t);        // tapering profile
+	// past the shell the sheath breaks into licked flame streaming backward
+	d += smoothstep(-5.0, -26.0, q.x) * vnoise(vec2(q.x * 0.22 - pc.time * 26.0, q.y * 0.5 + float(v_id % 91u))) * 3.2;
+	lay(vec3(0.02), soft(d - 2.2) * (1.0 - t));    // dark rim seats the head on the ground
+	lay(mix(vec3(1.20, 0.44, 0.10), vec3(0.30, 0.045, 0.02), smoothstep(0.0, 0.9, t)), soft(d)); // hot → cooling sheath
+	lay(vec3(1.55, 1.48, 1.30), soft(spine - mix(3.6, 0.0, smoothstep(0.0, 0.5, t)))); // white core, front half only
+	// sparks shedding off the wake
+	float spk = hash21(floor(q / 2.5) + floor(pc.time * 28.0) * vec2(3.0, 7.0) + float(v_id % 97u));
+	add += (PAL_EMBER * 1.4 + vec3(0.5)) * step(0.962, spk) * step(q.x, -6.0) * step(spine, 9.0) * 1.5;
+	// glinting 4-point star on the nose + a small hot halo around the head
+	float nd = length(p - vec2(6.5, 0.0));
+	float star = 1.0 + 0.5 * cos(atan(p.y, p.x - 6.5) * 4.0 + pc.time * 40.0 + float(v_id));
+	add += vec3(1.25, 1.05, 0.75) * exp(-nd * nd / (6.0 * star)) * 0.9;
+	add += PAL_EMBER * exp(-spine * spine / 90.0) * 0.35 * (1.0 - t);
 }
 
 void burst(vec2 p, Body b) {
