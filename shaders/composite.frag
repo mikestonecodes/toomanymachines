@@ -8,13 +8,13 @@
 layout(set = 0, binding = 1) uniform sampler2D TEXS[];
 layout(location = 0) out vec4 o_color;
 
-const float BLOOM_INTENSITY = 3.2;
+const float BLOOM_INTENSITY = 3.6;
 
 // fishlab grain_post: two-hash animated film grain
 float grain(vec2 px, float t) {
 	float n1 = hash21(px + t * 10.0);
 	float n2 = hash21(px * 1.5 + t * 7.0 + 100.0);
-	return ((n1 + n2) * 0.5 - 0.5) * 0.085;
+	return ((n1 + n2) * 0.5 - 0.5) * 0.125; // heavy — the frame should feel GRITTY
 }
 
 void main() {
@@ -56,7 +56,20 @@ void main() {
 	} else {
 		col = texture(TEXS[IMG_SCENE], uv).rgb;
 	}
-	col += texture(TEXS[IMG_BLOOMB], uv).rgb * BLOOM_INTENSITY;
+	vec3 bloom = texture(TEXS[IMG_BLOOMB], uv).rgb;
+	col += bloom * BLOOM_INTENSITY;
+
+	// ── ground fog: dust sheets drifting over the whole battlefield, world-anchored.
+	// Lights SCATTER through them (the bloom term), so the frame reads gritty and
+	// glowing at once — fog dims the dark, but everything bright shines through it.
+	{
+		vec2 wf = pc.cam + (gl_FragCoord.xy - pc.screen * 0.5) * ZOOM;
+		float fn = vnoise(wf * 0.0035 + vec2(pc.time * 22.0, -pc.time * 14.0) * 0.006) * 0.6
+		         + vnoise(wf * 0.0011 + vec2(-pc.time * 9.0, pc.time * 7.0) * 0.006) * 0.4;
+		float fog = smoothstep(0.25, 0.85, fn) * 0.34;
+		col = mix(col, vec3(0.085, 0.080, 0.075), fog);
+		col += bloom * fog * 2.4; // light scattered in the dust
+	}
 
 	// ACES tonemap, then sRGB-encode (the swapchain is UNORM — the display decodes ~2.2)
 	col = clamp((col * (2.51 * col + 0.03)) / (col * (2.43 * col + 0.59) + 0.14), vec3(0.0), vec3(1.0));

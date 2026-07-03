@@ -87,8 +87,8 @@ SHIP_ACCEL     :: f32(1600)
 SHIP_REV       :: f32(900)
 SHIP_MAX       :: f32(760)
 SHIP_BOOST_MAX :: f32(1150)
-SHIP_DRAG      :: f32(0.95) // 1/s forward decay — floaty, but it does stop eventually
-SHIP_GRIP      :: f32(2.2)  // 1/s lateral bleed — low: it DRIFTS
+SHIP_DRAG      :: f32(1.15) // 1/s forward decay — stops when you let off
+SHIP_GRIP      :: f32(9.0)  // 1/s lateral bleed — HIGH: corners on rails, no drift-drag
 SHIP_TURN      :: f32(3.4)  // rad/s max yaw
 BULLET_SPEED   :: f32(1050)
 BULLET_RADIUS  :: f32(7)
@@ -150,15 +150,12 @@ hash21o :: proc(p: [2]f32) -> f32 {
 	return math.mod(q.x * q.y, 1)
 }
 
-sd_box2 :: proc(p, b: [2]f32) -> f32 {
-	d := [2]f32{abs(p.x) - b.x, abs(p.y) - b.y}
-	return linalg.length(linalg.max(d, [2]f32{0, 0})) + min(max(d.x, d.y), 0)
-}
-
-// The house rect under p: signed distance to it (huge when the cell holds no house)
-// plus its outward face normal. Courtyards, terrace gaps and plazas are open ground.
-// MUST mirror house_at in common.glsl — the GPU collides every body on the same rects.
-house_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
+// The solid BLOCK under p — whole building blocks are hit area; the car and the horde
+// live in the STREET corridor (plazas + wasteland stay open). Returns signed distance
+// to the block face (positive on open ground) + the outward normal toward the street
+// (numerical street_dist gradient). MUST mirror building_push in physics.comp. The
+// discrete houses (house_at in common.glsl) are visual + the shells' hit test only.
+block_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	sd = 1e9
 	q := p - CENTER
 	r := linalg.length(q)
@@ -168,43 +165,11 @@ house_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	sa := math.atan2(q.y, q.x) - SPIRAL * r
 	jb := math.floor(sa / (f32(math.TAU) / ns))
 	if hash21o([2]f32{kb, jb} * 1.13 + 4.7) < PLAZA_P { return } // plaza
-	rB0 := kb * RING_SP + BLDG_EDGE
-	rB1 := (kb + 1) * RING_SP - BLDG_EDGE
-	rowDepth := (rB1 - rB0) * 0.40
-	outer := r > (rB0 + rB1) * 0.5
-	rRow := outer ? rB1 - rowDepth * 0.5 : rB0 + rowDepth * 0.5
-	S := 130 + math.floor(hash21o([2]f32{kb, outer ? 1 : 0} * 3.9 + 6.1) * 3) * 65
-	ci := math.floor(sa * rRow / S)
-	seed := hash21o({ci, kb * 13 + jb * 3 + (outer ? 7 : 0)})
-	if seed < 0.16 { return } // gap in the terrace
-	aC := (ci + 0.5) * S / rRow + SPIRAL * rRow
-	cdir := [2]f32{math.cos(aC), math.sin(aC)}
-	c := CENTER + cdir * rRow
-	if street_dist_spokes(c) < BLDG_EDGE + S * 0.5 { return } // clear of the avenues
-	d2 := p - c
-	lc := [2]f32{linalg.dot(d2, cdir), linalg.dot(d2, [2]f32{-cdir.y, cdir.x})}
-	ext := [2]f32{rowDepth * 0.5 - 4 - 14 * math.mod(seed * 3.3, 1), S * 0.5 - (8 + 26 * math.mod(seed * 5.7, 1))}
-	sd = sd_box2(lc, ext)
-	eu := ext.x - abs(lc.x)
-	ev := ext.y - abs(lc.y)
-	n = eu < ev ? cdir * math.sign(lc.x) : [2]f32{-cdir.y, cdir.x} * math.sign(lc.y)
+	sd = BLDG_EDGE - street_dist(p)
+	e := f32(2)
+	g := [2]f32{street_dist(p + {e, 0}) - street_dist(p - {e, 0}), street_dist(p + {0, e}) - street_dist(p - {0, e})}
+	if gl := linalg.length(g); gl > 0.0001 { n = -g / gl }
 	return
-}
-
-// Just the spoke part of street_dist (house trimming needs it without the rings).
-street_dist_spokes :: proc(p: [2]f32) -> f32 {
-	q := p - CENTER
-	r := linalg.length(q)
-	sa := math.atan2(q.y, q.x) - SPIRAL * r
-	stp := f32(math.TAU) / (SPOKES * 0.5)
-	da := sa - math.round(sa / stp) * stp
-	d := abs(da) * r
-	if r > SPOKE2_R {
-		sa2 := sa + stp * 0.5
-		da2 := sa2 - math.round(sa2 / stp) * stp
-		d = min(d, abs(da2) * r)
-	}
-	return d
 }
 
 game_init :: proc() {
@@ -405,11 +370,11 @@ game_update :: proc(dt: f32) {
 	}
 }
 
-// Push the ship out of the house rect under it (analytic face normal), kill velocity
-// into the facade. Anywhere without a building — streets, plazas, courtyards, terrace
-// gaps — is open to fly. Mirrors building_push in physics.comp.
+// Push the car out of the solid block under it, kill velocity into the block face.
+// Streets, plazas and the wasteland are open to drive. Mirrors building_push in
+// physics.comp.
 collide_city :: proc(pos: ^[2]f32, vel: ^[2]f32, r: f32) {
-	sd, n := house_pen(pos^)
+	sd, n := block_pen(pos^)
 	if sd >= r { return }
 	pos^ += n * (r - sd)
 	if vn := linalg.dot(vel^, n); vn < 0 { vel^ -= n * vn * 1.2 } // cancel + a small bounce

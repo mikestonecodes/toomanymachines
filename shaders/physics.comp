@@ -21,24 +21,27 @@ uint cell_of(vec2 p) {
 	return uint(c.y) * GRID_SIZE + uint(c.x);
 }
 
-// Push a circle out of the actual HOUSE RECT under it (analytic face normal from the
-// house frame) and slide the velocity along the facade. Courtyards, terrace gaps and
-// plazas are open ground — anything without a building is walkable/drivable.
-// Mirrors collide_city in car.odin.
+// Whole building BLOCKS are solid — every body lives in the STREET corridor (plazas +
+// the wasteland stay open). Push out along the numerical street_d gradient and slide
+// the velocity along the block face. Mirrors block_pen/collide_city in car.odin. The
+// discrete houses (house_at) are visual + occlusion only.
 void building_push(inout vec2 p, inout vec2 v, float r) {
-	House hs = house_at(p);
-	if (!hs.ok || hs.sd >= r) { return; }
-	float eu = hs.ext.x - abs(hs.lc.x);
-	float ev = hs.ext.y - abs(hs.lc.y);
-	vec2 n = eu < ev ? hs.u * sign(hs.lc.x) : vec2(-hs.u.y, hs.u.x) * sign(hs.lc.y);
-	p += n * (r - hs.sd);
+	if (city_block(p).z < 0.5) { return; }
+	float sd = BLDG_EDGE - street_d(p);
+	if (sd >= r) { return; }
+	float e = 2.0;
+	vec2 g = vec2(street_d(p + vec2(e, 0.0)) - street_d(p - vec2(e, 0.0)),
+	              street_d(p + vec2(0.0, e)) - street_d(p - vec2(0.0, e)));
+	float gl = length(g);
+	if (gl < 0.0001) { return; } // dead-center ridge: any motion resolves it next frame
+	vec2 n = -g / gl;
+	p += n * (r - sd);
 	float vn = dot(v, n);
-	if (vn < 0.0) { v -= n * vn; } // slide along the wall
+	if (vn < 0.0) { v -= n * vn; } // slide along the block face
 }
 
 bool in_building(vec2 p) {
-	House hs = house_at(p);
-	return hs.ok && hs.sd < 0.0;
+	return city_block(p).z > 0.5 && street_d(p) > BLDG_EDGE;
 }
 
 // Spawner for the endless assault: variant mix 60/30/10, marching in from a ring just

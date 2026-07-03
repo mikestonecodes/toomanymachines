@@ -51,20 +51,29 @@ void plate(vec2 p, vec2 ctr, float d, vec3 c, float seed) {
 	float ch = hash21(floor(p / gCS) + seed * 17.0);
 	col = mix(col, c * 0.42, step(0.93, ch) * 0.75);     // chipped paint
 	float bevel = smoothstep(-3.6, -2.4, d) * (1.0 - smoothstep(-2.4, -1.6, d));
-	col += vec3(0.30, 0.31, 0.34) * bevel * litSide;     // specular bevel glint
+	col += vec3(0.44, 0.45, 0.49) * bevel * litSide;     // specular bevel glint — machined METAL
 	col = mix(col, BOT_LINE, smoothstep(-2.4, -1.1, d)); // panel lining
 	lay(col, soft(d));
 }
 
-// One mech leg, Citadel-style: chunky armored upper-leg plate → knee cap → thin dark
-// lower strut → foot pad. `aa` = hip bearing, `ph` = gait phase.
+// One mech leg with a real GAIT: the foot sweeps back through stance (planted while
+// the body advances), then snaps forward in a quick swing with the leg tucked in —
+// insect STEPPING, not wobble. Chunky armored upper-leg plate → knee cap → thin dark
+// lower strut → foot pad. `aa` = hip bearing, `ph` = gait phase (radians).
 void mech_leg(vec2 p, float r, float aa, float ph, float wUp, float wLo) {
-	float stp = sign(sin(ph)) * pow(abs(sin(ph)), 0.55); // piston stride
+	float cyc = fract(ph / TAU);
+	float stride, tuck = 0.0;
+	if (cyc < 0.72) { stride = 1.0 - 2.0 * (cyc / 0.72); }            // stance: planted, sweeping back
+	else {
+		float sw = (cyc - 0.72) / 0.28;
+		stride = -1.0 + 2.0 * sw;                                     // swing: quick snap forward
+		tuck = sin(sw * 3.14159);                                     // leg pulls in = the lift
+	}
 	vec2 hip  = rot2(aa) * vec2(r * 0.52, 0.0);
-	vec2 knee = rot2(aa + stp * 0.10) * vec2(r * 1.35, 0.0);
-	vec2 foot = rot2(aa + stp * 0.20) * vec2(r * 1.85, 0.0);
-	knee.x += stp * r * 0.12;
-	foot.x += stp * r * 0.26;
+	vec2 foot = rot2(aa + stride * 0.14) * vec2(r * (1.88 - tuck * 0.42), 0.0);
+	foot.x += stride * r * 0.34;
+	vec2 dirH = foot - hip;
+	vec2 knee = hip + dirH * 0.5 + normalize(vec2(-dirH.y, dirH.x) + 0.0001) * sign(aa) * r * 0.22; // knee bows out
 	// lower leg: short thick strut ending in a boxy foot pad, oriented along the leg
 	vec2 dirLo = normalize(foot - knee + 0.0001);
 	float angLo = atan(dirLo.y, dirLo.x);
@@ -170,46 +179,38 @@ void ship(vec2 p, Body b) {
 	}
 }
 
-// Battle damage overlay: STAGED ruin — the paint scorches, then whole plates blow off
-// over a glowing under-frame, panel seams run molten, electric shorts arc blue-white,
-// embers gutter and smoke pours. A hurt bot should LOOK hurt long before it dies.
+// Battle damage overlay: soot creeps smoothly over the armor, the core heat-soaks red,
+// and a single molten fissure opens across the hull — clean ruin, no grid cells. A
+// hurt bot should LOOK hurt long before it dies.
 void battle_damage(vec2 p, Body b, float maxhp) {
-	// fresh-hit spray: white-hot sparks fly while the flash is hot (beams keep this alive)
+	// fresh-hit spray: sparks fly while the flash is hot (beams keep this alive)
 	if (b.life > 0.4) {
 		float sp2 = hash21(floor(p / 4.0) + floor(pc.time * 24.0) * vec2(7.0, -9.0) + float(v_id));
-		add += (PAL_EMBER + vec3(0.5)) * step(0.978, sp2) * b.life * 2.6 * cov;
+		add += (PAL_EMBER + vec3(0.4)) * step(0.985, sp2) * b.life * 2.0 * cov;
 	}
 	float dmg = 1.0 - clamp(b.hp / maxhp, 0.0, 1.0);
 	if (dmg < 0.10) { return; }
 	float m = (dmg - 0.10) * 1.30;
-	float cell = max(gCS * 1.6, 3.0);
-	vec2 cid = floor(p / cell);
-	float ch = hash21(cid + float(v_id));
-	float throb = 0.7 + 0.3 * sin(pc.time * 7.0 + ch * 40.0 + float(v_id));
-	// stage 1: scorch — the paint blisters and blackens patch by patch
-	base = mix(base, vec3(0.030, 0.024, 0.020), m * smoothstep(0.30, 0.85, ch) * 0.8 * cov);
-	// stage 2: plates blown clean off — the red-hot under-frame shows through the holes
-	float gone = step(1.0 - m * 0.40, ch);
-	base = mix(base, vec3(0.16, 0.03, 0.01), gone * cov);
-	add += PAL_ACCENT * gone * m * 1.8 * throb * cov;
-	// panel seams running molten between the wounds
-	vec2 lc2 = fract(p / cell) - 0.5;
-	float web = 1.0 - smoothstep(0.06, 0.16, min(abs(lc2.x), abs(lc2.y)));
-	add += PAL_ACCENT * web * smoothstep(0.9 - m * 0.5, 0.95, ch) * m * 1.4 * throb * cov;
-	// the whole armor heat-soaks red from inside as hp drains
-	add += vec3(1.0, 0.10, 0.02) * m * m * 0.45 * cov * (0.75 + 0.25 * sin(pc.time * 6.0 + float(v_id)));
-	// electric shorts: blue-white arcs snapping across heavy damage
-	if (m > 0.45) {
-		float az = hash21(cid + floor(pc.time * 18.0) + float(v_id) * 0.7);
-		add += vec3(1.0, 1.0, 1.05) * step(0.965, az) * (m - 0.45) * 4.0 * cov;
+	float throb = 0.8 + 0.2 * sin(pc.time * 5.0 + float(v_id));
+	// soot: a smooth noise front creeping over the paint
+	float n = vnoise(p * 0.5 + float(v_id % 977u));
+	base = mix(base, vec3(0.028, 0.024, 0.020), smoothstep(1.05 - m * 1.2, 1.35 - m * 1.2, n) * 0.85 * cov);
+	// the core heat-soaks red as hp drains
+	add += PAL_ACCENT * m * m * 0.9 * exp(-dot(p, p) / (b.radius * b.radius * 1.4)) * throb * cov;
+	// a molten fissure opens across the hull
+	if (m > 0.25) {
+		vec2 q = rot2(hash1(v_id * 337u) * TAU) * p;
+		float crack = abs(q.y - sin(q.x * 0.5 + hash1(v_id * 337u + 1u) * 6.0) * b.radius * 0.2);
+		add += PAL_ACCENT * exp(-crack * crack / 1.4) * (m - 0.25) * 2.2 * throb * cov
+		     * smoothstep(b.radius, b.radius * 0.5, length(p));
 	}
 	// gutter sparks streaming off
 	float sp = hash21(floor(p / 5.0) + pc.time * vec2(0.0, 3.0) + float(v_id));
-	add += PAL_EMBER * step(0.982 - m * 0.03, sp) * m * 2.6 * cov;
+	add += PAL_EMBER * step(0.985 - m * 0.02, sp) * m * 2.0 * cov;
 	for (float i = 0.0; i < 2.0; i += 1.0) { // black smoke curling off the wounds
 		float ph2 = fract(pc.time * 0.55 + hash1(v_id + uint(i) * 7u));
 		vec2 sp2 = vec2(sin(pc.time * 1.3 + i * 2.6) * 6.0, -b.radius * 0.3 - ph2 * 22.0);
-		lay(vec3(0.016, 0.015, 0.015), m * (1.0 - ph2) * 0.60 * soft(length(p - sp2) - (3.0 + ph2 * 8.0)));
+		lay(vec3(0.016, 0.015, 0.015), m * (1.0 - ph2) * 0.55 * soft(length(p - sp2) - (3.0 + ph2 * 8.0)));
 	}
 }
 
@@ -349,9 +350,6 @@ void turret(vec2 p, Body b) {
 				vec2 rq = rot2(hash1(si + 3u) * 2.4 - 1.2) * (p - hitp);
 				add += PAL_EMBER * 2.2 * exp(-sd_seg(rq, vec2(0.0), vec2(26.0, 0.0)) * 1.5) * env * burst * hash1(si + 5u);
 			}
-			// hot brass spray at the mount
-			float sp2 = hash1(uint(pc.time * 30.0) * 13u + v_id + uint(atan(p.y, p.x) * 3.0));
-			add += PAL_EMBER * step(0.9, sp2) * exp(-dot(p, p) / (r * r * 2.0)) * env * burst;
 		}
 	} else if (firing) { // ── the giant laser: a two-sided lighthouse bar
 		float bd = sd_seg(p, -bd2 * len, bd2 * len);
@@ -374,14 +372,10 @@ void turret(vec2 p, Body b) {
 	vec2 hq = rot2(-(angW - b.angle)) * p;
 	plate(p, vec2(0.0), sd_box(hq - vec2(r * 0.20, 0.0), vec2(r * 0.55, r * 0.28)) - r * 0.1, BOT_KHAKI, 9.0);
 	lay(BOT_LINE * 2.0, soft(sd_box(hq - vec2(r * 0.62, 0.0), vec2(r * 0.30, r * 0.10))));
-	// the eye: idle ember + a wide warning pool — a lighthouse in the dust
-	float idle = 0.9 + 0.4 * sin(pc.time * 1.7 + float(v_id));
-	add += PAL_ACCENT * soft(length(p) - r * 0.30) * (firing ? 1.0 : idle);
-	add += PAL_ACCENT * 0.20 * exp(-dot(p, p) / (r * r * 4.0)) * idle;
-	if (firing) {
-		float muzz = mg ? (0.3 + 1.4 * hash1(uint(pc.time * 40.0) + v_id)) * step(0.30, fract(pc.time * 3.3 + hash1(v_id * 55u))) : 1.0;
-		add += (PAL_EMBER * 2.0 + vec3(1.0)) * exp(-dot(p, p) / (r * r * 0.8)) * env * 2.0 * muzz;
-	}
+	// the eye: steady ember + a wide warning pool — the tower itself NEVER flashes;
+	// only its rounds and ricochets move
+	add += PAL_ACCENT * soft(length(p) - r * 0.30);
+	add += PAL_ACCENT * 0.20 * exp(-dot(p, p) / (r * r * 4.0));
 }
 
 void helper(vec2 p, Body b) {
@@ -445,20 +439,10 @@ void wreck(vec2 p, Body b) {
 }
 
 void bullet(vec2 p) {
-	// artillery shell: a hard bright slug with a thin tracer tail — a crisp POINT of
-	// light racing over the ground, not a bloom blob
-	float d = sd_seg(p, vec2(5.0, 0.0), vec2(-12.0, 0.0));
-	add += PAL_EMBER * 1.1 * exp(-d * d / 1.8);                              // thin tail
-	float dh2 = dot(p - vec2(5.0, 0.0), p - vec2(5.0, 0.0));
-	add += vec3(1.35, 1.05, 0.75) * 2.6 * exp(-dh2 / 5.0);                   // the slug
-}
-
-// smooth value noise — the blast cloud must ROLL, not show hash-cell pixels
-float vnoise(vec2 p) {
-	vec2 i = floor(p), f = fract(p);
-	f = f * f * (3.0 - 2.0 * f);
-	return mix(mix(hash21(i), hash21(i + vec2(1.0, 0.0)), f.x),
-	           mix(hash21(i + vec2(0.0, 1.0)), hash21(i + vec2(1.0, 1.0)), f.x), f.y);
+	// a small hot orb, subtle — the detonation is the show, not the flight
+	float d2 = dot(p, p);
+	add += vec3(1.25, 1.0, 0.75) * 0.9 * exp(-d2 / 4.0);
+	add += PAL_EMBER * 0.5 * exp(-d2 / 24.0);
 }
 
 void burst(vec2 p, Body b) {
@@ -468,33 +452,17 @@ void burst(vec2 p, Body b) {
 	float prog = 1.0 - clamp(b.life / total, 0.0, 1.0);
 	float fade = 1.0 - prog;
 	uint s = v_id * 977u;
-	if (b.variant == VAR_BOOM) { // shell detonation: flash + flung fire — NO drawn ring;
-		// the blast wave itself is invisible here, the composite warps the screen for it
+	if (b.variant == VAR_BOOM) { // shell detonation: the DISTORTION WAVE is the show —
+		// the composite warps the screen; here only a brief dim crack + a few embers
 		float prog2 = pow(prog, 0.6); // decelerating front — matches physics + composite
 		float R = mix(10.0, BOOM_R, prog2);
 		float rr = length(p);
-		// hot detonation flash — ember-red, tight, gone in the first instants (a huge
-		// white orb reads as a camera flare, not a shell)
-		float aStar = 1.0 + 0.6 * cos(atan(p.y, p.x) * 8.0 + hash1(s) * TAU);
-		add += (PAL_EMBER * 1.3 + vec3(0.4)) * exp(-rr * rr / (240.0 * aStar)) * exp(-prog * 12.0) * 2.8;
-		// rolling fire cloud thrown outward with the front — SMOOTH turbulence, never
-		// circular, never pixel squares
-		float vn = vnoise(p * 0.045 + hash1(s) * 40.0) * 0.65
-		         + vnoise(p * 0.11 - vec2(0.0, prog * 5.0) + hash1(s + 3u) * 20.0) * 0.35;
-		float cloud = smoothstep(R, R * 0.2, rr) * smoothstep(0.38, 0.78, vn + 0.30 * fade);
-		add += (PAL_EMBER * 1.6 + PAL_ACCENT * 0.6) * cloud * fade * fade * 2.4;
-		// radial debris spears
-		for (float i = 0.0; i < 9.0; i += 1.0) {
-			uint si = s + uint(i) * 29u;
-			vec2 q = rot2(hash1(si) * TAU) * p;
-			float dst = R * (0.70 + 0.40 * hash1(si + 3u));
-			add += PAL_EMBER * 2.0 * exp(-sd_seg(q, vec2(dst - 26.0 * fade, 0.0), vec2(dst, 0.0)) * 1.5) * fade;
-		}
-		// round ember sparks tumbling past the front (dots, not cells)
+		add += (PAL_EMBER * 1.1 + vec3(0.25)) * exp(-rr * rr / 300.0) * exp(-prog * 14.0) * 1.6;
+		// a handful of round embers riding the front
 		vec2 cc = floor(p / 13.0);
 		vec2 dp = (fract(p / 13.0) - vec2(hash21(cc + hash1(s) * 9.0), hash21(cc + hash1(s) * 9.0 + 7.0))) * 13.0;
-		float spark = exp(-dot(dp, dp) / 2.5) * step(0.45, hash21(cc + 3.3));
-		add += PAL_EMBER * spark * smoothstep(R * 1.15, R * 0.35, rr) * fade * 3.0;
+		float spark = exp(-dot(dp, dp) / 2.0) * step(0.72, hash21(cc + 3.3));
+		add += PAL_EMBER * spark * smoothstep(R * 1.05, R * 0.55, rr) * fade * 1.6;
 		return;
 	}
 	if (b.variant == VAR_SPARK) { // pit sink: glint + a few spark streaks
@@ -507,21 +475,18 @@ void burst(vec2 p, Body b) {
 		}
 		return;
 	}
-	float n = b.variant == VAR_BRUTE ? 9.0 : 6.0;
-	float spread = b.variant == VAR_BRUTE ? 95.0 : 60.0;
-	for (float i = 0.0; i < n; i += 1.0) {
+	// death: the machine buckles — a brief hot flash, a few embers arcing out, oily
+	// smoke. The husk (KIND_WRECK) takes over from here, so keep the hand-off QUIET.
+	float spread = (b.variant == VAR_BRUTE ? 1.5 : 1.0) * b.radius * 2.4;
+	add += (PAL_EMBER * 1.3 + vec3(0.3)) * exp(-dot(p, p) / (b.radius * b.radius * 1.2)) * exp(-prog * 8.0) * 1.8;
+	for (float i = 0.0; i < 5.0; i += 1.0) { // round ember dots flung outward, cooling
 		uint si = s + uint(i) * 13u;
-		float a = (i + hash1(si)) * (TAU / n);
-		float dst = (0.25 + 0.75 * hash1(si + 1u)) * prog * spread + b.radius * 0.3;
+		float a = hash1(si) * TAU;
+		float dst = (0.3 + 0.7 * hash1(si + 1u)) * prog * spread + b.radius * 0.3;
 		vec2 c = rot2(a) * vec2(dst, 0.0);
-		float spin = a * 3.0 + prog * (2.0 + hash1(si + 2u) * 6.0);
-		vec2 q = rot2(-spin) * (p - c);
-		float m = soft(sd_box(q, vec2(2.0 + hash1(si + 3u) * 3.0, 1.2)));
-		lay(mix(BOT_KHAKI, BOT_OLIVE, hash1(si + 5u)) * 0.55, m * fade); // painted armor chunk
-		add += PAL_EMBER * m * fade * fade * (0.5 + hash1(si + 4u));     // its cooling glow
+		add += PAL_EMBER * exp(-dot(p - c, p - c) / 2.2) * fade * (0.6 + hash1(si + 4u));
 	}
-	add += vec3(1.15, 1.0, 0.8) * exp(-dot(p, p) / (b.radius * b.radius * 1.2)) * exp(-prog * 12.0) * 2.2; // brief pop
-	lay(vec3(0.028, 0.025, 0.03), 0.35 * fade * exp(-dot(p, p) / (spread * spread * 0.4 * (0.2 + prog)))); // smoke wisp
+	lay(vec3(0.020, 0.019, 0.019), 0.5 * fade * exp(-dot(p, p) / (spread * spread * 0.5 * (0.15 + prog)))); // smoke blot
 }
 
 void main() {
@@ -545,6 +510,19 @@ void main() {
 		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
 		else                               { brute(p, b, t); }
 		if (b.life > 0.0) { base = mix(base, vec3(1.5, 0.62, 0.28), b.life * 0.85); } // hit flash: hot metal, not white
+	}
+	// caught in the truck's high-beams: machines SHINE back out of the dark
+	if (b.kind != KIND_PLAYER) {
+		vec2 relb = b.pos - pc.player;
+		vec2 fdir = vec2(cos(pc.angle), sin(pc.angle));
+		float alongb = dot(relb, fdir);
+		if (alongb > 0.0) {
+			float latb = abs(dot(relb, vec2(-fdir.y, fdir.x)));
+			float spread = 24.0 + alongb * 0.40; // matches the ground beam in city.frag
+			float beam = exp(-latb * latb / (spread * spread)) * smoothstep(760.0, 30.0, alongb);
+			base += vec3(0.9, 0.85, 0.72) * beam * 0.55 * cov;
+			add += vec3(1.0, 0.92, 0.75) * beam * 0.18 * cov;
+		}
 	}
 	// fake-3D occlusion: bodies live ON THE GROUND — march the same city silhouettes
 	// city.frag draws, and if a building covers this pixel the building is in front (a

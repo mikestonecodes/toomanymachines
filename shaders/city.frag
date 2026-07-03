@@ -320,8 +320,6 @@ vec3 ground_col(vec2 w, vec2 s) {
 				vec2 rp = tw.pos + vec2(cos(angE), sin(angE)) * dw;
 				float lat2 = dot(w - rp, w - rp);
 				col += PAL_EMBER * exp(-lat2 / 1600.0) * 0.25 * envE * burstE * (0.5 + dustM);
-				float strobe = 0.5 + 0.9 * hash1(uint(pc.time * 34.0) * 13u + TURRET_LO + ti);
-				col += (PAL_EMBER * 1.4 + vec3(0.3)) * exp(-d2 / 9000.0) * 0.5 * envE * burstE * strobe;
 			}
 		} else if (phase < duty) {
 			float env = smoothstep(0.0, 0.03, phase) * smoothstep(duty, duty - 0.04, phase);
@@ -374,11 +372,22 @@ void main() {
 		col = ground_col(g0, s);
 	}
 
-	// the ship's light on the ground: hover underglow, muzzle strobe, the laser's burn line
+	// the truck's light on the ground: underglow, muzzle strobe, the laser's burn line —
+	// and the BIG HEADLIGHTS thrown far down the facing, glittering off the wet grit so
+	// everything they touch SHINES
 	{
 		vec2 rel = g0 - pc.player;
 		float r2 = dot(rel, rel);
 		float onGround = tHit >= 0.0 ? 0.15 : 1.0;
+		vec2 fdir = vec2(cos(pc.angle), sin(pc.angle));
+		float along = dot(rel, fdir);
+		if (along > 0.0) { // the high-beams thrown far down the facing — smooth, no speckle
+			float lat = abs(dot(rel, vec2(-fdir.y, fdir.x)));
+			float spread = 24.0 + along * 0.40; // widening high-beam
+			float beam = exp(-lat * lat / (spread * spread)) * smoothstep(760.0, 30.0, along);
+			col += vec3(1.0, 0.92, 0.75) * beam * 0.34 * onGround;
+			col += vec3(1.0, 0.92, 0.75) * beam * 0.06; // spill catches facades too
+		}
 		col += PAL_EMBER * exp(-r2 / 5200.0) * (0.30 + 0.06 * sin(pc.time * 9.0)) * onGround;
 		col += PAL_ACCENT * pc.muzzle * exp(-r2 / 12000.0) * 0.5 * onGround;
 		if (pc.laser > 0.05) {
@@ -386,7 +395,7 @@ void main() {
 			float ol = max(length(off), 0.001);
 			vec2 ad = off / ol;
 			float bd = sd_seg(g0, pc.player + ad * 40.0, pc.player + ad * (40.0 + LASER_LEN));
-			col += PAL_EMBER * exp(-bd * bd / 14000.0) * 0.5 * pc.laser * onGround;
+			col += PAL_EMBER * exp(-bd * bd / 14000.0) * 0.45 * pc.laser * onGround;
 		}
 	}
 
