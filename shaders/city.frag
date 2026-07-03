@@ -330,6 +330,14 @@ vec3 ground_col(vec2 w, vec2 s) {
 		col += vec3(0.135, 0.130, 0.122) * (1.0 - smoothstep(1.2, 3.0, sd)) * dash * roadMix;
 	}
 
+	{ // rubber on the road: the persistent skid decal grid the CPU stamps (Res.Skid)
+		uint sx2 = uint(clamp(w.x / 4.0, 0.0, float(SKID_RES) - 1.0));
+		uint sy2 = uint(clamp(w.y / 4.0, 0.0, float(SKID_RES) - 1.0));
+		uint sidx = sy2 * SKID_RES + sx2;
+		float rub = float((SKID[sidx >> 2u] >> ((sidx & 3u) * 8u)) & 0xFFu) / 255.0;
+		col *= 1.0 - rub * 0.55;
+	}
+
 	// contact shadow hugging every block — camera-independent, anchors the footprints
 	col *= 1.0 - smoothstep(-90.0, -2.0, pen) * 0.5 * step(pen, 0.0);
 
@@ -362,7 +370,7 @@ vec3 ground_col(vec2 w, vec2 s) {
 		} else if (phase < duty) {
 			float env = smoothstep(0.0, 0.03, phase) * smoothstep(duty, duty - 0.04, phase);
 			vec2 outw = tw.pos - ctr; // always OUTWARD, away from the city
-			float ang = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1((TURRET_LO + ti) * 913u) * TAU) * 0.55;
+			float ang = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1((TURRET_LO + ti) * 913u) * TAU) * 1.1;
 			vec2 ad = vec2(cos(ang), sin(ang));
 			float bd = sd_seg(w, tw.pos, tw.pos + ad * TWR_LEN);
 			col += PAL_EMBER * exp(-bd * bd / 9000.0) * 0.35 * env * (0.5 + dustM);

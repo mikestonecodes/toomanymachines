@@ -159,6 +159,26 @@ void ship(vec2 p, Body b) {
 			add += (PAL_EMBER * 1.6 + vec3(0.4)) * exp(-fl * fl / 6.0) * pc.boost;
 		}
 	}
+	// drift SMOKE + SPARKS off the rear wheels while the tail is loose — big and readable
+	float slip = clamp(abs(lean) * 1.5, 0.0, 1.0);
+	if (slip > 0.2) {
+		for (float s = -1.0; s <= 1.0; s += 2.0) {
+			vec2 wp = vec2(-13.5, s * 12.5);
+			for (float i = 0.0; i < 4.0; i += 1.0) { // fat tire smoke billowing behind
+				float ph3 = fract(pc.time * 1.6 + i * 0.25 + s * 0.17);
+				vec2 sp3 = wp + vec2(-8.0 - ph3 * 40.0, s * (2.0 + ph3 * 9.0) * sin(pc.time * 2.6 + i));
+				lay(vec3(0.21, 0.205, 0.20), slip * (1.0 - ph3) * 0.6 * soft(length(p - sp3) - (4.0 + ph3 * 13.0)));
+			}
+			float spk = hash21(floor((p - wp) / 3.0) + floor(pc.time * 30.0) * vec2(3.0, 7.0) + s); // grinding sparks
+			add += (PAL_EMBER * 1.3 + vec3(0.4)) * step(0.962, spk) * slip * 3.0 * step(length(p - wp), 22.0);
+			for (float i = 0.0; i < 2.0; i += 1.0) { // spark STREAKS fanning back off the patch
+				uint si2 = uint(pc.time * 25.0) * 13u + uint(i) * 7u + uint(s + 1.0);
+				vec2 dir2 = normalize(vec2(-1.0, s * (0.2 + 0.6 * hash1(si2))));
+				float sd2 = sd_seg(p - wp, vec2(0.0), dir2 * (12.0 + 16.0 * hash1(si2 + 3u)));
+				add += (PAL_EMBER * 1.5 + vec3(0.4)) * exp(-sd2 * sd2 * 0.8) * slip * hash1(si2 + 5u) * 1.6;
+			}
+		}
+	}
 	// turret: mount + barrel toward the mouse, with recoil + muzzle flash
 	float ta = atan(pc.aim.y - b.pos.y, pc.aim.x - b.pos.x) - b.angle;
 	vec2 td = vec2(cos(ta), sin(ta));
@@ -311,7 +331,7 @@ void turret(vec2 p, Body b) {
 	if (mg) { angW = hash1(v_id * 913u) * TAU + pc.time * 2.6; } // gun: spinning sweep
 	else { // perimeter laser: always OUTWARD, sweeping a cone away from the city
 		vec2 outw = b.pos - vec2(WORLD * 0.5);
-		angW = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1(v_id * 913u) * TAU) * 0.55;
+		angW = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1(v_id * 913u) * TAU) * 1.1;
 	}
 	vec2 bd2 = rot2(angW - b.angle) * vec2(1.0, 0.0); // fire dir, body frame
 	if (mg) { // ── MACHINE GUN: real BULLETS. Each round flies straight at the barrel
@@ -389,7 +409,7 @@ void helper(vec2 p, Body b) {
 		Body tw2 = BODIES[b.gen - 1u];
 		alt = clamp(distance(b.pos, tw2.pos) / 160.0, 0.18, 1.0); // swooping down to grab
 	}
-	p /= 0.50 + 0.75 * alt; // ground pickup ≈ half the cruise size
+	p /= 0.55 + 0.55 * alt; // cruise reads modest (1.10×); it shrinks well down for ground pickups (0.65×)
 	float bob = sin(pc.time * 3.1 + float(v_id)) * 1.2;
 	lay(vec3(0.012), 0.4 * soft(length(p - vec2(5.0, 8.0 + bob + alt * 9.0)) - 9.0)); // shadow drifts with height
 	p.y -= bob * 0.4;
@@ -426,24 +446,28 @@ void wreck(vec2 p, Body b) {
 		vec2 tip = rot2(aa) * vec2(r * (1.5 + 0.5 * hash1(s + 9u + uint(i))), 0.0);
 		lay(vec3(0.030, 0.029, 0.028), soft(sd_seg(p, vec2(0.0), tip) - r * 0.10) * fade);
 	}
-	// buckled hull: bare charcoal plates, every trace of paint burnt off
-	lay(vec3(0.048, 0.046, 0.044), soft(sd_box(rot2(0.4) * p, vec2(r * 0.62, r * 0.46)) - r * 0.10) * fade);
-	lay(vec3(0.036, 0.035, 0.034), soft(sd_box(p - vec2(r * 0.2, r * 0.1), vec2(r * 0.32, r * 0.22)) - r * 0.05) * fade);
-	// heavy pale ash dusting settling over the top — DEAD reads pale and flat, and a
-	// wreck emits NO light at all (light is the language of the living)
+	// buckled hull: bare cold-steel plates with the faintest BLUE cast — dead metal
+	lay(vec3(0.046, 0.049, 0.058), soft(sd_box(rot2(0.4) * p, vec2(r * 0.62, r * 0.46)) - r * 0.10) * fade);
+	lay(vec3(0.034, 0.037, 0.044), soft(sd_box(p - vec2(r * 0.2, r * 0.1), vec2(r * 0.32, r * 0.22)) - r * 0.05) * fade);
+	// pale ash dusting settling over the top — DEAD reads pale, flat, cool
 	float ash = hash21(floor(p / 4.0) + float(v_id));
-	base = mix(base, vec3(0.105, 0.102, 0.098), step(0.62, ash) * 0.65 * cov);
+	base = mix(base, vec3(0.104, 0.107, 0.115), step(0.62, ash) * 0.65 * cov);
+	// metal SPARKLE: tiny sparse glints with the faintest cool cast — extremely subtle
+	vec2 gc2 = floor(p / 6.0);
+	vec2 gd2 = (fract(p / 6.0) - vec2(hash21(gc2 + float(v_id)), hash21(gc2 + float(v_id) + 7.0))) * 6.0;
+	float glint = exp(-dot(gd2, gd2) / 0.8) * step(0.86, hash21(gc2 + 3.1));
+	add += vec3(0.26, 0.29, 0.34) * glint * fade * cov * 0.45;
 	base *= 0.4 + 0.6 * fade; // crumbles away if left to rot
-	if (b.variant != 1u) { cov *= 0.30; } // on the ground: a near-transparent ghost, very subtle
+	if (b.variant != 1u) { cov *= 0.55; } // on the ground: faded but clearly THERE
 }
 
 void bullet(vec2 p) {
-	// a compact TRACER: white-hot shell, tight ember sheath, a short tapering tail —
-	// small and sharp, no orb, no blob
-	float d = sd_seg(p, vec2(0.0), vec2(-18.0, 0.0));
-	float taper = clamp(1.0 + p.x / 18.0, 0.0, 1.0); // 1 at the head → 0 at the tail tip
-	add += PAL_EMBER * exp(-d * d / (1.0 + 5.0 * taper)) * (0.25 + 0.75 * taper);
-	add += vec3(1.4, 1.25, 1.0) * 1.6 * exp(-dot(p, p) / 6.0); // the shell itself
+	// a SPRITE round, zero bloom feed — the bloom pass was what smeared every design
+	// into a blob. Dark rim → hot shell → solid white core: pure crisp base color.
+	float d = sd_seg(p, vec2(5.0, 0.0), vec2(-9.0, 0.0));
+	lay(vec3(0.02), soft(d - 8.0));             // dark rim: separates it from the ground
+	lay(vec3(1.05, 0.38, 0.12), soft(d - 6.0)); // hot shell
+	lay(vec3(1.5, 1.45, 1.35), soft(d - 3.4));  // solid white core
 }
 
 void burst(vec2 p, Body b) {
@@ -462,14 +486,35 @@ void burst(vec2 p, Body b) {
 		add += (PAL_EMBER * 1.3 + vec3(0.4)) * exp(-rr * rr / 700.0) * flash;
 		return;
 	}
-	if (b.variant == VAR_SPARK) { // pit sink: glint + a few spark streaks
-		add += vec3(1.1, 0.95, 0.7) * exp(-dot(p, p) / 9.0) * fade * 1.6;
-		for (float i = 0.0; i < 3.0; i += 1.0) {
-			uint si = s + uint(i);
-			vec2 q = rot2(hash1(si) * TAU) * p;
-			float dst = 3.0 + prog * (10.0 + hash1(si + 7u) * 12.0);
-			add += PAL_EMBER * 1.2 * exp(-sd_seg(q, vec2(dst - 3.0, 0.0), vec2(dst, 0.0)) * 2.0) * fade;
+	if (b.variant == VAR_SPARK) { // ── PIT SWALLOW: the furnace takes its due
+		vec2 toC = normalize(vec2(WORLD * 0.5) - b.pos + vec2(0.0001));
+		float ang0 = atan(toC.y, toC.x);
+		// 1. the husk CORKSCREWS down the throat — spinning, sliding toward the hole,
+		//    shrinking to nothing, rim-lit from the furnace below
+		float sink = smoothstep(0.0, 0.6, prog);
+		float hscale = max(1.0 - 0.9 * sink, 0.12);
+		vec2 hq = rot2(prog * 11.0) * (p - toC * prog * 34.0) / hscale;
+		float husk = soft(sd_box(hq, vec2(b.radius * 0.62, b.radius * 0.45)) * hscale - 2.0);
+		lay(vec3(0.05, 0.045, 0.042), husk * (1.0 - sink));
+		add += PAL_EMBER * husk * sink * (1.0 - sink) * 2.2; // glowing as it goes under
+		// 2. the SPLASH: molten gouts erupt off the impact, arc, and rain back
+		for (float i = 0.0; i < 9.0; i += 1.0) {
+			uint si = s + uint(i) * 23u;
+			float a = ang0 + 3.14159 + (hash1(si) - 0.5) * 2.8; // spraying back out of the hole
+			float v0 = 50.0 + 130.0 * hash1(si + 2u);
+			float dst = v0 * prog * (1.0 - 0.55 * prog);         // decelerating arc
+			float lift = sin(min(prog * 2.6, 3.14159)) * (12.0 + 22.0 * hash1(si + 4u));
+			vec2 c = rot2(a) * vec2(dst, 0.0) - vec2(0.0, lift); // "up" = up-screen
+			float sz = (2.0 + 2.6 * hash1(si + 5u)) * (1.0 - prog * 0.55);
+			float dd = dot(p - c, p - c);
+			add += (PAL_EMBER * 1.6 + vec3(0.25)) * exp(-dd / (sz * sz)) * fade * 1.7; // the gout
+			add += PAL_ACCENT * exp(-dd / (sz * sz * 7.0)) * fade * 0.4;               // its glow
 		}
+		// 3. the furnace BELCHES: a tongue of light licking up out of the hole
+		float belch = exp(-prog * 4.5) * smoothstep(0.0, 0.08, prog);
+		vec2 bq = p - toC * 14.0;
+		add += (PAL_EMBER * 1.8 + vec3(0.45)) * exp(-bq.x * bq.x / 110.0)
+		     * smoothstep(14.0, -52.0, bq.y) * smoothstep(-70.0, -30.0, bq.y) * belch * 1.6;
 		return;
 	}
 	// death: the machine buckles — a brief hot flash, a few embers arcing out, oily
@@ -498,19 +543,19 @@ void main() {
 	else if (b.kind == KIND_HELPER) { helper(p, b); }
 	else if (b.kind == KIND_DYING && (b.variant == VAR_BOOM || b.variant == VAR_SPARK)) { burst(p, b); }
 	else if (b.kind == KIND_DYING && b.hp < -50.0) {
-		// blast-stamped (the exact circle): the bot starts NORMAL, animates to full
-		// WHITE, then dies
+		// blast-stamped (the exact circle): a slow smolder that SNAPS red, then the
+		// body slumps and COOLS into the husk — no hard swap at the end
 		float lf = clamp(b.life / 0.4, 0.0, 1.0); // 1 → 0 over the stamp death
+		float pr = 1.0 - lf;
+		p *= 1.0 + smoothstep(0.75, 1.0, pr) * 0.30; // it slumps down at the end
 		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
 		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
 		else                               { brute(p, b, t); }
-		// a faint pale build-up, then one brief FLASH at the very end — the bot is gone
-		// at the flash's peak, never sitting fully white
-		float pre = smoothstep(1.0, 0.3, lf) * 0.18;  // subtle warning tint
-		float flash = smoothstep(0.30, 0.10, lf);     // the end flash (~0.08s)
-		base = mix(base, vec3(1.0), min(pre + flash, 1.0) * 0.95);
-		add *= 1.0 - flash;
-		// no fade — the flash holds to the last frame and MASKS the swap to the husk
+		float flash = pr * pr * (1.0 - smoothstep(0.88, 1.0, pr) * 0.8); // ease-in, then it cools
+		base = mix(base, vec3(1.35, 0.40, 0.14), flash * 0.95);          // RED-hot, not white
+		base *= 1.0 - smoothstep(0.8, 1.0, pr) * 0.6;                    // charring toward the husk
+		add *= 1.0 - pr;
+		add += PAL_ACCENT * flash * 0.5 * cov; // and it glows as it goes
 	}
 	else if (b.kind == KIND_DYING) {
 		// the machine dies in place and POPS: an instant puff, a HARD white-hot

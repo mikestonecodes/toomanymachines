@@ -27,7 +27,7 @@ void main() {
 	if (b.kind == KIND_PLAYER) { // ship + turret flash + boost flame; the laser needs the whole reach
 		ext = pc.laser > 0.02 ? LASER_LEN + 120.0 : 120.0;
 	}
-	else if (b.kind == KIND_BULLET) { ext = 46.0; } // the fat plasma orb + halo
+	else if (b.kind == KIND_BULLET) { ext = 54.0; } // the comet head + its flame trail
 	else if (b.kind == KIND_TURRET) { // defense tower; its fire needs the whole reach while shooting
 		bool mg = distance(b.pos, vec2(WORLD * 0.5)) < pc.city_r;
 		float duty = mg ? 0.70 : 0.30;
@@ -43,8 +43,9 @@ void main() {
 	else if (b.kind == KIND_DYING) {
 		float total = b.variant == VAR_SPARK ? SPARK_T : (b.variant == VAR_BOOM ? BOOM_T : DEATH_T);
 		float prog = 1.0 - clamp(b.life / total, 0.0, 1.0);
-		// dying mechs still draw their whole body + legs (briefly puffed up), + embers
-		ext = b.variant == VAR_SPARK ? b.radius + 26.0 * prog + 8.0 : b.radius * 3.0 + 60.0 * prog;
+		// dying mechs still draw their whole body + legs (briefly puffed up), + embers;
+		// the pit swallow needs room for its splash arcs + the furnace belch
+		ext = b.variant == VAR_SPARK ? b.radius + 10.0 + 115.0 * prog : b.radius * 3.0 + 60.0 * prog;
 		if (b.variant == VAR_BOOM) { ext = 60.0; } // just the brief impact flash
 		if (b.variant == VAR_BRUTE) { ext *= 1.5; }
 	}

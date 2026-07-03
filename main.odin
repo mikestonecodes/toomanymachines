@@ -33,6 +33,7 @@ main :: proc() {
 	if gpuav_mode || shot_mode { flags += {.HIDDEN} }
 	window = SDL.CreateWindow("toomanymachines", 960, 600, flags)
 	if window == nil { fmt.panicf("CreateWindow: %s", SDL.GetError()) }
+	_ = SDL.HideCursor() // the game draws its own reticle (composite.frag)
 	update_size()
 
 	vk_init()
@@ -58,7 +59,8 @@ main :: proc() {
 				case .S:      input.down = true
 				case .A:      input.left = true
 				case .D:      input.right = true
-				case .SPACE, .LSHIFT: input.boost = true
+				case .LSHIFT: input.boost = true
+				case .SPACE:  input.ebrake = true
 				}
 			case .KEY_UP:
 				#partial switch ev.key.scancode {
@@ -66,7 +68,8 @@ main :: proc() {
 				case .S: input.down = false
 				case .A: input.left = false
 				case .D: input.right = false
-				case .SPACE, .LSHIFT: input.boost = false
+				case .LSHIFT: input.boost = false
+				case .SPACE:  input.ebrake = false
 				}
 			}
 		}

@@ -30,6 +30,7 @@ void main() {
 	// turbulent heat shimmer filling the blast bubble — split chromatically.
 	vec2 duv = vec2(0.0);
 	float shimmer = 0.0;
+	float heat = 0.0;
 	uint nb = min(STATS[2], 8u);
 	for (uint i = 0u; i < nb; i++) {
 		vec2 bp = vec2(uintBitsToFloat(STATS[3u + i * 3u]), uintBitsToFloat(STATS[4u + i * 3u]));
@@ -43,19 +44,21 @@ void main() {
 		float Rpx = mix(10.0, BOOM_R, pow(prog, 0.6)) / ZOOM;
 		float rag = 1.0 + 0.14 * sin(ang * 7.0 + bp.x * 0.13) + 0.10 * sin(ang * 13.0 - bp.y * 0.17 + prog * 6.0);
 		float x = d - Rpx * rag;
-		duv += dir * exp(-x * x / 700.0) * 22.0 * fade;                    // compression shove out
-		duv -= dir * exp(-pow(x + 30.0, 2.0) / 2400.0) * 10.0 * fade;      // rarefaction pull back
+		duv += dir * exp(-x * x / 700.0) * 26.0 * fade;                    // compression shove out
+		duv -= dir * exp(-pow(x + 30.0, 2.0) / 2400.0) * 12.0 * fade;      // rarefaction pull back
 		float inside = smoothstep(0.0, -Rpx * 0.7, x);
 		duv += vec2(sin(rel.y * 0.13 + pc.time * 33.0 + bp.x),
 		            sin(rel.x * 0.11 - pc.time * 29.0 + bp.y)) * inside * 3.0 * fade;
 		shimmer += inside * fade;
+		heat += exp(-x * x / 1400.0) * fade; // the front runs HOT
 	}
 	vec3 col;
 	if (dot(duv, duv) > 0.0001) {
 		col.r = texture(TEXS[IMG_SCENE], uv - duv * 1.15 / pc.screen).r;
 		col.g = texture(TEXS[IMG_SCENE], uv - duv / pc.screen).g;
 		col.b = texture(TEXS[IMG_SCENE], uv - duv * 0.85 / pc.screen).b;
-		col *= 1.0 + shimmer * 0.08; // superheated air glows faintly
+		col *= 1.0 + shimmer * 0.08;                                  // superheated air glows faintly
+		col *= vec3(1.0 + heat * 0.55, 1.0 + heat * 0.10, 1.0);       // the wavefront tints RED-hot
 	} else {
 		col = texture(TEXS[IMG_SCENE], uv).rgb;
 	}
@@ -86,6 +89,17 @@ void main() {
 	float rn = length((uv - 0.5) * vec2(aspect, 1.0)) / 0.5;
 	float vig = pow(smoothstep(1.35, 0.55, rn), 1.2);
 	col *= 0.45 + 0.55 * vig; // heavy — the frame lives in the dark
+
+	{ // the RETICLE: ring + cross ticks at the aim point (the OS cursor is hidden)
+		vec2 cp = (pc.aim - pc.cam) / ZOOM + pc.screen * 0.5;
+		vec2 rp = gl_FragCoord.xy - cp;
+		float rd = length(rp);
+		float ring = 1.0 - smoothstep(1.1, 2.0, abs(rd - 9.0));
+		float ticks = (1.0 - smoothstep(0.7, 1.5, min(abs(rp.x), abs(rp.y)))) * step(rd, 15.0) * step(4.5, rd);
+		float dotc = 1.0 - smoothstep(0.5, 1.4, rd);
+		float ret = max(max(ring, ticks), dotc);
+		col = mix(col, vec3(1.0, 0.32, 0.12), ret * 0.9);
+	}
 
 	// film grain rides on top of everything, vignette included — luminance-weighted so
 	// the dark battlefield grains hard while the lights stay clean

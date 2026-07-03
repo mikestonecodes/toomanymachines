@@ -3,6 +3,7 @@ package main
 import "core:math"
 import "core:math/linalg"
 import "core:math/rand"
+import "core:mem"
 
 // CPU side of the game: the hover ship (drifty thrust-vector physics + boost + the
 // giant tow laser), firing, the chase camera, and the city RADIUS. The city itself is
@@ -50,7 +51,6 @@ BLDG_EDGE   :: STREET_HW + 14    // building facades rise at this distance from 
 PLAZA_P     :: f32(0.14)         // chance a block hosts a plaza — almost everything is BUILT
 PLAZA_R     :: f32(215)          // the plaza: a CIRCLE carved out of its block, ringed by houses
 SPAWN_MIN_D :: f32(680)  // spawns avoid appearing this close to the ship
-AGGRO_D     :: f32(560)  // bots divert from their invasion onto the ship inside this range
 WRECK_T     :: f32(90)   // a wreck rots away after this long if not fed to the pit
 LASER_LEN   :: f32(1400) // the ship's giant laser: reach,
 LASER_W     :: f32(30)   //   half-width,
@@ -67,7 +67,7 @@ R_HELPER    :: f32(22) // big enough to READ as the salvage fleet
 BOOM_R      :: f32(170)  // every bullet detonates: shockwave reach
 BOOM_T      :: f32(0.65) //   and expansion time — slow enough to READ the front hit bots one by one
 DEATH_T     :: f32(0.5)  // pop → collapse → GONE
-SPARK_T     :: f32(0.22)
+SPARK_T     :: f32(0.55) // the pit-swallow show: corkscrew + splash + furnace belch
 SPD_SPIDER  :: f32(130)
 SPD_SKITTER :: f32(235)
 SPD_BRUTE   :: f32(80)
@@ -92,7 +92,7 @@ SHIP_GRIP      :: f32(9.0)  // 1/s lateral bleed — HIGH: corners on rails, no 
 SHIP_TURN      :: f32(3.4)  // rad/s max yaw
 BULLET_SPEED   :: f32(1050)
 BULLET_RADIUS  :: f32(11)
-FIRE_INTERVAL  :: f32(0.42) // SLOW and heavy — each shell is an event, not a stream
+FIRE_INTERVAL  :: f32(0.24) // heavy but generous — a steady thump of shells
 CITY_R0        :: f32(5200) // starting city radius — BIG for now, to test the city itself
 CITY_RMAX      :: f32(8200) // sprawl limit (grid edge is at 9400)
 DEPOSIT_GROW   :: f32(60)   // city radius gained per corpse fed to the pit
@@ -113,12 +113,15 @@ barrel:      f32 // the two barrels alternate: ±1
 run_seed:      u32 // per-run salt for the warband cluster hash
 city_r:        f32 // current city radius — grows as the pit is fed (pushed to the GPU)
 deposits_seen: u32 // last pit-counter value read from the Stats buffer
-input:       struct { up, down, left, right, fire, boost, laser: bool, mouse: [2]f32 }
+input:       struct { up, down, left, right, fire, boost, ebrake, laser: bool, mouse: [2]f32 }
 
 // Pointers into the mapped GPU buffers.
 body_at :: proc(i: int) -> ^Body { return (^Body)(uintptr(buf_map[.Body]) + uintptr(i * size_of(Body))) }
 stats_at :: proc(i: int) -> ^u32 { return (^u32)(uintptr(buf_map[.Stats]) + uintptr(i * 4)) }
 city_at :: proc(i: int) -> ^u32 { return (^u32)(uintptr(buf_map[.City]) + uintptr(i * 4)) }
+skid_at :: proc(i: int) -> ^u8 { return (^u8)(uintptr(buf_map[.Skid]) + uintptr(i)) }
+
+skid_prev: [2][2]f32 // last frame's rear-wheel positions (skid stamping)
 
 // ── the curved street layout ──────────────────────────────────────────────────
 // Streets are analytic: clean ring roads every RING_SP px around the pit + spiral
@@ -205,6 +208,8 @@ game_init :: proc() {
 	deposits_seen = 0
 	for i in 0 ..< 64 { stats_at(i)^ = 0 }
 	city_r = CITY_R0
+	mem.zero(buf_map[.Skid], int(SKID_RES * SKID_RES)) // a fresh road: no rubber yet
+	for wi in 0 ..< 2 { skid_prev[wi] = car_pos }
 
 	// THE block layout, generated once here and read by BOTH sides — physics.comp and
 	// city.frag index this same buffer (CITY), the CPU collides off the same mapped
@@ -234,7 +239,7 @@ game_init :: proc() {
 		body_at(TURRET_LO + n^)^ = {pos = pos, radius = R_TURRET, angle = a, hp = 100, kind = KIND_TURRET}
 		n^ += 1
 	}
-	r_g := city_r + 420
+	r_g := city_r + 120 // right on the city's shoulder — the wall of lasers guards the edge
 	for j in 0 ..< int(SPOKES) { // the gates
 		a := f32(j) * f32(math.TAU) / SPOKES + SPIRAL * r_g
 		base := CENTER + [2]f32{math.cos(a), math.sin(a)} * r_g
@@ -331,15 +336,20 @@ game_update :: proc(dt: f32) {
 	boosting := input.boost && throttle > 0
 
 	sp := linalg.length(car_vel)
-	car_angle += steer * SHIP_TURN * dt * (0.55 + 0.45 * clamp(sp / 420, 0, 1))
+	// e-brake: the rear breaks LOOSE — sharper steering, collapsed lateral grip, hard
+	// speed bleed: yank the wheel + Space = handbrake drift
+	turn := f32(SHIP_TURN) * (input.ebrake ? 1.45 : 1.0)
+	grip := input.ebrake ? f32(1.1) : f32(SHIP_GRIP)
+	car_angle += steer * turn * dt * (0.55 + 0.45 * clamp(sp / 420, 0, 1))
 	fwd := [2]f32{math.cos(car_angle), math.sin(car_angle)}
 	accel := throttle > 0 ? f32(SHIP_ACCEL) : f32(SHIP_REV)
 	if boosting { accel *= 1.9 }
 	car_vel += fwd * throttle * accel * dt
+	if input.ebrake { car_vel *= math.exp(-1.9 * dt) }
 	vf := linalg.dot(car_vel, fwd)
 	side := car_vel - fwd * vf
 	vf *= math.exp(-SHIP_DRAG * dt)
-	side *= math.exp(-SHIP_GRIP * dt)
+	side *= math.exp(-grip * dt)
 	car_vel = fwd * vf + side
 	maxsp := boosting ? f32(SHIP_BOOST_MAX) : f32(SHIP_MAX)
 	if sp = linalg.length(car_vel); sp > maxsp {
@@ -351,12 +361,46 @@ game_update :: proc(dt: f32) {
 		if car_pos[a] < CAR_RADIUS + 4 { car_pos[a] = CAR_RADIUS + 4; car_vel[a] = max(car_vel[a], 0) }
 		if car_pos[a] > WORLD - CAR_RADIUS - 4 { car_pos[a] = WORLD - CAR_RADIUS - 4; car_vel[a] = min(car_vel[a], 0) }
 	}
+	// the horde is PHYSICAL: bot contacts accumulate a shove on the GPU (STATS[30/31],
+	// summed int px/s²) — apply it to the car and clear for the next frame
+	shx := transmute(i32)stats_at(30)^
+	shy := transmute(i32)stats_at(31)^
+	if shx != 0 || shy != 0 {
+		acc := [2]f32{f32(shx), f32(shy)}
+		if l := linalg.length(acc); l > 2600 { acc *= 2600 / l }
+		car_vel += acc * dt
+		stats_at(30)^ = 0
+		stats_at(31)^ = 0
+	}
 	throttle_v += (abs(throttle) - throttle_v) * (1 - math.exp(-8 * dt))
 	boost_v += ((boosting ? f32(1) : 0) - boost_v) * (1 - math.exp(-7 * dt))
 	laser_v += ((input.laser ? f32(1) : 0) - laser_v) * (1 - math.exp(-9 * dt))
 	perp := [2]f32{-fwd.y, fwd.x}
 	lean := clamp(linalg.dot(car_vel, perp) / 520, -1, 1) // drift slip → banking, read by body.frag
 	body_at(0)^ = {pos = car_pos, vel = car_vel, radius = CAR_RADIUS, life = lean, angle = car_angle, kind = KIND_PLAYER}
+
+	// ── skid marks: while the tail is loose, stamp rubber into the decal grid — REAL
+	// persistent texture on the ground (city.frag samples it)
+	slip := clamp(abs(lean) * 1.5, 0, 1)
+	for wi in 0 ..< 2 {
+		s := f32(wi) * 2 - 1
+		wheel := car_pos + [2]f32{
+			math.cos(car_angle) * -13.5 - math.sin(car_angle) * (s * 12.5),
+			math.sin(car_angle) * -13.5 + math.cos(car_angle) * (s * 12.5),
+		}
+		if slip > 0.3 {
+			d := wheel - skid_prev[wi]
+			steps := int(linalg.length(d) / 3) + 1
+			for k in 0 ..= steps {
+				pt := skid_prev[wi] + d * (f32(k) / f32(steps))
+				tx := int(clamp(pt.x / 4, 0, f32(SKID_RES - 1)))
+				ty := int(clamp(pt.y / 4, 0, f32(SKID_RES - 1)))
+				b := skid_at(ty * int(SKID_RES) + tx)
+				b^ = max(b^, u8(110 + slip * 110))
+			}
+		}
+		skid_prev[wi] = wheel
+	}
 
 	// ── chase camera: lead toward the aim and along the velocity, exp-smoothed.
 	lead := aim_world - car_pos

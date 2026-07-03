@@ -290,24 +290,13 @@ void main() {
 	}
 	if (b.kind != KIND_ENEMY) { return; } // player is CPU-driven
 
-	// ── enemy: INVADE the city — march to a hashed ring×spoke crossing and hold it.
-	// The buildings are solid, so the desired direction gets projected along the
-	// facades and the streams FUNNEL through the avenue gates (where the pylons wait).
+	// ── enemy: INVADE — the horde has ONE objective, the CENTER (the pit). It does
+	// not care about the car: it only dodges the charge, and contact shoves BOTH ways.
+	// The buildings are solid, so the streams FUNNEL down the avenues toward the core.
 	vec2 ctr = vec2(WORLD * 0.5);
 	vec2 toP = pc.player - b.pos;
 	float pd = length(toP);
-	bool aggro = pd < AGGRO_D;
-	vec2 tgt = pc.player;
-	if (!aggro) { // objective: a street crossing on the OUTER rings — the horde masses at
-		// the frontier and only pushes downtown behind the player's aggro trail
-		uint s2 = id * 97u + b.gen * 57u;
-		float maxk = max(floor(pc.city_r / RING_SP), 1.0);
-		float rt = max(maxk - floor(hash1(s2 + 1u) * 3.0), 1.0) * RING_SP;
-		float ns = rt > SPOKE2_R ? SPOKES : SPOKES * 0.5; // inner crossings sit on the 5 main avenues
-		float at = floor(hash1(s2 + 2u) * ns) * (TAU / ns) + SPIRAL * rt;
-		tgt = ctr + vec2(cos(at), sin(at)) * rt;
-	}
-	vec2 to = tgt - b.pos;
+	vec2 to = ctr - b.pos;
 	float td = length(to);
 	vec2 dir = td > 0.001 ? to / td : vec2(1.0, 0.0);
 	float ph = hash1(id * 71u) * TAU;
@@ -317,7 +306,7 @@ void main() {
 		float lunge = max(sin(pc.time * 2.3 + ph), 0.0);
 		spd = SPD_SKITTER * (0.55 + 1.1 * lunge * lunge);
 	}
-	if (!aggro && td < 90.0) { dir = vec2(-dir.y, dir.x); spd *= 0.5; } // arrived: circle + occupy the crossing
+	if (td < PIT_R + 130.0) { dir = vec2(-dir.y, dir.x); spd *= 0.6; } // arrived: mass at the rim
 	vec2 desired = dir * spd;
 	desired += vec2(-dir.y, dir.x) * sin(pc.time * 1.7 + ph) * spd * 0.35; // weave, don't beeline
 	float maxhp = b.variant == VAR_SPIDER ? HP_SPIDER : (b.variant == VAR_SKITTER ? HP_SKITTER : HP_BRUTE);
@@ -374,7 +363,7 @@ void main() {
 		if (mg) { ang = hash1((TURRET_LO + ti) * 913u) * TAU + te * 2.6; }
 		else { // perimeter laser: always OUTWARD, sweeping a cone away from the city
 			vec2 outw = tw.pos - ctr;
-			ang = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1((TURRET_LO + ti) * 913u) * TAU) * 0.55;
+			ang = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1((TURRET_LO + ti) * 913u) * TAU) * 1.1;
 		}
 		vec2 ad = vec2(cos(ang), sin(ang));
 		float along = mg ? dw                                   // the round at my range
@@ -449,17 +438,22 @@ void main() {
 							// the whiten ramp-up, so full white lands exactly as the wave,
 							// the rim-light and the distortion pass through this bot
 							float tHit = pow(clamp((d - 10.0) / (BOOM_R - 10.0), 0.0, 1.0), 1.6666667) * BOOM_T;
-							b.life = 0.02 + max(tHit - 0.24, 0.0) * 6.0; // life decays at 6/s
+							b.life = 0.02 + max(tHit - 0.08, 0.0) * 6.0; // life decays at 6/s; the
+							// red flash fires instantly on death, so barely lead the front
 							b.vel += (off / d) * 320.0;
 						}
 					} else if (o.kind == KIND_ENEMY || o.kind == KIND_PLAYER || o.kind == KIND_TURRET) {
 						float md = b.radius + o.radius;
 						if (d < md && d > 0.001) {
 							if (o.kind == KIND_PLAYER) {
-								// the ship is a plow: full resolve + momentum + a radial kick
+								// the car is a plow: full resolve + momentum + a radial kick
 								b.pos += (off / d) * (md - d);
 								b.vel += o.vel * 0.9 + (off / d) * 140.0;
 								b.angle = atan(off.y, off.x);
+								// ...and the car FEELS the mass: accumulate an opposite
+								// shove for the CPU to apply (STATS[30/31], int px/s²)
+								atomicAdd(STATS[30], uint(int(-(off.x / d) * 180.0)));
+								atomicAdd(STATS[31], uint(int(-(off.y / d) * 180.0)));
 							} else {
 								b.pos += (off / d) * (md - d) * 0.5;
 							}
