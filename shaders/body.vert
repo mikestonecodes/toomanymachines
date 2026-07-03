@@ -38,8 +38,8 @@ void main() {
 		if (mg && fract((pc.time - MG_LEN / MG_V) * rate + hash1(id * 77u)) < duty) { hot = true; }
 		ext = hot ? len + 120.0 : b.radius * 4.0;
 	}
-	else if (b.kind == KIND_HELPER) { ext = 160.0; } // the upsized drone + its hoist beam
-	else if (b.kind == KIND_WRECK) { ext = b.radius * 2.4; }
+	else if (b.kind == KIND_HELPER) { ext = 190.0; } // the upsized drone (bigger at altitude) + hoist beam
+	else if (b.kind == KIND_WRECK) { ext = b.radius * (b.variant == 1u ? 3.4 : 2.4); } // hoisted husks draw larger
 	else if (b.kind == KIND_DYING) {
 		float total = b.variant == VAR_SPARK ? SPARK_T : (b.variant == VAR_BOOM ? BOOM_T : DEATH_T);
 		float prog = 1.0 - clamp(b.life / total, 0.0, 1.0);

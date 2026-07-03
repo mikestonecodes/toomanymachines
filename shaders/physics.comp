@@ -152,17 +152,15 @@ void main() {
 			if (distance(b.pos, ctr) < PIT_R * 1.1) { tgt = 0u; } // train delivered
 		} else {
 			if (tgt != 0u && BODIES[tgt - 1u].kind != KIND_WRECK) { tgt = 0u; } // sunk/rotted/gone
-			// only shop for work AT the car: a drone that just delivered (or idles far
-			// away) flies back to the escort FIRST, then picks up wrecks around the car
+			// only shop for work AT the car, and ONLY for wrecks near the car — the
+			// fleet escorts until the player's kills drop scrap; distant turret-kill
+			// husks are ignored (no flying off to the map edge)
 			if (tgt == 0u && distance(b.pos, pc.player) < 600.0) {
-				uint any = 0u;
-				for (uint k = 0u; k < 24u; k++) { // probe a hashed stripe — near the player first
+				for (uint k = 0u; k < 24u; k++) { // probe a hashed stripe
 					uint slot = ENEMY_LO + (uint(pc.time * 331.0) * 761u + id * 977u + k * 6151u) % MAX_ENEMIES;
 					if (BODIES[slot].kind != KIND_WRECK) { continue; }
-					if (distance(BODIES[slot].pos, pc.player) < 1600.0) { tgt = slot + 1u; break; }
-					if (any == 0u) { any = slot + 1u; }
+					if (distance(BODIES[slot].pos, pc.player) < 1400.0) { tgt = slot + 1u; break; }
 				}
-				if (tgt == 0u) { tgt = any; }
 			}
 			if (tgt != 0u && distance(b.pos, BODIES[tgt - 1u].pos) < 60.0) { tgt = HAUL; } // grabbed — go
 		}
@@ -267,6 +265,7 @@ void main() {
 			}
 			if (!carried) { b.vel *= exp(-5.0 * pc.dt); } // dropped: grind to a halt
 		}
+		b.variant = carried ? 1u : 0u; // airborne flag — body.frag draws carried husks ABOVE everything
 		vec2 lpush; // the laser bulldozes husks too — herd them toward the pit
 		if (laser_hit(b.pos, b.radius, lpush) > 0.0) { b.vel += lpush * pc.dt * 4.0; }
 		b.pos += b.vel * pc.dt;
@@ -371,10 +370,15 @@ void main() {
 		float rate = mg ? 0.90 : 0.14;
 		if (fract(te * rate + hash1((TURRET_LO + ti) * 77u)) >= duty) { continue; } // idle
 		float wd = mg ? MG_W : TWR_W;
-		float ang = hash1((TURRET_LO + ti) * 913u) * TAU + te * (mg ? 2.6 : 0.22);
+		float ang;
+		if (mg) { ang = hash1((TURRET_LO + ti) * 913u) * TAU + te * 2.6; }
+		else { // perimeter laser: always OUTWARD, sweeping a cone away from the city
+			vec2 outw = tw.pos - ctr;
+			ang = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1((TURRET_LO + ti) * 913u) * TAU) * 0.55;
+		}
 		vec2 ad = vec2(cos(ang), sin(ang));
 		float along = mg ? dw                                   // the round at my range
-		                 : clamp(dot(dtw, ad), -len, len);      // laser: two-sided bar
+		                 : clamp(dot(dtw, ad), 0.0, len);       // laser: one-sided, outward
 		vec2 cp = tw.pos + ad * along;
 		float dd = distance(b.pos, cp);
 		vec2 away = dd > 0.001 ? (b.pos - cp) / dd : vec2(-ad.y, ad.x);

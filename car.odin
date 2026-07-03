@@ -33,7 +33,7 @@ VAR_BOOM    :: u32(4) // bullet detonation: an expanding shockwave that flings t
 MAX_ENEMIES :: 80000
 MAX_BULLETS :: 384
 MAX_TURRETS :: 64
-MAX_HELPERS :: 96 // a proper salvage FLEET — the drones do all the hauling
+MAX_HELPERS :: 240 // a SWARM of salvage drones — they do all the hauling
 ENEMY_LO    :: 1
 BULLET_LO   :: 1 + MAX_ENEMIES
 TURRET_LO   :: BULLET_LO + MAX_BULLETS
@@ -44,7 +44,7 @@ PIT_R       :: f32(230)          // the corpse pit at the world center
 RING_SP     :: f32(560)          // ring-road spacing (curved streets: wobbled rings + spiral spokes)
 SPOKES      :: f32(10)           // radial avenue count (only half run all the way to the core)
 SPOKE2_R    :: RING_SP * 4       // the staggered second half of the avenues starts out here
-SPIRAL      :: f32(0.00035)      // rad/px twist — avenues curve as they run outward
+SPIRAL      :: f32(0)            // avenues run STRAIGHT out — they cross the rings at right angles, so every block corner is square
 STREET_HW   :: f32(105)          // street half-width (the paved part) — wide boulevards
 BLDG_EDGE   :: STREET_HW + 14    // building facades rise at this distance from the centerline
 PLAZA_P     :: f32(0.14)         // chance a block hosts a plaza — almost everything is BUILT
@@ -79,7 +79,7 @@ HP_SKITTER  :: f32(1)
 HP_BRUTE    :: f32(10)
 KNOCKBACK   :: f32(90)
 ZOOM        :: f32(1.35) // world px per screen px — pulled back so the horde reads
-PERSP       :: f32(0.11) // GTA2 fake-3D: rooftop parallax per unit height — SUBTLE: strong skew on curved footprints reads as warping
+LEAN        :: f32(95)   // oblique fake-3D: world px of straight up-screen lean per unit height — a pure TRANSLATION, so buildings never shear. Tuned so towers read TALL while the view stays TOP-DOWN
 // @glsl-end
 
 // CPU-only tuning.

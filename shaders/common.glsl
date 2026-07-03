@@ -144,14 +144,17 @@ float spoke_dist(vec2 p) {
 // district of a block: 0 residential rows, 1 industrial yards, 2 tower blocks
 float district(vec3 blk) { return floor(hash21(vec2(blk.x, floor(blk.y / 3.0)) * 2.7 + 13.0) * 2.999); }
 
-// ── the houses ────────────────────────────────────────────────────────────────
-// Every block holds two terrace rows of discrete tangent-aligned RECT houses hugging
-// its ring streets, courtyard between. ok = this row cell holds a house (p may still be
-// outside its rect — sd tells); lc/ext = house-local coords + half-sizes (x radial,
-// y along the row); u = the house's radial axis in world. Row pitch varies per ring so
-// blocks differ in rhythm; rare cells are landmarks (taller, slimmer).
-// MUST mirror house_pen in car.odin (ship collision runs on the CPU).
-struct House { bool ok; float h; float sd; vec2 lc; vec2 ext; float seed; float dis; vec2 u; };
+// ── the buildings ────────────────────────────────────────────────────────────
+// THE BUILDING IS THE PLOT: each block's whole band, extruded to 3D, with a courtyard
+// hole cut in the middle — a real perimeter block. Variations per block: courtyard
+// size (some roll SOLID = full-plot giants, more on the outskirts), and per perimeter
+// SEGMENT the height steps like terraced houses; rare segments are missing (alley
+// cuts through to the courtyard). lc = (across-wall, along-block) local coords; u ≈
+// the outward radial axis. Purely visual + occlusion — collision is the block band.
+// ringy = this point's wall faces a RING street, so the (across, along) local frame is
+// orthonormal — oriented roof features (helipads, tiers, chimneys) only go there;
+// spoke-side walls have a sheared frame and stay plain.
+struct House { bool ok; float h; float sd; vec2 lc; vec2 ext; float seed; float dis; vec2 u; bool ringy; };
 
 House house_at(vec2 p) {
 	House hs;
@@ -162,49 +165,56 @@ House house_at(vec2 p) {
 	if (blk.z < 0.5) { return hs; }
 	vec2 q = p - vec2(WORLD * 0.5);
 	float r = length(q);
-	float rB0 = blk.x * RING_SP + BLDG_EDGE;
-	float rB1 = (blk.x + 1.0) * RING_SP - BLDG_EDGE;
-	float rowDepth = (rB1 - rB0) * 0.40;
-	bool outer = r > (rB0 + rB1) * 0.5;
-	float rRow = outer ? rB1 - rowDepth * 0.5 : rB0 + rowDepth * 0.5;
-	// row pitch: each ring row has its own rhythm — small shops to long halls
-	float S = 130.0 + floor(hash21(vec2(blk.x, outer ? 1.0 : 0.0) * 3.9 + 6.1) * 3.0) * 65.0;
 	float sa = atan(q.y, q.x) - SPIRAL * r;
-	float ci = floor(sa * rRow / S);
-	float seed = hash21(vec2(ci, blk.x * 13.0 + blk.y * 3.0 + (outer ? 7.0 : 0.0)));
-	if (seed < 0.16) { return hs; } // missing house → gap in the terrace
-	float aC = (ci + 0.5) * S / rRow + SPIRAL * rRow;
-	vec2 cdir = vec2(cos(aC), sin(aC));
-	vec2 c = vec2(WORLD * 0.5) + cdir * rRow;
-	if (spoke_dist(c) < BLDG_EDGE + S * 0.5) { return hs; } // clear of the avenues
 	vec3 pz = block_plaza(blk.xy);
-	if (pz.z > 0.0 && distance(c, pz.xy) < pz.z + S * 0.5) { return hs; } // houses RING the plaza
-	vec2 d2 = p - c;
-	hs.lc = vec2(dot(d2, cdir), dot(d2, vec2(-cdir.y, cdir.x)));
-	hs.ext = vec2(rowDepth * 0.5 - 4.0 - 14.0 * fract(seed * 3.3),
-	              S * 0.5 - (8.0 + 26.0 * fract(seed * 5.7))); // CHUNKY — no sliver houses
+	float ns = blk.x * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5;
+	float stp2 = TAU / ns;
+	float jw2 = blk.y - ns * floor(blk.y / ns);
+	float rc2 = (blk.x + 0.5) * RING_SP;
+	float arcHalf = stp2 * 0.5 * rc2 - BLDG_EDGE;
+	float ay = (sa - (blk.y + 0.5) * stp2) * r; // arc offset from the sector centerline
+	float bseed = hash21(vec2(blk.x, jw2) * 3.1 + 9.2);
+	float edgeK = smoothstep(pc.city_r - RING_SP * 2.7, pc.city_r - RING_SP * 1.1, rc2);
+	float pen = street_d(p) - BLDG_EDGE;                          // depth into the plot
+	if (pz.z > 0.0) { pen = min(pen, length(p - pz.xy) - pz.z); } // the plaza carves it
+	float band = RING_SP - 2.0 * BLDG_EDGE;
+	float wallD = 58.0 + 70.0 * fract(bseed * 7.7);               // perimeter wall depth
+	if (fract(bseed * 4.3) < 0.10 + edgeK * 0.35) { wallD = band; } // SOLID: a full-plot giant
+	// wall-local frame: `along` runs ALONG the controlling street — arc-length on ring
+	// walls, RADIUS on avenue walls — so houses are cut ~square against their own
+	// street (fanned slightly by the curve) and textures never stretch or shear.
+	float ringPen = abs(r - max(round(r / RING_SP), 1.0) * RING_SP) - BLDG_EDGE;
+	bool ringy = ringPen - pen < 2.0;
+	bool solidB = wallD >= band;
+	float along = (solidB || ringy) ? ay : r;
+	float wallid = ringy ? max(round(r / RING_SP), 1.0) : 60.0 + sign(ay) * 7.0;
+	float seg = floor(along / 110.0); // perimeter segments — the roofline steps house to house
+	float seed = hash21(vec2(seg, blk.x * 13.0 + jw2 * 5.0 + wallid * 2.3) + bseed * 17.0);
+	if (seed < 0.05 && !solidB) { return hs; } // an alley cut through to the courtyard
+	hs.lc = vec2(pen - wallD * 0.5, along);
+	hs.ext = vec2(wallD * 0.5, max(arcHalf, 1.0));
 	hs.seed = seed;
 	hs.dis = district(blk);
-	hs.u = cdir;
-	// height CLASSES, not a smooth ramp — neighbors JUMP between squat sheds, rowhouses,
-	// mid-rises, slabs and true towers, so the skyline reads as a bar chart, not a blur.
-	// Districts tilt the draw: residential stays low, tower blocks pull tall.
+	hs.u = q / max(r, 0.001);
+	hs.ringy = ringy;
+	// heights: CLASSES per segment, stepped — plus the block's own roll. The outskirts
+	// rise, solid slabs are the giants, rare landmarks spike out of ordinary rooflines.
 	float hh = fract(seed * 9.1);
 	float cls = fract(seed * 31.7) + (hs.dis > 1.5 ? 0.22 : 0.0) - (hs.dis < 0.5 ? 0.08 : 0.0);
-	float hb = cls < 0.34 ? 0.10 + 0.08 * hh   // squat shed
-	         : cls < 0.62 ? 0.20 + 0.12 * hh   // rowhouse
-	         : cls < 0.82 ? 0.36 + 0.16 * hh   // mid-rise
-	         : cls < 0.95 ? 0.56 + 0.18 * hh   // slab
-	         :              0.78 + 0.22 * hh;  // tower
-	hb *= clamp(1.25 - blk.x * 0.055, 0.6, 1.2); // downtown rises
-	float chunky = min(hs.ext.x, hs.ext.y);
-	hb = min(hb, 0.22 + chunky * 0.011); // small footprints stay LOW — no toothpick towers
-	if (fract(seed * 97.3) > 0.93 && chunky > 44.0) { // landmark tower: big footprints only
-		hb = max(hb, 0.80 + 0.20 * fract(seed * 53.0));
-	}
+	float hb = cls < 0.30 ? 0.14 + 0.08 * hh   // little houses
+	         : cls < 0.55 ? 0.26 + 0.12 * hh   // rowhouses
+	         : cls < 0.75 ? 0.42 + 0.16 * hh   // mid-rise
+	         : cls < 0.92 ? 0.62 + 0.20 * hh   // slab
+	         :              0.90 + 0.10 * hh;  // SKYSCRAPER
+	hb *= clamp(1.25 - blk.x * 0.055, 0.6, 1.2); // downtown rises...
+	hb *= 1.0 + edgeK * 0.55;                    // ...and the OUTSKIRTS rise higher still
+	if (wallD >= band) { hb = max(hb, 0.50 + 0.42 * fract(bseed * 3.7) + edgeK * 0.15); }
+	float chunky = min(wallD * 0.5, 60.0);
+	hb = min(hb, 0.30 + chunky * 0.020); // thin rings stay lower — no toothpick walls
+	if (fract(seed * 97.3) > 0.93) { hb = max(hb, 0.80 + 0.20 * fract(seed * 53.0)); } // landmark
 	hs.h = clamp(hb, 0.10, 1.0);
 	hs.ok = true;
-	hs.sd = sd_box(hs.lc, hs.ext);
+	hs.sd = max(-pen, pen - wallD); // inside the extruded plot ring (≤ 0)
 	return hs;
 }
 
@@ -214,24 +224,26 @@ House house_at(vec2 p) {
 // + body.frag occlusion); collision keeps the flat rect. Branch order mirrors roof_col.
 float house_h(House hs) {
 	float h = hs.h;
+	bool solid = hs.ext.x > 70.0; // a full-plot giant: ONE building, ONE roof
+	// segment-local frame: x across the wall, y within THIS 110px perimeter segment
+	vec2 lg = vec2(hs.lc.x, (fract(hs.lc.y / 110.0) - 0.5) * 110.0);
 	float sx = hs.lc.x / hs.ext.x;
-	float sy = hs.lc.y / hs.ext.y;
-	if (hs.h > 0.55) { // tall: stepped setbacks, some crowned with a spire mast
-		h *= 0.66;
-		if (sd_box(hs.lc, hs.ext * 0.62) < 0.0) { h = hs.h * 0.84; }
-		if (sd_box(hs.lc, hs.ext * 0.34) < 0.0) { h = hs.h; }
-		if (fract(hs.seed * 71.7) < 0.45 && length(hs.lc) < 5.0) { h = min(hs.h + 0.22, 1.0); }
-	} else if (fract(hs.seed * 7.3) < 0.22) { // domed hall: a real curved cap
-		float dd2 = length(hs.lc / hs.ext);
-		h *= 0.70 + 0.30 * sqrt(max(1.0 - dd2 * dd2 * 1.6, 0.0));
-	} else if (hs.dis < 0.5) { // residential: pitched ridge along the row + chimneys
+	float sy = lg.y / 55.0;
+	if (hs.h > 0.55) { // tall: terraced setbacks PARALLEL to the street — right angles
+		// only: the step edges follow the facade line exactly (concentric ziggurat on
+		// solid giants), never a wedge
+		float dep = hs.lc.x + hs.ext.x; // depth behind the facade
+		float wallD2 = hs.ext.x * 2.0;
+		h *= 0.72;
+		if (dep > wallD2 * 0.38) { h = hs.h * 0.86; }
+		if (dep > wallD2 * 0.70) { h = hs.h; }
+		if (fract(hs.seed * 71.7) < 0.45 && length(lg) < 5.0) { h = min(hs.h + 0.2, 1.0); }
+	} else if (hs.dis < 0.5 && !solid && hs.ext.x < 48.0) { // pitched houses
 		h *= 1.0 - 0.32 * abs(sx);
 		if (fract(hs.seed * 29.3) < 0.6 && abs(sy - 0.55) < 0.10 && abs(sx) > 0.25 && abs(sx) < 0.55) { h += 0.05; }
-	} else if (hs.dis < 1.5) { // industrial: sawtooth shed roof + the storage tank
+	} else if (hs.dis < 1.5 && !solid) { // industrial: sawtooth shed + the tank
 		h *= 0.80 + 0.20 * fract(sx * 1.5 + 0.5);
-		if (fract(hs.seed * 23.9) > 0.5 && length(hs.lc - vec2(0.0, hs.ext.y * 0.4)) < min(hs.ext.x, hs.ext.y) * 0.5) { h += 0.07; }
-	} else { // tower block: rooftop plant boxes stud the flat top
-		if (hash21(floor(hs.lc / 38.0) + hs.seed * 40.0) > 0.86) { h += 0.045; }
+		if (fract(hs.seed * 23.9) > 0.5 && length(lg - vec2(0.0, 20.0)) < min(hs.ext.x * 0.5, 26.0)) { h += 0.07; }
 	}
 	return h;
 }

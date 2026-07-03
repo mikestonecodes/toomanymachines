@@ -307,8 +307,13 @@ void turret(vec2 p, Body b) {
 	float phase = fract(pc.time * rate + hash1(v_id * 77u));
 	bool firing = phase < duty;
 	float env = smoothstep(0.0, 0.03, phase) * smoothstep(duty, duty - 0.04, phase); // ramp in/out
-	float angW = hash1(v_id * 913u) * TAU + pc.time * (mg ? 2.6 : 0.22); // sweep, world frame
-	vec2 bd2 = rot2(angW - b.angle) * vec2(1.0, 0.0);                    // fire dir, body frame
+	float angW;
+	if (mg) { angW = hash1(v_id * 913u) * TAU + pc.time * 2.6; } // gun: spinning sweep
+	else { // perimeter laser: always OUTWARD, sweeping a cone away from the city
+		vec2 outw = b.pos - vec2(WORLD * 0.5);
+		angW = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1(v_id * 913u) * TAU) * 0.55;
+	}
+	vec2 bd2 = rot2(angW - b.angle) * vec2(1.0, 0.0); // fire dir, body frame
 	if (mg) { // ── MACHINE GUN: real BULLETS. Each round flies straight at the barrel
 		// angle it LEFT with — rewind the sweep by time-of-flight (MG_V) — so the stream
 		// curls across the district like AA fire. physics.comp rewinds identically.
@@ -342,8 +347,8 @@ void turret(vec2 p, Body b) {
 				add += PAL_EMBER * 2.2 * exp(-sd_seg(rq, vec2(0.0), vec2(26.0, 0.0)) * 1.5) * env * burst * hash1(si + 5u);
 			}
 		}
-	} else if (firing) { // ── the giant laser: a two-sided lighthouse bar
-		float bd = sd_seg(p, -bd2 * len, bd2 * len);
+	} else if (firing) { // ── the giant laser: a one-sided bar burning OUT into the wasteland
+		float bd = sd_seg(p, vec2(0.0), bd2 * len);
 		float flick = 0.85 + 0.30 * sin(pc.time * 47.0 + dot(p, bd2) * 0.03);
 		add += (vec3(1.3, 1.0, 0.7) + PAL_EMBER * 0.5) * exp(-bd * bd / (30.0 * flick)) * 1.5 * env;
 		add += PAL_ACCENT * exp(-bd * bd / (TWR_W * TWR_W)) * 0.35 * env;
@@ -376,8 +381,17 @@ void helper(vec2 p, Body b) {
 	gCS = 2.6;
 	float sc = 14.0 / max(b.radius, 8.0); // sprite drawn in classic proportions, scaled up by radius
 	p *= sc;
+	// ALTITUDE faked by scale: cruising high = closer to the camera = BIGGER; it swoops
+	// small as it descends onto a wreck, and hauls home a bit lower under the load
+	float alt = 1.0;
+	if (b.gen == 0x80000000u) { alt = 0.75; } // hauling: heavy, riding lower
+	else if (b.gen != 0u) {
+		Body tw2 = BODIES[b.gen - 1u];
+		alt = clamp(distance(b.pos, tw2.pos) / 160.0, 0.18, 1.0); // swooping down to grab
+	}
+	p /= 0.50 + 0.75 * alt; // ground pickup ≈ half the cruise size
 	float bob = sin(pc.time * 3.1 + float(v_id)) * 1.2;
-	lay(vec3(0.012), 0.4 * soft(length(p - vec2(5.0, 8.0 + bob)) - 9.0)); // it flies HIGH
+	lay(vec3(0.012), 0.4 * soft(length(p - vec2(5.0, 8.0 + bob + alt * 9.0)) - 9.0)); // shadow drifts with height
 	p.y -= bob * 0.4;
 	if (b.gen != 0u && b.gen != 0x80000000u) { // hoist beam to the target wreck
 		Body t = BODIES[b.gen - 1u];
@@ -404,7 +418,8 @@ void wreck(vec2 p, Body b) {
 	float r = b.radius;
 	float fade = clamp(b.life / 3.0, 0.0, 1.0);
 	uint s = v_id * 613u;
-	p *= 0.82; // collapsed: the husk lies wider and flatter than the machine stood
+	if (b.variant == 1u) { p *= 0.72; } // AIRBORNE, hoisted by a drone: closer to camera = bigger
+	else { p *= 0.82; }                 // collapsed flat on the ground
 	lay(vec3(0.016, 0.015, 0.014), 0.6 * fade * soft(length(p) - r * 1.25)); // scorch bed
 	for (float i = 0.0; i < 4.0; i += 1.0) { // dead legs, splayed
 		float aa = (i + 0.5) * (TAU / 4.0) + hash1(s + uint(i)) * 0.8 - 0.4;
@@ -419,18 +434,16 @@ void wreck(vec2 p, Body b) {
 	float ash = hash21(floor(p / 4.0) + float(v_id));
 	base = mix(base, vec3(0.105, 0.102, 0.098), step(0.62, ash) * 0.65 * cov);
 	base *= 0.4 + 0.6 * fade; // crumbles away if left to rot
+	if (b.variant != 1u) { cov *= 0.30; } // on the ground: a near-transparent ghost, very subtle
 }
 
 void bullet(vec2 p) {
-	// a molten SHELL: a crisp solid orb (base — no bloom mush), molten rim, hot heart.
-	// It flies ABOVE everything, so it reads as a definite object, not a glow.
-	float d = length(p);
-	float br = 1.0 + 0.08 * sin(pc.time * 23.0);
-	lay(vec3(0.9, 0.28, 0.08), soft(d - 8.5 * br));  // molten rim
-	lay(vec3(1.25, 0.85, 0.45), soft(d - 6.0 * br)); // fire body
-	lay(vec3(1.4, 1.25, 1.0), soft(d - 2.8));        // white-hot heart
-	add += (PAL_EMBER + vec3(0.4)) * 0.8 * exp(-d * d / 30.0); // a tight gleam
-	add += PAL_EMBER * 0.3 * exp(-d * d / 260.0);               // modest halo
+	// a compact TRACER: white-hot shell, tight ember sheath, a short tapering tail —
+	// small and sharp, no orb, no blob
+	float d = sd_seg(p, vec2(0.0), vec2(-18.0, 0.0));
+	float taper = clamp(1.0 + p.x / 18.0, 0.0, 1.0); // 1 at the head → 0 at the tail tip
+	add += PAL_EMBER * exp(-d * d / (1.0 + 5.0 * taper)) * (0.25 + 0.75 * taper);
+	add += vec3(1.4, 1.25, 1.0) * 1.6 * exp(-dot(p, p) / 6.0); // the shell itself
 }
 
 void burst(vec2 p, Body b) {
@@ -576,13 +589,15 @@ void main() {
 	// fake-3D occlusion: bodies live ON THE GROUND — march the same city silhouettes
 	// city.frag draws, and if a building covers this pixel the building is in front (a
 	// bot on the street behind a tower must NOT be painted onto its roof). This also
-	// clips legs/sparks poking into facades at ground level. Salvage drones and the
-	// artillery shells fly ABOVE it all and skip the test.
-	if (b.kind != KIND_HELPER && b.kind != KIND_BULLET && (cov > 0.003 || dot(add, add) > 0.00001)) {
-		vec2 sq = (gl_FragCoord.xy - pc.screen * 0.5) * ZOOM;
+	// clips legs/sparks poking into facades at ground level. Salvage drones, artillery
+	// shells and hoisted wrecks (variant flag) fly ABOVE it all and skip the test.
+	if (b.kind != KIND_HELPER && b.kind != KIND_BULLET
+	    && !(b.kind == KIND_WRECK && b.variant == 1u)
+	    && (cov > 0.003 || dot(add, add) > 0.00001)) {
+		vec2 g0 = pc.cam + (gl_FragCoord.xy - pc.screen * 0.5) * ZOOM;
 		for (int i = 0; i < 8; i++) {
 			float tq = 1.0 - float(i) / 7.0;
-			House hs = house_at(pc.cam + sq / (1.0 + PERSP * tq));
+			House hs = house_at(g0 + vec2(0.0, LEAN) * tq);
 			if (hs.ok && hs.sd <= 0.0 && house_h(hs) >= tq) { discard; }
 		}
 	}
