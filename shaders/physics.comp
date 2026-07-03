@@ -198,9 +198,15 @@ void main() {
 			}
 		}
 		b.life -= pc.dt;
-		if (b.life <= 0.0) { // popped and GONE — no husk stays behind (wreck path dormant)
-			b.kind = KIND_DEAD;
-			b.life = 1.0 + hash1(id * 331u + uint(pc.time)) * 3.0; // respawn countdown
+		if (b.life <= 0.0) {
+			if (id >= ENEMY_LO && id < BULLET_LO && b.variant != VAR_SPARK) {
+				b.kind = KIND_WRECK; // the husk stays — SCRAP for the salvage fleet
+				b.life = WRECK_T;
+				b.vel = vec2(0.0);
+			} else {
+				b.kind = KIND_DEAD;
+				b.life = 1.0 + hash1(id * 331u + uint(pc.time)) * 3.0; // respawn countdown
+			}
 		}
 		BODIES[id] = b;
 		return;

@@ -315,12 +315,10 @@ game_update :: proc(dt: f32) {
 	w, h := f32(win_w), f32(win_h)
 	aim_world = cam + (input.mouse - [2]f32{w, h} * 0.5) * ZOOM
 
-	// ── the pit feeds the city: poll the GPU's deposit counter, push the radius out.
-	// The city is analytic, so growth is just the number — no grid to regenerate.
-	if dep := stats_at(0)^; dep != deposits_seen {
-		city_r = min(city_r + f32(dep - deposits_seen) * DEPOSIT_GROW, CITY_RMAX)
-		deposits_seen = dep
-	}
+	// ── city growth is OFF for now: the pit still swallows scrap (the drones' loop
+	// stays alive) but the radius holds at CITY_R0. Re-enable by bumping city_r by
+	// DEPOSIT_GROW per new deposit here.
+	deposits_seen = stats_at(0)^
 
 	// ── hover ship: thrust along the nose, low grip so momentum carries sideways
 	// (drift!), Space dumps boost into the mains. Yaw works even at a standstill.

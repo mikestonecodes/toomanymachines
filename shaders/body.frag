@@ -497,7 +497,7 @@ void main() {
 		float flash = smoothstep(0.30, 0.10, lf);     // the end flash (~0.08s)
 		base = mix(base, vec3(1.0), min(pre + flash, 1.0) * 0.95);
 		add *= 1.0 - flash;
-		cov *= smoothstep(0.02, 0.10, lf);            // vanishes AT the peak
+		// no fade — the flash holds to the last frame and MASKS the swap to the husk
 	}
 	else if (b.kind == KIND_DYING) {
 		// the machine dies in place and POPS: an instant puff, a HARD white-hot
@@ -506,8 +506,7 @@ void main() {
 		// toward the husk. The effect wears the mech — no circles, no orbs.
 		float prog = 1.0 - clamp(b.life / DEATH_T, 0.0, 1.0);
 		float pop = exp(-prog * 9.0);
-		p /= 1.0 + 0.25 * pop;          // squash-and-stretch: an instant puff...
-		p *= 1.0 + prog * prog * 2.4;   // ...then it collapses into itself
+		p /= 1.0 + 0.25 * pop; // squash-and-stretch: an instant puff, deflating fast
 		p += vec2(sin(pc.time * 47.0 + float(v_id)), cos(pc.time * 53.0 + float(v_id))) * 2.2 * (1.0 - prog);
 		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
 		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
@@ -523,10 +522,8 @@ void main() {
 				lay(vec3(0.95, 0.82, 0.65), soft(sd_seg(q, vec2(r0, 0.0), vec2(r1, 0.0)) - 1.3) * (1.0 - bp * bp));
 			}
 		}
-		base *= 1.0 - 0.72 * prog; // charring down as it goes
-		float vanish = 1.0 - smoothstep(0.5, 0.95, prog); // then it's GONE — nothing stays
-		cov *= vanish;
-		add *= vanish * (1.0 - prog * 0.7);
+		base *= 1.0 - 0.72 * prog; // charring down — hands off near the husk's darkness
+		add *= 1.0 - prog;         // every light dies with it: the husk emits NOTHING
 		burst(p, b);
 	}
 	else {
