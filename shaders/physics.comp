@@ -48,6 +48,12 @@ void building_push(inout vec2 p, inout vec2 v, float r) {
 	if (di <= douter && di <= ds) { sd = BLDG_EDGE - di; n = -rn; }
 	else if (douter <= ds) { sd = BLDG_EDGE - douter; n = rn; }
 	else { sd = BLDG_EDGE - ds; n = vec2(-q.y, q.x) / cr * sgn; }
+	vec3 pz = block_plaza(blk.xy); // the carved plaza circle is open ground too
+	if (pz.z > 0.0) {
+		float dc = max(distance(p, pz.xy), 0.001);
+		float sdc = pz.z - dc;
+		if (sdc > sd) { sd = sdc; n = (pz.xy - p) / dc; }
+	}
 	if (sd >= r) { return; }
 	p += n * (r - sd);
 	float vn = dot(v, n);
@@ -55,7 +61,7 @@ void building_push(inout vec2 p, inout vec2 v, float r) {
 }
 
 bool in_building(vec2 p) {
-	return city_block(p).z > 0.5 && street_d(p) > BLDG_EDGE;
+	return bldg_pen(p) > 0.0;
 }
 
 // Spawner for the endless assault: variant mix 60/30/10, marching in from a ring just
@@ -119,9 +125,10 @@ void main() {
 	if (id >= BODY_COUNT) { return; }
 
 	if (pc.mode == 1u) { // scatter live bodies into the bucket grid (wrecks are debris — skip;
-		// DYING stays in ONLY as a detonation, so the horde feels the shockwave)
+		// DYING stays in ONLY as a detonation, so the horde feels the shockwave; drones
+		// and shells fly ABOVE the brawl)
 		Body b = BODIES[id];
-		if (b.kind == KIND_DEAD || b.kind == KIND_WRECK || b.kind == KIND_HELPER) { return; } // drones fly above the brawl
+		if (b.kind == KIND_DEAD || b.kind == KIND_WRECK || b.kind == KIND_HELPER || b.kind == KIND_BULLET) { return; }
 		if (b.kind == KIND_DYING && b.variant != VAR_BOOM) { return; }
 		uint cell = cell_of(b.pos);
 		uint slot = atomicAdd(GCOUNT[cell], 1u);
@@ -135,31 +142,37 @@ void main() {
 	if (b.kind == KIND_TURRET) { return; } // towers are static; enemies read them from the grid
 
 	if (b.kind == KIND_HELPER) {
-		// ── salvage drone: find a wreck (target slot stashed in gen, +1), fly out,
-		// then haul it home — the wreck follows its carrier, the pit swallows it.
+		// ── salvage drone: escort the player → race to a wreck near them (target slot
+		// in gen, +1) → grab it and RUN HOME hauling (gen = HAUL flag), scooping up
+		// every husk the train passes → dump the lot into the pit → rejoin the escort.
+		const uint HAUL = 0x80000000u;
 		uint tgt = b.gen;
-		if (tgt != 0u && BODIES[tgt - 1u].kind != KIND_WRECK) { tgt = 0u; } // sunk/rotted/gone
-		if (tgt == 0u) { // probe a hashed stripe of slots for fresh scrap — wrecks near
-			// the PLAYER first (that's where the kills drop), any wreck as fallback
-			uint any = 0u;
-			for (uint k = 0u; k < 24u; k++) {
-				uint slot = ENEMY_LO + (uint(pc.time * 331.0) * 761u + id * 977u + k * 6151u) % MAX_ENEMIES;
-				if (BODIES[slot].kind != KIND_WRECK) { continue; }
-				if (distance(BODIES[slot].pos, pc.player) < 1600.0) { tgt = slot + 1u; break; }
-				if (any == 0u) { any = slot + 1u; }
-			}
-			if (tgt == 0u) { tgt = any; }
-		}
 		vec2 ctr = vec2(WORLD * 0.5);
-		// idle: ESCORT the player — a loose carousel around the car, ready to pounce
+		if (tgt == HAUL) {
+			if (distance(b.pos, ctr) < PIT_R * 1.1) { tgt = 0u; } // train delivered
+		} else {
+			if (tgt != 0u && BODIES[tgt - 1u].kind != KIND_WRECK) { tgt = 0u; } // sunk/rotted/gone
+			// only shop for work AT the car: a drone that just delivered (or idles far
+			// away) flies back to the escort FIRST, then picks up wrecks around the car
+			if (tgt == 0u && distance(b.pos, pc.player) < 600.0) {
+				uint any = 0u;
+				for (uint k = 0u; k < 24u; k++) { // probe a hashed stripe — near the player first
+					uint slot = ENEMY_LO + (uint(pc.time * 331.0) * 761u + id * 977u + k * 6151u) % MAX_ENEMIES;
+					if (BODIES[slot].kind != KIND_WRECK) { continue; }
+					if (distance(BODIES[slot].pos, pc.player) < 1600.0) { tgt = slot + 1u; break; }
+					if (any == 0u) { any = slot + 1u; }
+				}
+				if (tgt == 0u) { tgt = any; }
+			}
+			if (tgt != 0u && distance(b.pos, BODIES[tgt - 1u].pos) < 60.0) { tgt = HAUL; } // grabbed — go
+		}
+		// idle: ESCORT the player — a loose carousel around the car; if the car pulls
+		// away, sprint to keep formation
 		float orb = pc.time * 0.5 + float(id) * 0.26;
 		vec2 goal = pc.player + vec2(cos(orb), sin(orb)) * (130.0 + 70.0 * hash1(id * 13u));
-		float speed = 340.0;
-		if (tgt != 0u) {
-			Body t = BODIES[tgt - 1u];
-			if (distance(b.pos, t.pos) > 55.0) { goal = t.pos; speed = 560.0; } // race out to it
-			else { goal = ctr; speed = 430.0; } // hauling: straight home, fast
-		}
+		float speed = distance(b.pos, pc.player) > 480.0 ? 700.0 : 340.0;
+		if (tgt == HAUL) { goal = ctr; speed = 430.0; }               // hauling: straight home
+		else if (tgt != 0u) { goal = BODIES[tgt - 1u].pos; speed = 560.0; } // race out to it
 		vec2 to = goal - b.pos;
 		float td = length(to);
 		vec2 dir = td > 0.001 ? to / td : vec2(1.0, 0.0);
@@ -185,15 +198,9 @@ void main() {
 			}
 		}
 		b.life -= pc.dt;
-		if (b.life <= 0.0) {
-			if (id >= ENEMY_LO && id < BULLET_LO && b.variant != VAR_SPARK) {
-				b.kind = KIND_WRECK; // the husk stays — tow it to the pit
-				b.life = WRECK_T;
-				b.vel = vec2(0.0);
-			} else {
-				b.kind = KIND_DEAD;
-				b.life = 1.0 + hash1(id * 331u + uint(pc.time)) * 3.0; // respawn countdown
-			}
+		if (b.life <= 0.0) { // popped and GONE — no husk stays behind (wreck path dormant)
+			b.kind = KIND_DEAD;
+			b.life = 1.0 + hash1(id * 331u + uint(pc.time)) * 3.0; // respawn countdown
 		}
 		BODIES[id] = b;
 		return;
@@ -242,12 +249,15 @@ void main() {
 		} else {
 			for (uint hi = 0u; hi < MAX_HELPERS; hi++) {
 				Body hd = BODIES[HELPER_LO + hi];
-				if (hd.kind != KIND_HELPER || hd.gen != id + 1u) { continue; }
-				if (distance(hd.pos, b.pos) < 90.0) {
-					b.vel = mix(b.vel, (hd.pos - b.pos) * 4.0, 1.0 - exp(-8.0 * pc.dt));
+				if (hd.kind != KIND_HELPER) { continue; }
+				bool mine = hd.gen == id + 1u;     // it came for me
+				bool haul = hd.gen == 0x80000000u; // a passing train scoops me up too
+				float hdd = distance(hd.pos, b.pos);
+				if ((mine && hdd < 90.0) || (haul && hdd < 110.0)) {
+					b.vel = mix(b.vel, (hd.pos - b.pos) * 7.0, 1.0 - exp(-8.0 * pc.dt));
 					carried = true;
+					break;
 				}
-				break;
 			}
 			if (!carried) { b.vel *= exp(-5.0 * pc.dt); } // dropped: grind to a halt
 		}
@@ -261,40 +271,15 @@ void main() {
 	}
 
 	if (b.kind == KIND_BULLET) {
+		// artillery: the shell flies ABOVE everything, straight to the aim point the
+		// CPU measured into its life — and DETONATES exactly there.
 		b.pos += b.vel * pc.dt;
 		b.life -= pc.dt;
-		if (b.life <= 0.0 || any(lessThan(b.pos, vec2(-100.0))) || any(greaterThan(b.pos, vec2(WORLD + 100.0)))) {
+		if (any(lessThan(b.pos, vec2(-100.0))) || any(greaterThan(b.pos, vec2(WORLD + 100.0)))) {
 			b.kind = KIND_DEAD;
-			BODIES[id] = b;
-			return;
-		}
-		if (in_building(b.pos)) { // shells detonate on the facades too
+		} else if (b.life <= 0.0) {
 			b.kind = KIND_DYING; b.variant = VAR_BOOM; b.life = BOOM_T; b.vel = vec2(0.0);
-			BODIES[id] = b;
-			return;
 		}
-		// Artillery shells: DETONATE on first contact — the expanding shockwave (this
-		// body, kept in the grid while DYING) does the actual killing.
-		int cx = int(clamp(b.pos.x / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
-		int cy = int(clamp(b.pos.y / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
-		bool hit = false;
-		for (int dy = -1; dy <= 1 && !hit; dy++) {
-			int ny = cy + dy;
-			if (ny < 0 || ny >= int(GRID_SIZE)) { continue; }
-			for (int dx = -1; dx <= 1 && !hit; dx++) {
-				int nx = cx + dx;
-				if (nx < 0 || nx >= int(GRID_SIZE)) { continue; }
-				uint cell = uint(ny) * GRID_SIZE + uint(nx);
-				uint cnt = min(GCOUNT[cell], CELL_CAP);
-				for (uint k = 0u; k < cnt; k++) {
-					uint j = GITEM[cell * CELL_CAP + k];
-					if (j == id) { continue; }
-					Body o = BODIES[j];
-					if (o.kind == KIND_ENEMY && distance(b.pos, o.pos) < b.radius + o.radius) { hit = true; break; }
-				}
-			}
-		}
-		if (hit) { b.kind = KIND_DYING; b.variant = VAR_BOOM; b.life = BOOM_T; b.vel *= 0.05; }
 		BODIES[id] = b;
 		return;
 	}
@@ -444,25 +429,11 @@ void main() {
 					Body o = BODIES[j];
 					vec2 off = b.pos - o.pos;
 					float d = length(off);
-					if (o.kind == KIND_BULLET) {
-						if (d < b.radius + o.radius) {
-							b.hp -= 2.0; // direct shell hit
-							b.life = 1.0;
-							b.vel += normalize(o.vel) * KNOCKBACK * 2.0;
-						}
-					} else if (o.kind == KIND_DYING) { // an expanding shockwave (VAR_BOOM is all the grid holds)
-						// decelerating front — matches the pow curve body.frag draws
-						float R = mix(10.0, BOOM_R, pow(1.0 - clamp(o.life / BOOM_T, 0.0, 1.0), 0.6)) + b.radius;
-						if (d < R && d > 0.001) {
-							float Rprev = mix(10.0, BOOM_R, pow(1.0 - clamp((o.life + pc.dt) / BOOM_T, 0.0, 1.0), 0.6)) + b.radius;
-							if (d > Rprev) { // the front CROSSES me this frame: ONE juicy radial hit
-								b.hp -= 3.5 * (1.0 - 0.45 * d / R);
-								b.life = 1.0;               // full hit flash — the ring of impacts reads bot by bot
-								b.vel += (off / d) * 420.0; // a firm shove back, not a launch
-							}
-							b.vel += (off / d) * (1.0 - d / R) * 1500.0 * pc.dt; // pressure wind behind the front
-							b.hp -= 6.0 * pc.dt * (1.0 - d / R);                 // lingering burn
-							b.life = max(b.life, 0.35);
+					if (o.kind == KIND_DYING) { // a shell detonation (VAR_BOOM is all the grid holds):
+						// in its first instants it STAMPS OUT an exact circle of the horde
+						if (d < BOOM_R && d > 0.001 && BOOM_T - o.life < 0.06) {
+							b.hp = -100.0; // stamped: dies with the quick no-pop fade (see the kill transition)
+							b.vel += (off / d) * 320.0;
 						}
 					} else if (o.kind == KIND_ENEMY || o.kind == KIND_PLAYER || o.kind == KIND_TURRET) {
 						float md = b.radius + o.radius;
@@ -483,7 +454,9 @@ void main() {
 	}
 	if (b.hp <= 0.0) {
 		b.kind = KIND_DYING;
-		b.life = DEATH_T;
+		// stamped by a blast (hp = -100) → start past the pop phase: quick char-and-gone.
+		// gun/laser kills play the full pop.
+		b.life = b.hp < -50.0 ? 0.28 : DEATH_T;
 		b.vel *= 0.25;
 		BODIES[id] = b;
 		return;

@@ -85,8 +85,9 @@ float street_d(vec2 p) {
 	return d;
 }
 
-// Ring band kb / sector jb of p, and whether a block can stand here (z = 1) —
-// z = 0 means plaza, the pit core, or open ground outside the city.
+// Ring band kb / sector jb of p, and whether a block band exists here (z = 1) —
+// z = 0 means the pit core or open ground outside the city. Nearly everything in the
+// city is BUILT; some blocks host a circular plaza (block_plaza below).
 vec3 city_block(vec2 p) {
 	vec2 q = p - vec2(WORLD * 0.5);
 	float r = length(q);
@@ -94,16 +95,34 @@ vec3 city_block(vec2 p) {
 	if (kb < 1.0 || r > pc.city_r - 60.0) { return vec3(kb, 0.0, 0.0); }
 	float ns = kb * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5;
 	float jb = floor((atan(q.y, q.x) - SPIRAL * r) / (TAU / ns));
-	if (hash21(vec2(kb, jb) * 1.13 + 4.7) < PLAZA_P) { return vec3(kb, jb, 0.0); }
 	return vec3(kb, jb, 1.0);
 }
 
-// How deep p sits inside a block's building band (negative on streets/plazas/open
-// ground). VISUAL-only now (courtyard shading, contact shadows) — collision uses the
-// actual house rects below.
+// The circular PLAZA carved into a plaza block: xy = center, z = radius (0 = fully
+// built block). Which blocks host one comes from the CITY table the CPU generated in
+// game_init — physics, the drawing AND the CPU's block_pen all read that one buffer,
+// so the layout can never drift between them.
+vec3 block_plaza(vec2 blkxy) {
+	float kb = blkxy.x;
+	if (kb < 1.0 || kb >= float(CITY_KMAX)) { return vec3(0.0); }
+	float ns = kb * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5;
+	float jw = blkxy.y - ns * floor(blkxy.y / ns); // wrap the seam
+	if (CITY[uint(kb) * CITY_JMAX + uint(jw)] != 0u) { return vec3(0.0); }
+	float rc = (kb + 0.5) * RING_SP;
+	float ac = (jw + 0.5) * TAU / ns + SPIRAL * rc;
+	return vec3(vec2(WORLD * 0.5) + vec2(cos(ac), sin(ac)) * rc, PLAZA_R);
+}
+
+// How deep p sits inside a block's solid band (negative on streets, inside plazas and
+// on open ground). This is the SAME solid region collision enforces (building_push /
+// block_pen mirror it); city.frag draws its rim as the raised block plinth.
 float bldg_pen(vec2 p) {
-	if (city_block(p).z < 0.5) { return -1e9; }
-	return street_d(p) - BLDG_EDGE;
+	vec3 blk = city_block(p);
+	if (blk.z < 0.5) { return -1e9; }
+	float pen = street_d(p) - BLDG_EDGE;
+	vec3 pz = block_plaza(blk.xy);
+	if (pz.z > 0.0) { pen = min(pen, length(p - pz.xy) - pz.z); }
+	return pen;
 }
 
 // distance to the nearest spoke centerline only (houses must clear the avenues)
@@ -158,6 +177,8 @@ House house_at(vec2 p) {
 	vec2 cdir = vec2(cos(aC), sin(aC));
 	vec2 c = vec2(WORLD * 0.5) + cdir * rRow;
 	if (spoke_dist(c) < BLDG_EDGE + S * 0.5) { return hs; } // clear of the avenues
+	vec3 pz = block_plaza(blk.xy);
+	if (pz.z > 0.0 && distance(c, pz.xy) < pz.z + S * 0.5) { return hs; } // houses RING the plaza
 	vec2 d2 = p - c;
 	hs.lc = vec2(dot(d2, cdir), dot(d2, vec2(-cdir.y, cdir.x)));
 	hs.ext = vec2(rowDepth * 0.5 - 4.0 - 14.0 * fract(seed * 3.3),

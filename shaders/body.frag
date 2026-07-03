@@ -176,34 +176,25 @@ void ship(vec2 p, Body b) {
 	}
 }
 
-// Battle damage overlay: soot creeps smoothly over the armor, the core heat-soaks red,
-// and a single molten fissure opens across the hull — clean ruin, no grid cells. A
-// hurt bot should LOOK hurt long before it dies.
+// Battle damage overlay: soot creeps smoothly over the armor; the red is the hit
+// wearing off on ONE smooth shared envelope — no flicker, no per-bot random phases.
+// b.life is stamped when the wave reaches the bot, so across a crowd the animation
+// radiates outward through the bodies with the blast, staggered only by distance.
 void battle_damage(vec2 p, Body b, float maxhp) {
-	// fresh-hit spray: sparks fly while the flash is hot (beams keep this alive)
-	if (b.life > 0.4) {
-		float sp2 = hash21(floor(p / 4.0) + floor(pc.time * 24.0) * vec2(7.0, -9.0) + float(v_id));
-		add += (PAL_EMBER + vec3(0.4)) * step(0.985, sp2) * b.life * 2.0 * cov;
-	}
 	float dmg = 1.0 - clamp(b.hp / maxhp, 0.0, 1.0);
 	if (dmg < 0.10) { return; }
 	float m = (dmg - 0.10) * 1.30;
-	float throb = 0.8 + 0.2 * sin(pc.time * 5.0 + float(v_id));
-	// soot: a smooth noise front creeping over the paint
+	// soot: a smooth noise front creeping over the paint — persistent WEAR is dark
 	float n = vnoise(p * 0.5 + float(v_id % 977u));
 	base = mix(base, vec3(0.028, 0.024, 0.020), smoothstep(1.05 - m * 1.2, 1.35 - m * 1.2, n) * 0.85 * cov);
-	// the core heat-soaks red as hp drains
-	add += PAL_ACCENT * m * m * 0.9 * exp(-dot(p, p) / (b.radius * b.radius * 1.4)) * throb * cov;
-	// a molten fissure opens across the hull
-	if (m > 0.25) {
-		vec2 q = rot2(hash1(v_id * 337u) * TAU) * p;
+	float hot = clamp(b.life, 0.0, 1.0); // decays linearly — a clean cool-down, never a blink
+	if (hot > 0.02) {
+		add += PAL_ACCENT * hot * (0.3 + m * 0.5) * exp(-dot(p, p) / (b.radius * b.radius * 1.4)) * cov;
+		vec2 q = rot2(hash1(v_id * 337u) * TAU) * p; // a fissure glows while the metal is hot
 		float crack = abs(q.y - sin(q.x * 0.5 + hash1(v_id * 337u + 1u) * 6.0) * b.radius * 0.2);
-		add += PAL_ACCENT * exp(-crack * crack / 1.4) * (m - 0.25) * 2.2 * throb * cov
+		add += PAL_ACCENT * exp(-crack * crack / 1.4) * hot * (0.3 + m) * 1.1 * cov
 		     * smoothstep(b.radius, b.radius * 0.5, length(p));
 	}
-	// gutter sparks streaming off
-	float sp = hash21(floor(p / 5.0) + pc.time * vec2(0.0, 3.0) + float(v_id));
-	add += PAL_EMBER * step(0.985 - m * 0.02, sp) * m * 2.0 * cov;
 	for (float i = 0.0; i < 2.0; i += 1.0) { // black smoke curling off the wounds
 		float ph2 = fract(pc.time * 0.55 + hash1(v_id + uint(i) * 7u));
 		vec2 sp2 = vec2(sin(pc.time * 1.3 + i * 2.6) * 6.0, -b.radius * 0.3 - ph2 * 22.0);
@@ -236,9 +227,10 @@ void spider(vec2 p, Body b, float t) {
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		add += PAL_EMBER * 0.5 * soft(length(p - vec2(-r * 0.72, s * r * 0.18)) - r * 0.07);
 	}
-	// sensor slit: dark housing, thin red glow — the eye in the dark
+	// sensor slit: dark housing, thin red glow PULSING like a heartbeat — alive
 	lay(BOT_LINE, soft(sd_box(p - vec2(r * 0.62, 0.0), vec2(r * 0.07, r * 0.24))));
-	add += PAL_ACCENT * 1.8 * soft(sd_box(p - vec2(r * 0.62, 0.0), vec2(r * 0.035, r * 0.17)));
+	float beat = 0.7 + 0.5 * sin(pc.time * 2.8 + float(v_id) * 0.7);
+	add += PAL_ACCENT * 1.1 * beat * soft(sd_box(p - vec2(r * 0.62, 0.0), vec2(r * 0.035, r * 0.17)));
 	battle_damage(p, b, HP_SPIDER);
 }
 
@@ -256,7 +248,8 @@ void skitter(vec2 p, Body b, float t) {
 	plate(p, vec2(0.0), sd_box(p, vec2(r * 1.02, r * 0.38)) - r * 0.18, BOT_OLIVE, 1.0);
 	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.58, 0.0), vec2(r * 0.30, r * 0.26)) - r * 0.10, BOT_KHAKI, 2.0);
 	lay(BOT_ORANGE, soft(sd_box(p - vec2(-r * 0.25, 0.0), vec2(r * 0.48, r * 0.055))) * 0.85);
-	add += PAL_ACCENT * 2.2 * soft(length(p - vec2(r * 0.95, 0.0)) - r * 0.11); // sensor
+	float beat = 0.7 + 0.5 * sin(pc.time * 3.4 + float(v_id) * 0.9); // pulsing eye — alive
+	add += PAL_ACCENT * 1.3 * beat * soft(length(p - vec2(r * 0.95, 0.0)) - r * 0.11);
 	battle_damage(p, b, HP_SKITTER);
 }
 
@@ -290,7 +283,7 @@ void brute(vec2 p, Body b, float t) {
 	                sd_seg(p, vec2(r * 0.30, 0.0), vec2(-r * 0.10, -r * 0.34))) - r * 0.06;
 	lay(BOT_ORANGE, soft(chv) * 0.9);
 	// core vents: two hot slits, pulsing
-	float pulse = 1.3 + 0.5 * sin(pc.time * 3.0 + float(v_id));
+	float pulse = 0.8 + 0.3 * sin(pc.time * 3.0 + float(v_id));
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		add += PAL_ACCENT * pulse * soft(sd_box(p - vec2(-r * 0.30, s * r * 0.14), vec2(r * 0.17, r * 0.028)));
 	}
@@ -376,16 +369,18 @@ void turret(vec2 p, Body b) {
 }
 
 void helper(vec2 p, Body b) {
-	// Salvage drone: a little twin-rotor lifter. Amber work light, teal shell, a hoist
-	// beam down to whatever wreck it's hauling (target slot lives in gen).
+	// Salvage drone: a twin-rotor lifter, sized to READ as the fleet. Amber work light,
+	// grey shell, a hoist beam down to the wreck it's fetching (target slot in gen).
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
 	gCS = 2.6;
+	float sc = 14.0 / max(b.radius, 8.0); // sprite drawn in classic proportions, scaled up by radius
+	p *= sc;
 	float bob = sin(pc.time * 3.1 + float(v_id)) * 1.2;
 	lay(vec3(0.012), 0.4 * soft(length(p - vec2(5.0, 8.0 + bob)) - 9.0)); // it flies HIGH
 	p.y -= bob * 0.4;
-	if (b.gen != 0u) { // hoist beam to the carried wreck
+	if (b.gen != 0u && b.gen != 0x80000000u) { // hoist beam to the target wreck
 		Body t = BODIES[b.gen - 1u];
-		vec2 lp = rot2(-b.angle) * (t.pos - b.pos);
+		vec2 lp = rot2(-b.angle) * (t.pos - b.pos) * sc;
 		if (dot(lp, lp) < 110.0 * 110.0) {
 			float bd = sd_seg(p, vec2(0.0), lp);
 			add += PAL_EMBER * 1.1 * exp(-bd * bd / 3.0) * (0.7 + 0.3 * sin(pc.time * 31.0));
@@ -403,35 +398,38 @@ void helper(vec2 p, Body b) {
 }
 
 void wreck(vec2 p, Body b) {
-	// A shot-down mech: scorched splayed husk. The salvage drones haul it to the pit;
-	// it fades out over its last seconds if left to rot.
+	// Unmistakably DEAD: a flattened charcoal husk under settling ash — none of the
+	// living paint and NO red (red is the language of live threats). Drones haul it.
 	float r = b.radius;
-	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
-	gCS = max(r * 0.22, 2.8);
 	float fade = clamp(b.life / 3.0, 0.0, 1.0);
 	uint s = v_id * 613u;
-	// scorch ring
-	lay(vec3(0.020, 0.018, 0.016), 0.5 * fade * soft(length(p) - r * 1.15));
-	// dead legs, splayed
-	for (float i = 0.0; i < 4.0; i += 1.0) {
+	p *= 0.82; // collapsed: the husk lies wider and flatter than the machine stood
+	lay(vec3(0.016, 0.015, 0.014), 0.6 * fade * soft(length(p) - r * 1.25)); // scorch bed
+	for (float i = 0.0; i < 4.0; i += 1.0) { // dead legs, splayed
 		float aa = (i + 0.5) * (TAU / 4.0) + hash1(s + uint(i)) * 0.8 - 0.4;
 		vec2 tip = rot2(aa) * vec2(r * (1.5 + 0.5 * hash1(s + 9u + uint(i))), 0.0);
-		lay(BOT_LINE * 1.4, soft(sd_seg(p, vec2(0.0), tip) - r * 0.09) * fade);
-		lay(mix(BOT_KHAKI, BOT_OLIVE, hash1(s + 3u + uint(i))) * 0.45, soft(sd_seg(p, tip * 0.3, tip * 0.75) - r * 0.16) * fade);
+		lay(vec3(0.030, 0.029, 0.028), soft(sd_seg(p, vec2(0.0), tip) - r * 0.10) * fade);
 	}
-	// broken hull plates, charred paint
-	plate(p, vec2(0.0), sd_box(rot2(0.4) * p, vec2(r * 0.60, r * 0.45)) - r * 0.10, BOT_KHAKI * 0.5, 1.0);
-	plate(p, vec2(r * 0.2, r * 0.1), sd_box(p - vec2(r * 0.2, r * 0.1), vec2(r * 0.30, r * 0.20)) - r * 0.05, BOT_OLIVE * 0.5, 2.0);
-	base *= 0.35 + 0.65 * fade; // char everything down as it rots
-	// cooling ember in the core
-	add += PAL_EMBER * 0.35 * fade * soft(length(p - vec2(r * 0.15)) - r * 0.12) * (0.5 + 0.5 * sin(pc.time * 3.0 + float(v_id)));
+	// buckled hull: bare charcoal plates, every trace of paint burnt off
+	lay(vec3(0.048, 0.046, 0.044), soft(sd_box(rot2(0.4) * p, vec2(r * 0.62, r * 0.46)) - r * 0.10) * fade);
+	lay(vec3(0.036, 0.035, 0.034), soft(sd_box(p - vec2(r * 0.2, r * 0.1), vec2(r * 0.32, r * 0.22)) - r * 0.05) * fade);
+	// heavy pale ash dusting settling over the top — DEAD reads pale and flat, and a
+	// wreck emits NO light at all (light is the language of the living)
+	float ash = hash21(floor(p / 4.0) + float(v_id));
+	base = mix(base, vec3(0.105, 0.102, 0.098), step(0.62, ash) * 0.65 * cov);
+	base *= 0.4 + 0.6 * fade; // crumbles away if left to rot
 }
 
 void bullet(vec2 p) {
-	// a small hot orb, subtle — the detonation is the show, not the flight
-	float d2 = dot(p, p);
-	add += vec3(1.25, 1.0, 0.75) * 0.9 * exp(-d2 / 4.0);
-	add += PAL_EMBER * 0.5 * exp(-d2 / 24.0);
+	// a molten SHELL: a crisp solid orb (base — no bloom mush), molten rim, hot heart.
+	// It flies ABOVE everything, so it reads as a definite object, not a glow.
+	float d = length(p);
+	float br = 1.0 + 0.08 * sin(pc.time * 23.0);
+	lay(vec3(0.9, 0.28, 0.08), soft(d - 8.5 * br));  // molten rim
+	lay(vec3(1.25, 0.85, 0.45), soft(d - 6.0 * br)); // fire body
+	lay(vec3(1.4, 1.25, 1.0), soft(d - 2.8));        // white-hot heart
+	add += (PAL_EMBER + vec3(0.4)) * 0.8 * exp(-d * d / 30.0); // a tight gleam
+	add += PAL_EMBER * 0.3 * exp(-d * d / 260.0);               // modest halo
 }
 
 void burst(vec2 p, Body b) {
@@ -441,17 +439,13 @@ void burst(vec2 p, Body b) {
 	float prog = 1.0 - clamp(b.life / total, 0.0, 1.0);
 	float fade = 1.0 - prog;
 	uint s = v_id * 977u;
-	if (b.variant == VAR_BOOM) { // shell detonation: the DISTORTION WAVE is the show —
-		// the composite warps the screen; here only a brief dim crack + a few embers
-		float prog2 = pow(prog, 0.6); // decelerating front — matches physics + composite
-		float R = mix(10.0, BOOM_R, prog2);
+	if (b.variant == VAR_BOOM) {
+		// detonation: one brief flash at the point of impact — the wave itself is the
+		// composite's distortion + the reaction radiating THROUGH the bots
 		float rr = length(p);
-		add += (PAL_EMBER * 1.1 + vec3(0.25)) * exp(-rr * rr / 300.0) * exp(-prog * 14.0) * 1.6;
-		// a handful of round embers riding the front
-		vec2 cc = floor(p / 13.0);
-		vec2 dp = (fract(p / 13.0) - vec2(hash21(cc + hash1(s) * 9.0), hash21(cc + hash1(s) * 9.0 + 7.0))) * 13.0;
-		float spark = exp(-dot(dp, dp) / 2.0) * step(0.72, hash21(cc + 3.3));
-		add += PAL_EMBER * spark * smoothstep(R * 1.05, R * 0.55, rr) * fade * 1.6;
+		float flash = exp(-prog * 9.0);
+		lay(vec3(1.3, 1.1, 0.8), soft(rr - mix(6.0, 30.0, 1.0 - flash)) * flash);
+		add += (PAL_EMBER * 1.3 + vec3(0.4)) * exp(-rr * rr / 700.0) * flash;
 		return;
 	}
 	if (b.variant == VAR_SPARK) { // pit sink: glint + a few spark streaks
@@ -490,27 +484,67 @@ void main() {
 	else if (b.kind == KIND_HELPER) { helper(p, b); }
 	else if (b.kind == KIND_DYING && (b.variant == VAR_BOOM || b.variant == VAR_SPARK)) { burst(p, b); }
 	else if (b.kind == KIND_DYING) {
-		// the machine ITSELF dies in place — no pop: it keeps drawing, shudders, and
-		// chars down toward the husk while the death flash + embers play over it
+		// the machine dies in place and POPS: an instant puff, a HARD white-hot
+		// silhouette (pure base — no bloom, so it's a crisp comic pop, not a blur) and
+		// short radial burst streaks snapping outward. Then it shudders and chars down
+		// toward the husk. The effect wears the mech — no circles, no orbs.
 		float prog = 1.0 - clamp(b.life / DEATH_T, 0.0, 1.0);
+		float pop = exp(-prog * 9.0);
+		p /= 1.0 + 0.25 * pop;          // squash-and-stretch: an instant puff...
+		p *= 1.0 + prog * prog * 2.4;   // ...then it collapses into itself
 		p += vec2(sin(pc.time * 47.0 + float(v_id)), cos(pc.time * 53.0 + float(v_id))) * 2.2 * (1.0 - prog);
 		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
 		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
 		else                               { brute(p, b, t); }
-		base *= 1.0 - 0.72 * prog; // charring down — hands off near the wreck's darkness
-		add *= 1.0 - 0.55 * prog;
+		base = mix(base, vec3(1.05, 0.85, 0.62), smoothstep(0.16, 0.04, prog) * 0.9); // the hard flash
+		if (prog < 0.30) { // comic burst streaks — crisp lines, expanding then gone
+			float bp = prog / 0.30;
+			for (float i = 0.0; i < 5.0; i += 1.0) {
+				float a = (i + 0.5) * (TAU / 5.0) + hash1(v_id * 77u) * TAU;
+				vec2 q = rot2(a) * p;
+				float r0 = b.radius * (1.3 + 1.8 * bp);
+				float r1 = r0 + b.radius * (0.9 - 0.6 * bp);
+				lay(vec3(0.95, 0.82, 0.65), soft(sd_seg(q, vec2(r0, 0.0), vec2(r1, 0.0)) - 1.3) * (1.0 - bp * bp));
+			}
+		}
+		base *= 1.0 - 0.72 * prog; // charring down as it goes
+		float vanish = 1.0 - smoothstep(0.5, 0.95, prog); // then it's GONE — nothing stays
+		cov *= vanish;
+		add *= vanish * (1.0 - prog * 0.7);
 		burst(p, b);
 	}
 	else {
 		float mh = b.variant == VAR_SPIDER ? HP_SPIDER : (b.variant == VAR_SKITTER ? HP_SKITTER : HP_BRUTE);
 		float dmgJ = 1.0 - clamp(b.hp / mh, 0.0, 1.0);
-		if (dmgJ > 0.3) { // crippled machines STAGGER — servos failing
-			p += vec2(sin(pc.time * 37.0 + float(v_id)), cos(pc.time * 41.0 + float(v_id))) * (dmgJ - 0.3) * 2.6;
+		if (dmgJ > 0.3) { // crippled machines LIMP — a slow heavy sway, not a vibration
+			p += vec2(sin(pc.time * 6.0 + float(v_id)), cos(pc.time * 7.0 + float(v_id))) * (dmgJ - 0.3) * 2.2;
 		}
 		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
 		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
 		else                               { brute(p, b, t); }
 		if (b.life > 0.0) { base = mix(base, vec3(1.5, 0.62, 0.28), b.life * 0.85); } // hit flash: hot metal, not white
+	}
+	// the LIVE shockwaves reach into this shader: physics publishes each blast's center
+	// + front progress (STATS[2..] — the same list the composite warps the screen with),
+	// and as a front sweeps a bot's distance it rim-lights it FROM the blast point. The
+	// radial effect reads on the bodies themselves, perfectly synced with the wave.
+	if (b.kind == KIND_ENEMY || (b.kind == KIND_DYING && b.variant != VAR_BOOM && b.variant != VAR_SPARK)) {
+		uint nb = min(STATS[2], 8u);
+		for (uint i = 0u; i < nb; i++) {
+			vec2 bpos = vec2(uintBitsToFloat(STATS[3u + i * 3u]), uintBitsToFloat(STATS[4u + i * 3u]));
+			float bprog = uintBitsToFloat(STATS[5u + i * 3u]);
+			vec2 relb = b.pos - bpos;
+			float d = max(length(relb), 0.001);
+			float R = mix(10.0, BOOM_R, pow(bprog, 0.6));
+			// a bot lights up exactly when the front passes through it — the flash
+			// travels outward with the wave, never at random
+			float eff = exp(-pow(d - R, 2.0) / 2600.0) * (1.0 - bprog);
+			if (eff < 0.02) { continue; }
+			vec2 toBlast = rot2(-b.angle) * (-relb / d); // direction to the blast, body frame
+			float facing = clamp(dot(p, toBlast) / max(b.radius, 1.0), 0.0, 1.0); // lit on the blast side
+			base = mix(base, vec3(1.2, 0.45, 0.15), eff * facing * 0.9 * cov);
+			add += PAL_ACCENT * eff * facing * 0.8 * cov;
+		}
 	}
 	// caught in the truck's high-beams: machines SHINE back out of the dark
 	if (b.kind != KIND_PLAYER) {
@@ -529,9 +563,9 @@ void main() {
 	// fake-3D occlusion: bodies live ON THE GROUND — march the same city silhouettes
 	// city.frag draws, and if a building covers this pixel the building is in front (a
 	// bot on the street behind a tower must NOT be painted onto its roof). This also
-	// clips legs/sparks poking into facades at ground level. Salvage drones fly above
-	// it all and skip the test.
-	if (b.kind != KIND_HELPER && (cov > 0.003 || dot(add, add) > 0.00001)) {
+	// clips legs/sparks poking into facades at ground level. Salvage drones and the
+	// artillery shells fly ABOVE it all and skip the test.
+	if (b.kind != KIND_HELPER && b.kind != KIND_BULLET && (cov > 0.003 || dot(add, add) > 0.00001)) {
 		vec2 sq = (gl_FragCoord.xy - pc.screen * 0.5) * ZOOM;
 		for (int i = 0; i < 8; i++) {
 			float tq = 1.0 - float(i) / 7.0;

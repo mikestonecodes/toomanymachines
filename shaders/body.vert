@@ -27,7 +27,7 @@ void main() {
 	if (b.kind == KIND_PLAYER) { // ship + turret flash + boost flame; the laser needs the whole reach
 		ext = pc.laser > 0.02 ? LASER_LEN + 120.0 : 120.0;
 	}
-	else if (b.kind == KIND_BULLET) { ext = 34.0; } // tracer tail
+	else if (b.kind == KIND_BULLET) { ext = 46.0; } // the fat plasma orb + halo
 	else if (b.kind == KIND_TURRET) { // defense tower; its fire needs the whole reach while shooting
 		bool mg = distance(b.pos, vec2(WORLD * 0.5)) < pc.city_r;
 		float duty = mg ? 0.70 : 0.30;
@@ -38,14 +38,14 @@ void main() {
 		if (mg && fract((pc.time - MG_LEN / MG_V) * rate + hash1(id * 77u)) < duty) { hot = true; }
 		ext = hot ? len + 120.0 : b.radius * 4.0;
 	}
-	else if (b.kind == KIND_HELPER) { ext = 120.0; } // drone + its hoist beam
+	else if (b.kind == KIND_HELPER) { ext = 160.0; } // the upsized drone + its hoist beam
 	else if (b.kind == KIND_WRECK) { ext = b.radius * 2.4; }
 	else if (b.kind == KIND_DYING) {
 		float total = b.variant == VAR_SPARK ? SPARK_T : (b.variant == VAR_BOOM ? BOOM_T : DEATH_T);
 		float prog = 1.0 - clamp(b.life / total, 0.0, 1.0);
-		// dying mechs still draw their whole body + legs, plus the ember spread
-		ext = b.variant == VAR_SPARK ? b.radius + 26.0 * prog + 8.0 : b.radius * 2.6 + 60.0 * prog;
-		if (b.variant == VAR_BOOM) { ext = mix(40.0, BOOM_R + 50.0, prog); } // the shockwave front
+		// dying mechs still draw their whole body + legs (briefly puffed up), + embers
+		ext = b.variant == VAR_SPARK ? b.radius + 26.0 * prog + 8.0 : b.radius * 3.0 + 60.0 * prog;
+		if (b.variant == VAR_BOOM) { ext = 60.0; } // just the brief impact flash
 		if (b.variant == VAR_BRUTE) { ext *= 1.5; }
 	}
 	vec2 local = CORNERS[gl_VertexIndex] * ext;

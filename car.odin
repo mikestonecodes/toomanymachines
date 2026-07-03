@@ -47,7 +47,8 @@ SPOKE2_R    :: RING_SP * 4       // the staggered second half of the avenues sta
 SPIRAL      :: f32(0.00035)      // rad/px twist — avenues curve as they run outward
 STREET_HW   :: f32(105)          // street half-width (the paved part) — wide boulevards
 BLDG_EDGE   :: STREET_HW + 14    // building facades rise at this distance from the centerline
-PLAZA_P     :: f32(0.40)         // chance a block is an open plaza — the city breathes
+PLAZA_P     :: f32(0.14)         // chance a block hosts a plaza — almost everything is BUILT
+PLAZA_R     :: f32(215)          // the plaza: a CIRCLE carved out of its block, ringed by houses
 SPAWN_MIN_D :: f32(680)  // spawns avoid appearing this close to the ship
 AGGRO_D     :: f32(560)  // bots divert from their invasion onto the ship inside this range
 WRECK_T     :: f32(90)   // a wreck rots away after this long if not fed to the pit
@@ -62,10 +63,10 @@ MG_W        :: f32(26)   //   corridor half-width,
 MG_DPS      :: f32(10)   //   chip damage + ricochet
 MG_V        :: f32(1400) //   muzzle velocity — rounds are REAL bullets (time-of-flight rewind)
 R_TURRET    :: f32(40)
-R_HELPER    :: f32(14)
+R_HELPER    :: f32(22) // big enough to READ as the salvage fleet
 BOOM_R      :: f32(170)  // every bullet detonates: shockwave reach
 BOOM_T      :: f32(0.65) //   and expansion time — slow enough to READ the front hit bots one by one
-DEATH_T     :: f32(0.75) // long enough for the death to play out — no pop to the wreck
+DEATH_T     :: f32(0.5)  // pop → collapse → GONE
 SPARK_T     :: f32(0.22)
 SPD_SPIDER  :: f32(130)
 SPD_SKITTER :: f32(235)
@@ -90,9 +91,8 @@ SHIP_DRAG      :: f32(1.15) // 1/s forward decay — stops when you let off
 SHIP_GRIP      :: f32(9.0)  // 1/s lateral bleed — HIGH: corners on rails, no drift-drag
 SHIP_TURN      :: f32(3.4)  // rad/s max yaw
 BULLET_SPEED   :: f32(1050)
-BULLET_RADIUS  :: f32(7)
-BULLET_LIFE    :: f32(0.9)
-FIRE_INTERVAL  :: f32(0.17) // slow, heavy — every shell is an artillery hit
+BULLET_RADIUS  :: f32(11)
+FIRE_INTERVAL  :: f32(0.42) // SLOW and heavy — each shell is an event, not a stream
 CITY_R0        :: f32(5200) // starting city radius — BIG for now, to test the city itself
 CITY_RMAX      :: f32(8200) // sprawl limit (grid edge is at 9400)
 DEPOSIT_GROW   :: f32(60)   // city radius gained per corpse fed to the pit
@@ -118,6 +118,7 @@ input:       struct { up, down, left, right, fire, boost, laser: bool, mouse: [2
 // Pointers into the mapped GPU buffers.
 body_at :: proc(i: int) -> ^Body { return (^Body)(uintptr(buf_map[.Body]) + uintptr(i * size_of(Body))) }
 stats_at :: proc(i: int) -> ^u32 { return (^u32)(uintptr(buf_map[.Stats]) + uintptr(i * 4)) }
+city_at :: proc(i: int) -> ^u32 { return (^u32)(uintptr(buf_map[.City]) + uintptr(i * 4)) }
 
 // ── the curved street layout ──────────────────────────────────────────────────
 // Streets are analytic: clean ring roads every RING_SP px around the pit + spiral
@@ -141,8 +142,8 @@ street_dist :: proc(p: [2]f32) -> f32 {
 	return d
 }
 
-// The shaders' hash21 — block/plaza picks must agree bit-for-bit-ish across CPU and GPU
-// (inputs are small integers, so f32 rounding matches).
+// CPU-only hash for GENERATING the block layout table (game_init) — the GPU never
+// recomputes it, it reads the table, so no bit-matching is required anywhere.
 hash21o :: proc(p: [2]f32) -> f32 {
 	q := linalg.fract(p * [2]f32{123.34, 456.21})
 	q += linalg.dot(q, q + 45.32)
@@ -165,7 +166,6 @@ block_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	ns := kb * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5
 	sa := math.atan2(q.y, q.x) - SPIRAL * r
 	jb := math.floor(sa / (f32(math.TAU) / ns))
-	if hash21o([2]f32{kb, jb} * 1.13 + 4.7) < PLAZA_P { return } // plaza
 	di := r - kb * RING_SP        // to the inner ring centerline
 	douter := (kb + 1) * RING_SP - r // to the outer ring centerline
 	stp := f32(math.TAU) / (SPOKES * 0.5)
@@ -181,6 +181,15 @@ block_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	if di <= douter && di <= ds { sd = BLDG_EDGE - di; n = -rn }
 	else if douter <= ds { sd = BLDG_EDGE - douter; n = rn }
 	else { sd = BLDG_EDGE - ds; n = [2]f32{-q.y, q.x} / max(r, 0.001) * sgn }
+	// the carved plaza circle is open ground too — mirrors block_plaza in common.glsl
+	jw := jb - ns * math.floor(jb / ns) // wrap the seam
+	if int(kb) < int(CITY_KMAX) && city_at(int(kb) * int(CITY_JMAX) + int(jw))^ == 0 {
+		rc := (kb + 0.5) * RING_SP
+		ac := (jw + 0.5) * f32(math.TAU) / ns + SPIRAL * rc
+		heart := CENTER + [2]f32{math.cos(ac), math.sin(ac)} * rc
+		dc := max(linalg.length(p - heart), 0.001)
+		if sdc := PLAZA_R - dc; sdc > sd { sd = sdc; n = (heart - p) / dc }
+	}
 	return
 }
 
@@ -196,6 +205,15 @@ game_init :: proc() {
 	deposits_seen = 0
 	for i in 0 ..< 64 { stats_at(i)^ = 0 }
 	city_r = CITY_R0
+
+	// THE block layout, generated once here and read by BOTH sides — physics.comp and
+	// city.frag index this same buffer (CITY), the CPU collides off the same mapped
+	// memory. One source of truth: no CPU/GPU hash drift can ever split the layout.
+	for k in 0 ..< int(CITY_KMAX) {
+		for j in 0 ..< int(CITY_JMAX) {
+			city_at(k * int(CITY_JMAX) + j)^ = hash21o([2]f32{f32(k), f32(j)} * 1.13 + 4.7) < PLAZA_P ? 0 : 1
+		}
+	}
 
 	body_at(0)^ = {pos = car_pos, radius = CAR_RADIUS, kind = KIND_PLAYER}
 	// The full 80k horde is alive from t=0 — warbands scattered across the wasteland,
@@ -360,7 +378,8 @@ game_update :: proc(dt: f32) {
 		cam_shake = min(cam_shake + laser_v * 7 * dt, 4)
 	}
 
-	// ── fire: dual alternating barrels toward the mouse, with recoil + shake.
+	// ── fire: dual alternating barrels — the shell flies STRAIGHT to the cursor and
+	// detonates exactly there (life = flight time to the aim point; physics booms on expiry).
 	fire_timer -= dt
 	if input.fire && fire_timer <= 0 {
 		if off := aim_world - car_pos; linalg.length(off) > 0.001 {
@@ -368,16 +387,17 @@ game_update :: proc(dt: f32) {
 			ap := [2]f32{-a.y, a.x}
 			body_at(BULLET_LO + bullet_head)^ = {
 				pos    = car_pos + a * (CAR_RADIUS + 14) + ap * (barrel * 5),
-				vel    = a * BULLET_SPEED + car_vel * 0.45,
-				radius = BULLET_RADIUS, life = BULLET_LIFE, hp = 1,
+				vel    = a * BULLET_SPEED,
+				radius = BULLET_RADIUS, hp = 1,
+				life   = max(linalg.length(off) - (CAR_RADIUS + 14), 40) / BULLET_SPEED,
 				angle  = math.atan2(a.y, a.x), kind = KIND_BULLET, variant = VAR_BOOM,
 			}
 			bullet_head = (bullet_head + 1) % MAX_BULLETS
 			fire_timer = FIRE_INTERVAL
 			barrel = -barrel
 			muzzle = 1
-			cam_shake = min(cam_shake + 3.2, 8) // artillery, not a rifle
-			car_vel -= a * 42                   // heavy recoil
+			cam_shake = min(cam_shake + 4.2, 8) // artillery, not a rifle
+			car_vel -= a * 58                   // heavy recoil
 		}
 	}
 }

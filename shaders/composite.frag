@@ -10,11 +10,14 @@ layout(location = 0) out vec4 o_color;
 
 const float BLOOM_INTENSITY = 3.6;
 
-// fishlab grain_post: two-hash animated film grain
+// FILM GRAIN: two-hash animated, slightly coarse — silver-halide clumps, not 1px hiss.
+// Returns ±0.5; the caller weights it by luminance like real stock (shadows/mids grain
+// hard, highlights stay clean).
 float grain(vec2 px, float t) {
-	float n1 = hash21(px + t * 10.0);
-	float n2 = hash21(px * 1.5 + t * 7.0 + 100.0);
-	return ((n1 + n2) * 0.5 - 0.5) * 0.125; // heavy — the frame should feel GRITTY
+	vec2 gp = floor(px * 0.7); // ~1.4px clumps
+	float n1 = hash21(gp + fract(t * 24.0) * vec2(310.0, 170.0));
+	float n2 = hash21(gp * 1.7 + fract(t * 19.0) * vec2(150.0, 260.0) + 100.0);
+	return (n1 + n2) * 0.5 - 0.5;
 }
 
 void main() {
@@ -78,13 +81,16 @@ void main() {
 	// warm-shadow grade: cool channels roll off a touch faster
 	col = pow(col, vec3(1.0, 1.06, 1.12));
 
-	col += vec3(grain(gl_FragCoord.xy, pc.time));
-
 	// vignette
 	float aspect = pc.screen.x / max(pc.screen.y, 1.0);
 	float rn = length((uv - 0.5) * vec2(aspect, 1.0)) / 0.5;
 	float vig = pow(smoothstep(1.35, 0.55, rn), 1.2);
 	col *= 0.45 + 0.55 * vig; // heavy — the frame lives in the dark
+
+	// film grain rides on top of everything, vignette included — luminance-weighted so
+	// the dark battlefield grains hard while the lights stay clean
+	float lum = dot(col, vec3(0.30, 0.55, 0.15));
+	col += grain(gl_FragCoord.xy, pc.time) * mix(0.20, 0.05, smoothstep(0.0, 0.85, lum));
 
 	o_color = vec4(clamp(col, 0.0, 1.0), 1.0);
 }

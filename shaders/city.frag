@@ -20,11 +20,14 @@ layout(location = 0) out vec4 o_color;
 
 const vec2 SUN = vec2(-0.6, -0.8); // moon, really — key light from screen top-left
 
-// The house system (house_at + house_h) lives in common.glsl — physics collides on the
-// same rects this file draws, and body.frag occludes bodies behind the same silhouettes.
+// The house system (house_at + house_h) lives in common.glsl. The whole solid block
+// band is drawn as a raised PLINTH slab whose rim sits EXACTLY on the collision face
+// (street_d == BLDG_EDGE, same test as building_push/block_pen) — what you see is the
+// hitbox. Houses stand on top of the slab.
 float scene_h(vec2 p) {
 	House hs = house_at(p);
-	return (hs.ok && hs.sd <= 0.0) ? house_h(hs) : 0.0;
+	if (hs.ok && hs.sd <= 0.0) { return house_h(hs); }
+	return bldg_pen(p) > 0.0 ? 0.07 : 0.0;
 }
 
 // Rooftops, straight and readable, per district.
@@ -254,26 +257,25 @@ vec3 ground_col(vec2 w, vec2 s) {
 		col = mix(col, vec3(0.02), step(0.97, hash21(floor(w / 13.0))) * 0.6); // junk piles
 		float spill = hash21(floor(w / 90.0) + 3.3);
 		if (spill > 0.85) { col += PAL_LAMP * 0.04 * (0.5 + dustM); } // a faint lit-room spill
-	} else if (blk.z < 0.5 && blk.x >= 1.0 && cr < pc.city_r - 60.0 && sd > BLDG_EDGE) {
-		// ── EMPTY LOT: unbuilt packed DIRT — unmistakably not pavement. Warm dry earth,
-		// truck ruts arcing around the lot's heart, rubble heaps, a worn edge where the
-		// dirt meets the asphalt.
-		float ns = blk.x * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5;
-		float rc = (blk.x + 0.5) * RING_SP;
-		float ac = (blk.y + 0.5) * TAU / ns + SPIRAL * rc;
-		vec2 heart = ctr + vec2(cos(ac), sin(ac)) * rc;
-		float hd = length(w - heart);
-		float dn = vnoise(w * 0.045) * 0.6 + vnoise(w * 0.012) * 0.4;
-		col = vec3(0.125, 0.100, 0.072) * (0.70 + 0.50 * dn);
-		col *= 0.90 + 0.10 * hash21(floor(w / 6.0)); // dry grain
-		col *= 1.0 - 0.20 * (0.5 + 0.5 * sin(hd * 0.28)) * smoothstep(200.0, 50.0, hd); // ruts
-		vec2 rc2 = floor(w / 60.0); // rubble heaps
-		if (hash21(rc2 + 5.5) > 0.86) {
-			vec2 rp = (rc2 + 0.5) * 60.0;
-			float rd = length(w - rp) - 9.0;
-			col = mix(col, vec3(0.070, 0.065, 0.060), 1.0 - smoothstep(-2.0, 3.0, rd));
+	} else if (blk.z > 0.5) {
+		vec3 pz = block_plaza(blk.xy);
+		float hd = pz.z > 0.0 ? distance(w, pz.xy) : 1e9;
+		if (hd < pz.z) {
+			// ── PLAZA: a round paved square carved into its block, ringed by houses —
+			// concentric paver courses, a monument dais at the heart, a lamp ring
+			float ang2 = atan(w.y - pz.y, w.x - pz.x);
+			col = vec3(0.060, 0.057, 0.054) * (0.82 + 0.18 * hash21(floor(vec2(hd, ang2 * hd) / 24.0)));
+			col *= 0.88 + 0.12 * smoothstep(0.0, 2.0, abs(fract(hd / 42.0) - 0.5) * 42.0); // courses
+			float dd = hd - 40.0; // monument dais
+			col = mix(col, vec3(0.078, 0.073, 0.068), 1.0 - smoothstep(-1.5, 1.0, dd));
+			col = mix(col, vec3(0.02), (1.0 - smoothstep(0.0, 2.0, abs(dd))) * 0.8);
+			col += PAL_LAMP * 1.2 * exp(-hd * hd / 240.0); // the monument lantern
+			for (float i = 0.0; i < 5.0; i += 1.0) { // lamp ring
+				vec2 lp2 = pz.xy + rot2(i * TAU / 5.0 + 0.6) * vec2(pz.z * 0.62, 0.0);
+				float ld2 = dot(w - lp2, w - lp2);
+				col += PAL_LAMP * 1.0 * exp(-ld2 / 60.0);
+			}
 		}
-		col *= 0.82 + 0.18 * smoothstep(BLDG_EDGE, BLDG_EDGE + 50.0, sd); // worn edge
 	}
 
 	// ── streets: scarred asphalt + emissive lane strips + curbs + crossing lamps
@@ -366,7 +368,20 @@ void main() {
 	if (tHit >= 0.0) {
 		vec2 gh = pc.cam + s / (1.0 + PERSP * tHit);
 		House hs = house_at(gh);
-		col = tHit > house_h(hs) - 0.04 ? roof_col(gh, hs) : wall_col(gh, hs, tHit);
+		if (hs.ok && hs.sd <= 0.0) {
+			col = tHit > house_h(hs) - 0.04 ? roof_col(gh, hs) : wall_col(gh, hs, tHit);
+		} else { // the block PLINTH — its rim IS the collision face
+			float pen = bldg_pen(gh);
+			if (tHit > 0.04) { // slab top: packed yard grit between the houses
+				col = vec3(0.042, 0.039, 0.036) * (0.75 + 0.25 * hash21(floor(gh / 33.0)));
+				col *= 0.90 + 0.10 * hash21(floor(gh / 7.0));
+				col = mix(col, vec3(0.02), step(0.97, hash21(floor(gh / 13.0))) * 0.6); // junk
+				col *= 0.70 + 0.30 * smoothstep(0.0, 30.0, pen); // dark edging at the rim
+			} else { // slab wall face — the wall you bump into
+				col = vec3(0.058, 0.055, 0.052) * (0.65 + 0.35 * smoothstep(0.0, 0.07, tHit));
+				col += PAL_LAMP * 0.05;
+			}
+		}
 	} else {
 		col = ground_col(g0, s);
 	}

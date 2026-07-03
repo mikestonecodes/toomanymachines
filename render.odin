@@ -27,6 +27,8 @@ GRID_CELLS :: GRID_SIZE * GRID_SIZE
 CELL_CAP   :: 64
 CELL_SIZE  :: WORLD / f32(GRID_SIZE)
 BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS + MAX_TURRETS + MAX_HELPERS
+CITY_KMAX  :: u32(16) // block layout table: rings ×
+CITY_JMAX  :: u32(10) //   sectors — the CPU generates it ONCE (game_init), both sides read Res.City
 IMG_SCENE  :: u32(0)
 IMG_BLOOMA :: u32(1)
 IMG_BLOOMB :: u32(2)
@@ -37,12 +39,13 @@ MODE_COUNT :: 3 // CPU-only: number of compute passes per frame
 // bindless view), byte size, host-visible. WRITE IN ENUM ORDER — the row order is the bindless
 // slot. tools/gen emits the views + a `<macro>` for each (BODIES = bodyBuf[0].v, …), so shaders
 // just say BODIES/GCOUNT/GITEM/CITY. Add a buffer = add a row here and nothing else.
-Res :: enum { Body, GridCount, GridItem, Stats }
+Res :: enum { Body, GridCount, GridItem, Stats, City }
 BUF_SPECS := [Res]BufSpec{
 	.Body      = { "BODIES", Body, u64(size_of(Body) * BODY_COUNT), true  }, // host-visible: CPU writes player + bullets
 	.GridCount = { "GCOUNT", u32,  u64(4 * GRID_CELLS),             false },
 	.GridItem  = { "GITEM",  u32,  u64(4 * GRID_CELLS * CELL_CAP),  false },
 	.Stats     = { "STATS",  u32,  u64(4 * 64),                     true  }, // host-visible: pit counters + per-frame shockwave list (composite distortion)
+	.City      = { "CITY",   u32,  u64(4 * CITY_KMAX * CITY_JMAX),  true  }, // host-visible: THE block layout (1 = built, 0 = hosts a carved plaza) — one source, both sides read it
 }
 
 // ── offscreen images ── HDR render targets for the post chain, (re)created with the swapchain.
