@@ -8,10 +8,10 @@
 layout(set = 0, binding = 1) uniform sampler2D TEXS[];
 layout(location = 0) out vec4 o_color;
 
-const float THRESH = 0.85;
+const float THRESH = 0.55; // the night ground sits far below this — every light blooms
 const float KNEE   = 0.12;
-const int   TAPS   = 9;
-const float SIGMA  = 2.5;
+const int   TAPS   = 13;  // wide halos: the lights glow THROUGH the dust
+const float SIGMA  = 4.0;
 
 // Soft-knee bright-pass: isolate the glowing part of a scene color.
 vec3 bright(vec3 c) {

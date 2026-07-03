@@ -1,8 +1,9 @@
 #version 460
 #include "common.glsl"
 
-// One instanced quad per body, sized per kind (legs, tracers and death bursts all need
-// margin beyond the collision radius), rotated into the body's facing (+x = forward).
+// One instanced quad per body, sized per kind (legs, tracers, tow beams and death
+// bursts all need margin beyond the collision radius), rotated into the body's facing
+// (+x = forward). Screen mapping is world/ZOOM around the camera.
 
 // Vertex → fragment interface (must match body.frag's `in`s).
 layout(location = 0) out vec2      v_local; // body-frame px
@@ -23,17 +24,32 @@ void main() {
 		return;
 	}
 	float ext = b.radius * 2.6; // enemies: room for legs + flash
-	if (b.kind == KIND_PLAYER) { ext = 82.0; } // truck + turret flash + headlight cones
+	if (b.kind == KIND_PLAYER) { // ship + turret flash + boost flame; the laser needs the whole reach
+		ext = pc.laser > 0.02 ? LASER_LEN + 120.0 : 120.0;
+	}
 	else if (b.kind == KIND_BULLET) { ext = 34.0; } // tracer tail
+	else if (b.kind == KIND_TURRET) { // defense tower; its beam needs the whole reach while firing
+		bool inner = distance(b.pos, vec2(WORLD * 0.5)) < pc.city_r;
+		float duty = inner ? 0.55 : 0.30;
+		float rate = inner ? 0.55 : 0.14;
+		float len  = inner ? 700.0 : TWR_LEN;
+		ext = fract(pc.time * rate + hash1(id * 77u)) < duty ? len + 120.0 : b.radius * 4.0;
+	}
+	else if (b.kind == KIND_WRECK) {
+		ext = b.radius * 2.4;
+		float pd = distance(b.pos, pc.player);
+		if (pd < TOW_D) { ext = max(ext, pd + 30.0); } // cover the tow beam to the ship
+	}
 	else if (b.kind == KIND_DYING) {
-		float total = b.variant == VAR_SPARK ? SPARK_T : DEATH_T;
+		float total = b.variant == VAR_SPARK ? SPARK_T : (b.variant == VAR_BOOM ? BOOM_T : DEATH_T);
 		float prog = 1.0 - clamp(b.life / total, 0.0, 1.0);
 		ext = b.variant == VAR_SPARK ? b.radius + 26.0 * prog + 8.0 : b.radius * 1.4 + 85.0 * prog;
+		if (b.variant == VAR_BOOM) { ext = mix(40.0, BOOM_R + 50.0, prog); } // the shockwave ring
 		if (b.variant == VAR_BRUTE) { ext *= 1.5; }
 	}
 	vec2 local = CORNERS[gl_VertexIndex] * ext;
 	vec2 world = b.pos + rot2(b.angle) * local;
-	vec2 px = world - pc.cam + pc.screen * 0.5;
+	vec2 px = (world - pc.cam) / ZOOM + pc.screen * 0.5;
 	// Vulkan clip space is Y-down, so no flip: px.y=0 (top pixel) → ndc.y=-1 (top).
 	gl_Position = vec4(px / pc.screen * 2.0 - 1.0, 0.0, 1.0);
 	v_local = local;

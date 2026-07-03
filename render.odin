@@ -16,17 +16,17 @@ import vk "vendor:vulkan"
 // shader-side, declared in the graphics pipeline's own .vert/.frag.) Keep the block self-contained
 // (builtins only), one struct per line. Scalar layout — Odin default alignment matches GLSL `scalar`.
 // @glsl
-Push :: struct { screen, cam, player, aim: [2]f32, dt, time, muzzle, throttle: f32, mode: u32 }
+Push :: struct { screen, cam, player, aim: [2]f32, dt, time, muzzle, throttle, boost, laser, city_r: f32, mode: u32 }
 Body :: struct { pos, vel: [2]f32, radius, life, hp, angle: f32, kind, variant, gen: u32 }
 // @glsl-end
 
 // Grid / layout constants shared with the shaders — generated into GLSL (see the @glsl note above).
 // @glsl
-GRID_SIZE  :: 64
+GRID_SIZE  :: 192
 GRID_CELLS :: GRID_SIZE * GRID_SIZE
-CELL_CAP   :: 48
+CELL_CAP   :: 64
 CELL_SIZE  :: WORLD / f32(GRID_SIZE)
-BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS
+BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS + MAX_TURRETS
 IMG_SCENE  :: u32(0)
 IMG_BLOOMA :: u32(1)
 IMG_BLOOMB :: u32(2)
@@ -37,12 +37,12 @@ MODE_COUNT :: 3 // CPU-only: number of compute passes per frame
 // bindless view), byte size, host-visible. WRITE IN ENUM ORDER — the row order is the bindless
 // slot. tools/gen emits the views + a `<macro>` for each (BODIES = bodyBuf[0].v, …), so shaders
 // just say BODIES/GCOUNT/GITEM/CITY. Add a buffer = add a row here and nothing else.
-Res :: enum { Body, GridCount, GridItem, City }
+Res :: enum { Body, GridCount, GridItem, Stats }
 BUF_SPECS := [Res]BufSpec{
 	.Body      = { "BODIES", Body, u64(size_of(Body) * BODY_COUNT), true  }, // host-visible: CPU writes player + bullets
 	.GridCount = { "GCOUNT", u32,  u64(4 * GRID_CELLS),             false },
 	.GridItem  = { "GITEM",  u32,  u64(4 * GRID_CELLS * CELL_CAP),  false },
-	.City      = { "CITY",   f32,  u64(4 * CITY_CELLS),             true  }, // host-visible: CPU writes the height grid at init
+	.Stats     = { "STATS",  u32,  u64(4 * 8),                      true  }, // host-visible: GPU counts pit deposits, CPU polls to grow the city
 }
 
 // ── offscreen images ── HDR render targets for the post chain, (re)created with the swapchain.
@@ -79,7 +79,7 @@ render :: proc(dt: f32) {
 
 	w, h := f32(win_w), f32(win_h)
 	shake := [2]f32{math.sin(sim_time * 143), math.cos(sim_time * 119)} * cam_shake
-	pc := Push{screen = {w, h}, cam = cam + shake, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v}
+	pc := Push{screen = {w, h}, cam = cam + shake, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, city_r = city_r}
 
 	vk.CmdBindPipeline(cmd, .COMPUTE, pipelines[.Physics])
 	groups := (u32(max(GRID_CELLS, BODY_COUNT)) + 63) / 64
@@ -101,7 +101,8 @@ render :: proc(dt: f32) {
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.City])
 	vk.CmdDraw(cmd, 3, 1, 0, 0)
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Body])
-	vk.CmdDraw(cmd, 6, u32(BODY_COUNT), 0, 0)
+	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1) // the horde, bullets, pylons…
+	vk.CmdDraw(cmd, 6, 1, 0, 0)                   // …then the ship, always on top of the crowd
 	img_pass_end(cmd, .Scene)
 
 	// Bloom (fishlab's chain): mode 0 = bright-extract + horizontal gaussian (Scene→BloomA),

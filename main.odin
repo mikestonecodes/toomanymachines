@@ -2,7 +2,6 @@ package main
 
 import "base:runtime"
 import "core:fmt"
-import "core:math"
 import "core:os"
 import "core:time"
 import SDL "vendor:sdl3"
@@ -16,11 +15,11 @@ mouse_scale:  f32 = 1
 should_quit:  bool
 sim_time:     f32
 gpuav_mode:   bool // `gpuav` build-step pass: enable GPU-Assisted validation (see vk.odin)
+shot_mode:    bool // `shot` headless pass: drive + screenshot + exit (see debug.odin)
 g_ctx:        runtime.Context // for "system"-convention Vulkan callbacks
 
 main :: proc() {
 	g_ctx = context
-	shot_mode: bool // headless: drive + screenshot + exit
 	for a in os.args[1:] {
 		switch a {
 		case "gpuav": gpuav_mode = true
@@ -42,7 +41,6 @@ main :: proc() {
 
 	last := time.tick_now()
 	frame_n := 0
-	shot_taken := false
 	for !should_quit {
 		ev: SDL.Event
 		for SDL.PollEvent(&ev) {
@@ -60,6 +58,7 @@ main :: proc() {
 				case .S:      input.down = true
 				case .A:      input.left = true
 				case .D:      input.right = true
+				case .SPACE, .LSHIFT: input.boost = true
 				}
 			case .KEY_UP:
 				#partial switch ev.key.scancode {
@@ -67,6 +66,7 @@ main :: proc() {
 				case .S: input.down = false
 				case .A: input.left = false
 				case .D: input.right = false
+				case .SPACE, .LSHIFT: input.boost = false
 				}
 			}
 		}
@@ -80,17 +80,11 @@ main :: proc() {
 		btn := SDL.GetMouseState(&mx, &my)
 		input.mouse = {mx * mouse_scale, my * mouse_scale}
 		input.fire = .LEFT in btn
+		input.laser = .RIGHT in btn
 
-		if shot_mode || gpuav_mode { // headless drive: run for the border + sweep-fire so the GPU work is exercised
-			input.fire = true
-			input.up = true
-			ang := f32(frame_n) * 0.05
-			input.mouse = {f32(win_w) * 0.5 + math.cos(ang) * 240, f32(win_h) * 0.5 + math.sin(ang) * 240}
-			if gpuav_mode && frame_n >= 90 { should_quit = true }
-			// give the assault a few seconds to close in on the truck
-			if shot_mode && sim_time >= 8.0 && !shot_taken { shot_taken = true; vk_request_shot(".debug_screenshots/vk.jpg") }
-			if shot_mode && sim_time >= 8.5 { should_quit = true }
-		}
+		// Headless drive + test injection override the live input (debug.odin). Always
+		// compiled — the game is built -debug, so ODIN_DEBUG holds; a no-op interactively.
+		when ODIN_DEBUG { dbg_drive_frame(frame_n) }
 
 		game_update(dt)
 		render(dt)

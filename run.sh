@@ -3,5 +3,6 @@
 #   ./run.sh          build shaders + game, run (Vulkan validation ON)
 #   ./run.sh watch    live-reload watcher (rebuilds the binary on .odin edits)
 #   ./run.sh shot     headless: drive the game, screenshot → .debug_screenshots/, exit
+#   ./run.sh test     build with the test harness (debug.odin) + run debug_test_run
 cd "$(dirname "$0")"
 exec odin run tools/build.odin -file -- "$@"

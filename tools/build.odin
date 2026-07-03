@@ -4,6 +4,7 @@ package main
 //   odin run tools/build.odin -file            build shaders + game, run (Vulkan validation ON)
 //   odin run tools/build.odin -file -- watch   ... then hand off to the live-reload watcher
 //   odin run tools/build.odin -file -- shot    ... headless: drive the game, screenshot, exit
+//   odin run tools/build.odin -file -- test    ... build with the test harness (-define:DEBUG_TEST) + run debug_test_run
 //   odin run tools/build.odin -file -- shaders  recompile shaders only, + naga (used by the watcher)
 // Shaders compile with validation on (glslc -Werror + spirv-val); the game reads shaders/spv/*.spv.
 
@@ -148,7 +149,11 @@ main :: proc() {
 	gen_types()                // render.odin @glsl block → tools/gen/types.gen.odin
 	must("odin run tools/gen") // reflect it → shaders/gen.glsl + varying includes
 	build_shaders(false)
-	must("odin build . -out:toomanymachines -debug")
+	// `test` compiles the debug_test_run harness in (debug.odin); every other mode leaves
+	// dbg_test_fn nil, so gpuav/shot/normal runs of this same binary are unaffected.
+	build := "odin build . -out:toomanymachines -debug"
+	if mode == "test" { build = strings.concatenate({build, " -define:DEBUG_TEST=true"}, context.temp_allocator) }
+	must(build)
 
 	// GPU-Assisted validation pass: run the sim headless under GPU-AV (runtime descriptor/OOB
 	// checks the CPU-side layers can't see). Aborts non-zero on any finding.
@@ -160,6 +165,8 @@ main :: proc() {
 		sh("odin run tools/odin-watch.odin -file -- .") // rebuilds on .odin, recompiles shaders on .glsl
 	case "shot":
 		fmt.printf("EXIT: %d\n", sh("./toomanymachines shot") >> 8 & 0xff)
+	case "test":
+		fmt.printf("EXIT: %d\n", sh("./toomanymachines") >> 8 & 0xff)
 	case:
 		fmt.printf("EXIT: %d\n", sh("./toomanymachines") >> 8 & 0xff)
 	}

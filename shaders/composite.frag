@@ -8,7 +8,7 @@
 layout(set = 0, binding = 1) uniform sampler2D TEXS[];
 layout(location = 0) out vec4 o_color;
 
-const float BLOOM_INTENSITY = 2.2;
+const float BLOOM_INTENSITY = 3.2;
 
 // fishlab grain_post: two-hash animated film grain
 float grain(vec2 px, float t) {
@@ -35,7 +35,7 @@ void main() {
 	float aspect = pc.screen.x / max(pc.screen.y, 1.0);
 	float rn = length((uv - 0.5) * vec2(aspect, 1.0)) / 0.5;
 	float vig = pow(smoothstep(1.35, 0.55, rn), 1.2);
-	col *= 0.45 + 0.55 * vig;
+	col *= 0.45 + 0.55 * vig; // heavy — the frame lives in the dark
 
 	o_color = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
