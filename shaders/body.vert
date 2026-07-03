@@ -27,7 +27,9 @@ void main() {
 	if (b.kind == KIND_PLAYER) { // ship + turret flash + boost flame; the laser needs the whole reach
 		ext = pc.laser > 0.02 ? LASER_LEN + 120.0 : 120.0;
 	}
-	else if (b.kind == KIND_BULLET) { ext = 100.0; } // the plasma orb + its long speed trail
+	else if (b.kind == KIND_BULLET) { // the plasma orb + the trail it has LEFT behind so far
+		ext = clamp((b.hp - b.life) * BULLET_SPEED + 24.0, 36.0, 224.0);
+	}
 	else if (b.kind == KIND_TURRET) { // defense tower; its fire needs the whole reach while shooting
 		bool mg = distance(b.pos, vec2(WORLD * 0.5)) < pc.city_r;
 		float duty = mg ? 0.70 : 0.30;

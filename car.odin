@@ -66,6 +66,7 @@ R_TURRET    :: f32(40)
 R_HELPER    :: f32(22) // big enough to READ as the salvage fleet
 BOOM_R      :: f32(170)  // every bullet detonates: shockwave reach
 BOOM_T      :: f32(0.65) //   and expansion time — slow enough to READ the front hit bots one by one
+BULLET_SPEED :: f32(1650) // FAST — a slow shell reads mushy; shaders derive the trail length from it
 DEATH_T     :: f32(0.5)  // pop → collapse → GONE
 SPARK_T     :: f32(0.55) // the pit-swallow show: corkscrew + splash + furnace belch
 SPD_SPIDER  :: f32(130)
@@ -91,7 +92,6 @@ SHIP_BOOST_MAX :: f32(1150)
 SHIP_DRAG      :: f32(1.15) // 1/s forward decay — stops when you let off
 SHIP_GRIP      :: f32(9.0)  // 1/s lateral bleed — HIGH: corners on rails, no drift-drag
 SHIP_TURN      :: f32(3.4)  // rad/s max yaw
-BULLET_SPEED   :: f32(1650) // FAST — a slow shell reads mushy; the round should CRACK out
 BULLET_RADIUS  :: f32(11)
 FIRE_INTERVAL  :: f32(0.24) // heavy but generous — a steady thump of shells
 CITY_R0        :: f32(5200) // starting city radius — BIG for now, to test the city itself
@@ -428,11 +428,13 @@ game_update :: proc(dt: f32) {
 		if off := aim_world - car_pos; linalg.length(off) > 0.001 {
 			a := linalg.normalize(off)
 			ap := [2]f32{-a.y, a.x}
+			flight := max(linalg.length(off) - (CAR_RADIUS + 14), 40) / BULLET_SPEED
 			body_at(BULLET_LO + bullet_head)^ = {
 				pos    = car_pos + a * (CAR_RADIUS + 14) + ap * (barrel * 5),
 				vel    = a * BULLET_SPEED,
-				radius = BULLET_RADIUS, hp = 1,
-				life   = max(linalg.length(off) - (CAR_RADIUS + 14), 40) / BULLET_SPEED,
+				radius = BULLET_RADIUS,
+				hp     = flight, // TOTAL flight time — shaders derive distance-travelled (the trail it leaves)
+				life   = flight, // remaining flight time (physics booms on expiry)
 				angle  = math.atan2(a.y, a.x), kind = KIND_BULLET, variant = VAR_BOOM,
 			}
 			bullet_head = (bullet_head + 1) % MAX_BULLETS

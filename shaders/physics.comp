@@ -286,13 +286,16 @@ void main() {
 	}
 
 	if (b.kind == KIND_BULLET) {
-		// artillery: the shell flies ABOVE everything, straight to the aim point the
-		// CPU measured into its life — and DETONATES exactly there.
+		// the shell flies straight at the aim point the CPU measured into its life and
+		// DETONATES there — or on the FIRST building block it crosses: you cannot fire
+		// past a block. (A short muzzle grace keeps a wall-hugging car from eating its
+		// own shell.) hp holds the TOTAL flight time, so travelled = (hp-life)*speed.
 		b.pos += b.vel * pc.dt;
 		b.life -= pc.dt;
 		if (any(lessThan(b.pos, vec2(-100.0))) || any(greaterThan(b.pos, vec2(WORLD + 100.0)))) {
 			b.kind = KIND_DEAD;
-		} else if (b.life <= 0.0) {
+		} else if (b.life <= 0.0
+		           || ((b.hp - b.life) * BULLET_SPEED > 26.0 && bldg_pen(b.pos) > 0.0)) {
 			b.kind = KIND_DYING; b.variant = VAR_BOOM; b.life = BOOM_T; b.vel = vec2(0.0);
 		}
 		BODIES[id] = b;

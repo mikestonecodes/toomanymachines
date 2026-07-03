@@ -478,24 +478,24 @@ void wreck(vec2 p, Body b) {
 	if (b.variant != 1u) { cov *= 0.55; } // on the ground: faded but clearly THERE
 }
 
-void bullet(vec2 p) {
+void bullet(vec2 p, Body b) {
 	// JUICY PLASMA ORB: a squishy living ball — the rim wobbles with two rolling
-	// harmonics and the molten core breathes inside it, trailing a short pulsing
-	// wake. All in crisp BASE color (the bloom pass gets only a whisper), so it's
-	// juicy without ever being a bright smear.
+	// harmonics and the molten core breathes inside it. Behind it, the trail it has
+	// actually LEFT: length = distance flown (hp packs total flight time), a dark
+	// cooling ember body with a hot line down its core and ripples travelling back
+	// down it. All crisp BASE color; the bloom pass gets only a whisper.
 	float t = pc.time * 8.0 + float(v_id) * 1.7;
 	vec2 q = p - vec2(2.0, 0.0);
 	float r = length(q);
 	float ang = atan(q.y, q.x);
 	float wob = 1.0 + 0.15 * sin(ang * 3.0 + t) + 0.09 * sin(ang * 5.0 - t * 1.3); // living rim
 	float d = r - 6.8 * wob;
-	// the TRAIL: a LONG tapering ember streak with a pulsing width — dark ember body,
-	// a hot bright line down its core — the round's SPEED has to read on screen
-	float x2 = clamp(p.x, -86.0, -2.0);
-	float tt = (-2.0 - x2) / 84.0; // 0 at the orb → 1 at the tail tip
-	float tw = mix(5.2, 0.8, tt) * (1.0 + 0.16 * sin(tt * 11.0 - t * 1.4));
+	float tlen = clamp((b.hp - b.life) * BULLET_SPEED - 4.0, 12.0, 204.0); // what it has flown
+	float x2 = clamp(p.x, -tlen, -2.0);
+	float tt = (-2.0 - x2) / tlen; // 0 at the orb → 1 at the tail tip
+	float tw = mix(5.6, 0.7, tt) * (1.0 + 0.20 * sin(tt * 16.0 + t * 2.2)); // ripples run back down it
 	float td = length(p - vec2(x2, 0.0)) - tw;
-	lay(mix(vec3(0.95, 0.34, 0.08), vec3(0.26, 0.045, 0.02), smoothstep(0.0, 0.8, tt)), soft(td) * (1.0 - tt * tt));
+	lay(mix(vec3(0.95, 0.34, 0.08), vec3(0.24, 0.04, 0.02), smoothstep(0.0, 0.8, tt)), soft(td) * (1.0 - tt * tt));
 	lay(mix(vec3(1.40, 0.85, 0.35), vec3(0.70, 0.16, 0.04), tt), soft(td + tw * 0.55) * (1.0 - tt)); // hot core line
 	add += PAL_EMBER * exp(-td * td / 40.0) * 0.12 * (1.0 - tt); // whisper of heat down the trail
 	lay(vec3(0.02), soft(d - 2.4));            // ink rim seats it on any ground
@@ -571,7 +571,7 @@ void main() {
 	vec2 p = v_local;
 	float t = pc.time + hash1(v_id * 7919u) * TAU;
 	if      (b.kind == KIND_PLAYER) { ship(p, b); }
-	else if (b.kind == KIND_BULLET) { bullet(p); }
+	else if (b.kind == KIND_BULLET) { bullet(p, b); }
 	else if (b.kind == KIND_WRECK)  { wreck(p, b); }
 	else if (b.kind == KIND_TURRET) { turret(p, b); }
 	else if (b.kind == KIND_HELPER) { helper(p, b); }
