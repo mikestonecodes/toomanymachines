@@ -22,19 +22,33 @@ uint cell_of(vec2 p) {
 }
 
 // Whole building BLOCKS are solid — every body lives in the STREET corridor (plazas +
-// the wasteland stay open). Push out along the numerical street_d gradient and slide
-// the velocity along the block face. Mirrors block_pen/collide_city in car.odin. The
-// discrete houses (house_at) are visual + occlusion only.
+// the wasteland stay open). Eject toward the nearest street boundary, analytic per
+// boundary (inner ring / outer ring / nearest spoke) so there is no dead zone on the
+// block's medial ridge. Mirrors block_pen/collide_city in car.odin. The discrete
+// houses (house_at) are visual + occlusion only.
 void building_push(inout vec2 p, inout vec2 v, float r) {
-	if (city_block(p).z < 0.5) { return; }
-	float sd = BLDG_EDGE - street_d(p);
+	vec3 blk = city_block(p);
+	if (blk.z < 0.5) { return; }
+	vec2 q = p - vec2(WORLD * 0.5);
+	float cr = max(length(q), 0.001);
+	float di = cr - blk.x * RING_SP;          // to the inner ring centerline
+	float douter = (blk.x + 1.0) * RING_SP - cr; // to the outer ring centerline
+	float sa = atan(q.y, q.x) - SPIRAL * cr;
+	float stp = TAU / (SPOKES * 0.5);
+	float da = sa - round(sa / stp) * stp;
+	float ds = abs(da) * cr;                  // arc distance to the nearest spoke
+	float sgn = -sign(da);
+	if (cr > SPOKE2_R) {
+		float sa2 = sa + stp * 0.5;
+		float da2 = sa2 - round(sa2 / stp) * stp;
+		if (abs(da2) * cr < ds) { ds = abs(da2) * cr; sgn = -sign(da2); }
+	}
+	vec2 rn = q / cr;
+	float sd; vec2 n;
+	if (di <= douter && di <= ds) { sd = BLDG_EDGE - di; n = -rn; }
+	else if (douter <= ds) { sd = BLDG_EDGE - douter; n = rn; }
+	else { sd = BLDG_EDGE - ds; n = vec2(-q.y, q.x) / cr * sgn; }
 	if (sd >= r) { return; }
-	float e = 2.0;
-	vec2 g = vec2(street_d(p + vec2(e, 0.0)) - street_d(p - vec2(e, 0.0)),
-	              street_d(p + vec2(0.0, e)) - street_d(p - vec2(0.0, e)));
-	float gl = length(g);
-	if (gl < 0.0001) { return; } // dead-center ridge: any motion resolves it next frame
-	vec2 n = -g / gl;
 	p += n * (r - sd);
 	float vn = dot(v, n);
 	if (vn < 0.0) { v -= n * vn; } // slide along the block face
@@ -125,21 +139,26 @@ void main() {
 		// then haul it home — the wreck follows its carrier, the pit swallows it.
 		uint tgt = b.gen;
 		if (tgt != 0u && BODIES[tgt - 1u].kind != KIND_WRECK) { tgt = 0u; } // sunk/rotted/gone
-		if (tgt == 0u) { // probe a hashed stripe of slots for fresh scrap
-			for (uint k = 0u; k < 8u; k++) {
+		if (tgt == 0u) { // probe a hashed stripe of slots for fresh scrap — wrecks near
+			// the PLAYER first (that's where the kills drop), any wreck as fallback
+			uint any = 0u;
+			for (uint k = 0u; k < 24u; k++) {
 				uint slot = ENEMY_LO + (uint(pc.time * 331.0) * 761u + id * 977u + k * 6151u) % MAX_ENEMIES;
-				if (BODIES[slot].kind == KIND_WRECK) { tgt = slot + 1u; break; }
+				if (BODIES[slot].kind != KIND_WRECK) { continue; }
+				if (distance(BODIES[slot].pos, pc.player) < 1600.0) { tgt = slot + 1u; break; }
+				if (any == 0u) { any = slot + 1u; }
 			}
+			if (tgt == 0u) { tgt = any; }
 		}
 		vec2 ctr = vec2(WORLD * 0.5);
-		// idle: patrol the pit rim in a visible carousel, don't stack over the hole
-		float orb = pc.time * 0.35 + float(id) * 0.26;
-		vec2 goal = ctr + vec2(cos(orb), sin(orb)) * (PIT_R + 170.0);
-		float speed = 300.0;
+		// idle: ESCORT the player — a loose carousel around the car, ready to pounce
+		float orb = pc.time * 0.5 + float(id) * 0.26;
+		vec2 goal = pc.player + vec2(cos(orb), sin(orb)) * (130.0 + 70.0 * hash1(id * 13u));
+		float speed = 340.0;
 		if (tgt != 0u) {
 			Body t = BODIES[tgt - 1u];
-			if (distance(b.pos, t.pos) > 55.0) { goal = t.pos; speed = 430.0; } // fly out to it
-			else { goal = ctr; } // carrying: straight home
+			if (distance(b.pos, t.pos) > 55.0) { goal = t.pos; speed = 560.0; } // race out to it
+			else { goal = ctr; speed = 430.0; } // hauling: straight home, fast
 		}
 		vec2 to = goal - b.pos;
 		float td = length(to);
@@ -217,8 +236,9 @@ void main() {
 				BODIES[id] = b;
 				return;
 			}
-		} else if (pd < TOW_D && pd > 46.0) { // magnet-tow: the husk chases the ship
-			b.vel = mix(b.vel, toP / pd * min(pd * 6.0, 620.0), 1.0 - exp(-7.0 * pc.dt));
+		} else if (pd < CAR_RADIUS + b.radius + 8.0) { // the car PLOWS dead stuff aside — no pickup, no drag
+			vec2 awayP = pd > 0.001 ? -toP / pd : vec2(1.0, 0.0);
+			b.vel = awayP * 380.0 + BODIES[0].vel * 0.9;
 		} else {
 			for (uint hi = 0u; hi < MAX_HELPERS; hi++) {
 				Body hd = BODIES[HELPER_LO + hi];
@@ -394,8 +414,8 @@ void main() {
 		b.vel += lpush * pc.dt * 6.0;
 	}
 
-	float vlen = length(b.vel); // cap flings: nothing tunnels through a house in one step
-	if (vlen > 1500.0) { b.vel *= 1500.0 / vlen; }
+	float vlen = length(b.vel); // cap flings: fast enough to FLY, slow enough to never tunnel
+	if (vlen > 3000.0) { b.vel *= 3000.0 / vlen; }
 
 	b.pos += b.vel * pc.dt;
 
@@ -434,9 +454,15 @@ void main() {
 						// decelerating front — matches the pow curve body.frag draws
 						float R = mix(10.0, BOOM_R, pow(1.0 - clamp(o.life / BOOM_T, 0.0, 1.0), 0.6)) + b.radius;
 						if (d < R && d > 0.001) {
-							b.vel += (off / d) * (1.0 - d / R) * 2600.0 * pc.dt;
-							b.hp -= 26.0 * pc.dt * (1.0 - d / R);
-							b.life = max(b.life, 0.6);
+							float Rprev = mix(10.0, BOOM_R, pow(1.0 - clamp((o.life + pc.dt) / BOOM_T, 0.0, 1.0), 0.6)) + b.radius;
+							if (d > Rprev) { // the front CROSSES me this frame: ONE juicy radial hit
+								b.hp -= 3.5 * (1.0 - 0.45 * d / R);
+								b.life = 1.0;               // full hit flash — the ring of impacts reads bot by bot
+								b.vel += (off / d) * 420.0; // a firm shove back, not a launch
+							}
+							b.vel += (off / d) * (1.0 - d / R) * 1500.0 * pc.dt; // pressure wind behind the front
+							b.hp -= 6.0 * pc.dt * (1.0 - d / R);                 // lingering burn
+							b.life = max(b.life, 0.35);
 						}
 					} else if (o.kind == KIND_ENEMY || o.kind == KIND_PLAYER || o.kind == KIND_TURRET) {
 						float md = b.radius + o.radius;

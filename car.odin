@@ -33,7 +33,7 @@ VAR_BOOM    :: u32(4) // bullet detonation: an expanding shockwave that flings t
 MAX_ENEMIES :: 80000
 MAX_BULLETS :: 384
 MAX_TURRETS :: 64
-MAX_HELPERS :: 24
+MAX_HELPERS :: 96 // a proper salvage FLEET — the drones do all the hauling
 ENEMY_LO    :: 1
 BULLET_LO   :: 1 + MAX_ENEMIES
 TURRET_LO   :: BULLET_LO + MAX_BULLETS
@@ -50,7 +50,6 @@ BLDG_EDGE   :: STREET_HW + 14    // building facades rise at this distance from 
 PLAZA_P     :: f32(0.40)         // chance a block is an open plaza — the city breathes
 SPAWN_MIN_D :: f32(680)  // spawns avoid appearing this close to the ship
 AGGRO_D     :: f32(560)  // bots divert from their invasion onto the ship inside this range
-TOW_D       :: f32(180)  // wrecks within this range magnet-tow behind the ship
 WRECK_T     :: f32(90)   // a wreck rots away after this long if not fed to the pit
 LASER_LEN   :: f32(1400) // the ship's giant laser: reach,
 LASER_W     :: f32(30)   //   half-width,
@@ -65,8 +64,8 @@ MG_V        :: f32(1400) //   muzzle velocity — rounds are REAL bullets (time-
 R_TURRET    :: f32(40)
 R_HELPER    :: f32(14)
 BOOM_R      :: f32(170)  // every bullet detonates: shockwave reach
-BOOM_T      :: f32(0.5)  //   and expansion time
-DEATH_T     :: f32(0.55)
+BOOM_T      :: f32(0.65) //   and expansion time — slow enough to READ the front hit bots one by one
+DEATH_T     :: f32(0.75) // long enough for the death to play out — no pop to the wreck
 SPARK_T     :: f32(0.22)
 SPD_SPIDER  :: f32(130)
 SPD_SKITTER :: f32(235)
@@ -151,10 +150,12 @@ hash21o :: proc(p: [2]f32) -> f32 {
 }
 
 // The solid BLOCK under p — whole building blocks are hit area; the car and the horde
-// live in the STREET corridor (plazas + wasteland stay open). Returns signed distance
-// to the block face (positive on open ground) + the outward normal toward the street
-// (numerical street_dist gradient). MUST mirror building_push in physics.comp. The
-// discrete houses (house_at in common.glsl) are visual + the shells' hit test only.
+// live in the STREET corridor (plazas + wasteland stay open). Returns sd = BLDG_EDGE
+// minus the distance to the nearest street (positive & large on open ground) + the
+// normal TOWARD that street — analytic per boundary (inner ring / outer ring / nearest
+// spoke), so there is no dead zone on the block's medial ridge and nothing can hide
+// deep inside a block. MUST mirror building_push in physics.comp. The discrete houses
+// (house_at in common.glsl) are visual + the shells' hit test only.
 block_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	sd = 1e9
 	q := p - CENTER
@@ -165,10 +166,21 @@ block_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	sa := math.atan2(q.y, q.x) - SPIRAL * r
 	jb := math.floor(sa / (f32(math.TAU) / ns))
 	if hash21o([2]f32{kb, jb} * 1.13 + 4.7) < PLAZA_P { return } // plaza
-	sd = BLDG_EDGE - street_dist(p)
-	e := f32(2)
-	g := [2]f32{street_dist(p + {e, 0}) - street_dist(p - {e, 0}), street_dist(p + {0, e}) - street_dist(p - {0, e})}
-	if gl := linalg.length(g); gl > 0.0001 { n = -g / gl }
+	di := r - kb * RING_SP        // to the inner ring centerline
+	douter := (kb + 1) * RING_SP - r // to the outer ring centerline
+	stp := f32(math.TAU) / (SPOKES * 0.5)
+	da := sa - math.round(sa / stp) * stp
+	ds := abs(da) * r             // arc distance to the nearest spoke
+	sgn := -math.sign(da)
+	if r > SPOKE2_R {
+		sa2 := sa + stp * 0.5
+		da2 := sa2 - math.round(sa2 / stp) * stp
+		if abs(da2) * r < ds { ds = abs(da2) * r; sgn = -math.sign(da2) }
+	}
+	rn := q / max(r, 0.001)
+	if di <= douter && di <= ds { sd = BLDG_EDGE - di; n = -rn }
+	else if douter <= ds { sd = BLDG_EDGE - douter; n = rn }
+	else { sd = BLDG_EDGE - ds; n = [2]f32{-q.y, q.x} / max(r, 0.001) * sgn }
 	return
 }
 

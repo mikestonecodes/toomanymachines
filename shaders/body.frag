@@ -144,13 +144,10 @@ void ship(vec2 p, Body b) {
 		add += PAL_EMBER * 1.3 * soft(sd_box(p - vec2(-8.0, s * 10.2), vec2(11.0, 0.9)));
 		add += PAL_ACCENT * 1.6 * soft(sd_box(p - vec2(-25.5, s * 8.0), vec2(1.2, 2.2)));
 	}
-	// BIG headlights + long cones — the truck's lights carry the player's light budget
+	// headlight lamps — small hot points; the LONG beam on the ground lives in
+	// city.frag and ramps up down-range, so there's no blinding pool at the car
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
-		vec2 hl = vec2(22.5, s * 6.5);
-		add += vec3(1.0, 0.90, 0.70) * 3.0 * soft(length(p - hl) - 2.6);
-		vec2 hq = p - hl;
-		float cone = smoothstep(0.50, 0.12, abs(atan(hq.y, hq.x))) * smoothstep(115.0, 5.0, hq.x) * step(0.0, hq.x);
-		add += vec3(1.0, 0.90, 0.65) * cone * 0.30;
+		add += vec3(1.0, 0.90, 0.70) * 1.2 * soft(length(p - vec2(22.5, s * 6.5)) - 2.4);
 	}
 	// rear thrusters: glow with the throttle, flame under boost
 	float th = pc.throttle * 0.8 + pc.boost * 1.6;
@@ -406,21 +403,13 @@ void helper(vec2 p, Body b) {
 }
 
 void wreck(vec2 p, Body b) {
-	// A shot-down mech: scorched splayed husk. Near the ship it lights up with the tow
-	// beam and gets dragged; it fades out over its last seconds if left to rot.
+	// A shot-down mech: scorched splayed husk. The salvage drones haul it to the pit;
+	// it fades out over its last seconds if left to rot.
 	float r = b.radius;
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
 	gCS = max(r * 0.22, 2.8);
 	float fade = clamp(b.life / 3.0, 0.0, 1.0);
 	uint s = v_id * 613u;
-	// tow beam back to the ship
-	vec2 lp = rot2(-b.angle) * (pc.player - b.pos);
-	float pd = length(lp);
-	if (pd < TOW_D) {
-		float bd = sd_seg(p, vec2(0.0), lp);
-		float dash = 0.6 + 0.4 * sin(dot(p, lp / pd) * 0.5 - pc.time * 26.0);
-		add += PAL_EMBER * exp(-bd * bd / 6.0) * dash * 1.3 * fade;
-	}
 	// scorch ring
 	lay(vec3(0.020, 0.018, 0.016), 0.5 * fade * soft(length(p) - r * 1.15));
 	// dead legs, splayed
@@ -499,7 +488,19 @@ void main() {
 	else if (b.kind == KIND_WRECK)  { wreck(p, b); }
 	else if (b.kind == KIND_TURRET) { turret(p, b); }
 	else if (b.kind == KIND_HELPER) { helper(p, b); }
-	else if (b.kind == KIND_DYING)  { burst(p, b); }
+	else if (b.kind == KIND_DYING && (b.variant == VAR_BOOM || b.variant == VAR_SPARK)) { burst(p, b); }
+	else if (b.kind == KIND_DYING) {
+		// the machine ITSELF dies in place — no pop: it keeps drawing, shudders, and
+		// chars down toward the husk while the death flash + embers play over it
+		float prog = 1.0 - clamp(b.life / DEATH_T, 0.0, 1.0);
+		p += vec2(sin(pc.time * 47.0 + float(v_id)), cos(pc.time * 53.0 + float(v_id))) * 2.2 * (1.0 - prog);
+		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
+		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
+		else                               { brute(p, b, t); }
+		base *= 1.0 - 0.72 * prog; // charring down — hands off near the wreck's darkness
+		add *= 1.0 - 0.55 * prog;
+		burst(p, b);
+	}
 	else {
 		float mh = b.variant == VAR_SPIDER ? HP_SPIDER : (b.variant == VAR_SKITTER ? HP_SKITTER : HP_BRUTE);
 		float dmgJ = 1.0 - clamp(b.hp / mh, 0.0, 1.0);
@@ -519,7 +520,8 @@ void main() {
 		if (alongb > 0.0) {
 			float latb = abs(dot(relb, vec2(-fdir.y, fdir.x)));
 			float spread = 24.0 + alongb * 0.40; // matches the ground beam in city.frag
-			float beam = exp(-latb * latb / (spread * spread)) * smoothstep(760.0, 30.0, alongb);
+			float beam = exp(-latb * latb / (spread * spread)) * smoothstep(760.0, 30.0, alongb)
+			           * smoothstep(40.0, 260.0, alongb);
 			base += vec3(0.9, 0.85, 0.72) * beam * 0.55 * cov;
 			add += vec3(1.0, 0.92, 0.75) * beam * 0.18 * cov;
 		}

@@ -255,26 +255,25 @@ vec3 ground_col(vec2 w, vec2 s) {
 		float spill = hash21(floor(w / 90.0) + 3.3);
 		if (spill > 0.85) { col += PAL_LAMP * 0.04 * (0.5 + dustM); } // a faint lit-room spill
 	} else if (blk.z < 0.5 && blk.x >= 1.0 && cr < pc.city_r - 60.0 && sd > BLDG_EDGE) {
-		// ── plaza: radial pavement, a monument dais glowing at its heart, corner lamps
+		// ── EMPTY LOT: unbuilt packed DIRT — unmistakably not pavement. Warm dry earth,
+		// truck ruts arcing around the lot's heart, rubble heaps, a worn edge where the
+		// dirt meets the asphalt.
 		float ns = blk.x * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5;
 		float rc = (blk.x + 0.5) * RING_SP;
 		float ac = (blk.y + 0.5) * TAU / ns + SPIRAL * rc;
 		vec2 heart = ctr + vec2(cos(ac), sin(ac)) * rc;
-		vec2 hq = w - heart;
-		float hd = length(hq);
-		col = vec3(0.052, 0.048, 0.046) * (0.82 + 0.18 * hash21(floor(vec2(hd, atan(hq.y, hq.x) * hd) / 24.0)));
-		col *= 0.90 + 0.10 * smoothstep(0.0, 2.0, abs(fract(hd / 46.0) - 0.5) * 46.0); // ring courses
-		float dd = hd - 42.0; // monument dais
-		col = mix(col, vec3(0.075, 0.068, 0.062), 1.0 - smoothstep(-1.5, 1.0, dd));
-		col = mix(col, vec3(0.02), (1.0 - smoothstep(0.0, 2.0, abs(dd))) * 0.8);
-		col += PAL_LAMP * 1.2 * exp(-hd * hd / 220.0); // the monument lantern
-		col += PAL_LAMP * 0.14 * exp(-hd * hd / 22000.0) * (0.5 + dustM);
-		for (float i = 0.0; i < 4.0; i += 1.0) { // corner lamps
-			vec2 lp = heart + rot2(i * TAU / 4.0 + 0.785) * vec2(150.0, 0.0);
-			float ld2 = dot(w - lp, w - lp);
-			col += PAL_LAMP * 1.1 * exp(-ld2 / 60.0);
-			col += PAL_LAMP * 0.10 * exp(-ld2 / 7000.0) * (0.5 + dustM);
+		float hd = length(w - heart);
+		float dn = vnoise(w * 0.045) * 0.6 + vnoise(w * 0.012) * 0.4;
+		col = vec3(0.125, 0.100, 0.072) * (0.70 + 0.50 * dn);
+		col *= 0.90 + 0.10 * hash21(floor(w / 6.0)); // dry grain
+		col *= 1.0 - 0.20 * (0.5 + 0.5 * sin(hd * 0.28)) * smoothstep(200.0, 50.0, hd); // ruts
+		vec2 rc2 = floor(w / 60.0); // rubble heaps
+		if (hash21(rc2 + 5.5) > 0.86) {
+			vec2 rp = (rc2 + 0.5) * 60.0;
+			float rd = length(w - rp) - 9.0;
+			col = mix(col, vec3(0.070, 0.065, 0.060), 1.0 - smoothstep(-2.0, 3.0, rd));
 		}
+		col *= 0.82 + 0.18 * smoothstep(BLDG_EDGE, BLDG_EDGE + 50.0, sd); // worn edge
 	}
 
 	// ── streets: scarred asphalt + emissive lane strips + curbs + crossing lamps
@@ -381,14 +380,16 @@ void main() {
 		float onGround = tHit >= 0.0 ? 0.15 : 1.0;
 		vec2 fdir = vec2(cos(pc.angle), sin(pc.angle));
 		float along = dot(rel, fdir);
-		if (along > 0.0) { // the high-beams thrown far down the facing — smooth, no speckle
+		if (along > 0.0) { // the high-beams land DOWN-RANGE — the light ramps up away
+			// from the car, so there's no blinding pool right at the bumper
 			float lat = abs(dot(rel, vec2(-fdir.y, fdir.x)));
 			float spread = 24.0 + along * 0.40; // widening high-beam
-			float beam = exp(-lat * lat / (spread * spread)) * smoothstep(760.0, 30.0, along);
+			float beam = exp(-lat * lat / (spread * spread)) * smoothstep(760.0, 30.0, along)
+			           * smoothstep(40.0, 260.0, along);
 			col += vec3(1.0, 0.92, 0.75) * beam * 0.34 * onGround;
 			col += vec3(1.0, 0.92, 0.75) * beam * 0.06; // spill catches facades too
 		}
-		col += PAL_EMBER * exp(-r2 / 5200.0) * (0.30 + 0.06 * sin(pc.time * 9.0)) * onGround;
+		col += PAL_EMBER * exp(-r2 / 5200.0) * (0.14 + 0.03 * sin(pc.time * 9.0)) * onGround;
 		col += PAL_ACCENT * pc.muzzle * exp(-r2 / 12000.0) * 0.5 * onGround;
 		if (pc.laser > 0.05) {
 			vec2 off = pc.aim - pc.player;

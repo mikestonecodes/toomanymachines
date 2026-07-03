@@ -39,16 +39,13 @@ void main() {
 		ext = hot ? len + 120.0 : b.radius * 4.0;
 	}
 	else if (b.kind == KIND_HELPER) { ext = 120.0; } // drone + its hoist beam
-	else if (b.kind == KIND_WRECK) {
-		ext = b.radius * 2.4;
-		float pd = distance(b.pos, pc.player);
-		if (pd < TOW_D) { ext = max(ext, pd + 30.0); } // cover the tow beam to the ship
-	}
+	else if (b.kind == KIND_WRECK) { ext = b.radius * 2.4; }
 	else if (b.kind == KIND_DYING) {
 		float total = b.variant == VAR_SPARK ? SPARK_T : (b.variant == VAR_BOOM ? BOOM_T : DEATH_T);
 		float prog = 1.0 - clamp(b.life / total, 0.0, 1.0);
-		ext = b.variant == VAR_SPARK ? b.radius + 26.0 * prog + 8.0 : b.radius * 1.4 + 85.0 * prog;
-		if (b.variant == VAR_BOOM) { ext = mix(40.0, BOOM_R + 50.0, prog); } // the shockwave ring
+		// dying mechs still draw their whole body + legs, plus the ember spread
+		ext = b.variant == VAR_SPARK ? b.radius + 26.0 * prog + 8.0 : b.radius * 2.6 + 60.0 * prog;
+		if (b.variant == VAR_BOOM) { ext = mix(40.0, BOOM_R + 50.0, prog); } // the shockwave front
 		if (b.variant == VAR_BRUTE) { ext *= 1.5; }
 	}
 	vec2 local = CORNERS[gl_VertexIndex] * ext;
