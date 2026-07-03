@@ -181,6 +181,7 @@ void ship(vec2 p, Body b) {
 // b.life is stamped when the wave reaches the bot, so across a crowd the animation
 // radiates outward through the bodies with the blast, staggered only by distance.
 void battle_damage(vec2 p, Body b, float maxhp) {
+	if (b.hp < -50.0) { return; } // blast-stamped: no damage glow — it walks, whitens, dies
 	float dmg = 1.0 - clamp(b.hp / maxhp, 0.0, 1.0);
 	if (dmg < 0.10) { return; }
 	float m = (dmg - 0.10) * 1.30;
@@ -483,6 +484,21 @@ void main() {
 	else if (b.kind == KIND_TURRET) { turret(p, b); }
 	else if (b.kind == KIND_HELPER) { helper(p, b); }
 	else if (b.kind == KIND_DYING && (b.variant == VAR_BOOM || b.variant == VAR_SPARK)) { burst(p, b); }
+	else if (b.kind == KIND_DYING && b.hp < -50.0) {
+		// blast-stamped (the exact circle): the bot starts NORMAL, animates to full
+		// WHITE, then dies
+		float lf = clamp(b.life / 0.4, 0.0, 1.0); // 1 → 0 over the stamp death
+		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
+		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
+		else                               { brute(p, b, t); }
+		// a faint pale build-up, then one brief FLASH at the very end — the bot is gone
+		// at the flash's peak, never sitting fully white
+		float pre = smoothstep(1.0, 0.3, lf) * 0.18;  // subtle warning tint
+		float flash = smoothstep(0.30, 0.10, lf);     // the end flash (~0.08s)
+		base = mix(base, vec3(1.0), min(pre + flash, 1.0) * 0.95);
+		add *= 1.0 - flash;
+		cov *= smoothstep(0.02, 0.10, lf);            // vanishes AT the peak
+	}
 	else if (b.kind == KIND_DYING) {
 		// the machine dies in place and POPS: an instant puff, a HARD white-hot
 		// silhouette (pure base — no bloom, so it's a crisp comic pop, not a blur) and
@@ -522,7 +538,7 @@ void main() {
 		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
 		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
 		else                               { brute(p, b, t); }
-		if (b.life > 0.0) { base = mix(base, vec3(1.5, 0.62, 0.28), b.life * 0.85); } // hit flash: hot metal, not white
+		if (b.life > 0.0 && b.hp > -50.0) { base = mix(base, vec3(1.5, 0.62, 0.28), min(b.life, 1.0) * 0.85); } // hit flash (never on stamped bots)
 	}
 	// the LIVE shockwaves reach into this shader: physics publishes each blast's center
 	// + front progress (STATS[2..] — the same list the composite warps the screen with),
@@ -536,14 +552,14 @@ void main() {
 			vec2 relb = b.pos - bpos;
 			float d = max(length(relb), 0.001);
 			float R = mix(10.0, BOOM_R, pow(bprog, 0.6));
-			// a bot lights up exactly when the front passes through it — the flash
-			// travels outward with the wave, never at random
-			float eff = exp(-pow(d - R, 2.0) / 2600.0) * (1.0 - bprog);
+			// a bot lights up exactly when the front passes through it — a NARROW band,
+			// so it's strictly one by one, travelling outward with the wave
+			float eff = exp(-pow(d - R, 2.0) / 700.0) * (1.0 - bprog);
 			if (eff < 0.02) { continue; }
 			vec2 toBlast = rot2(-b.angle) * (-relb / d); // direction to the blast, body frame
 			float facing = clamp(dot(p, toBlast) / max(b.radius, 1.0), 0.0, 1.0); // lit on the blast side
-			base = mix(base, vec3(1.2, 0.45, 0.15), eff * facing * 0.9 * cov);
-			add += PAL_ACCENT * eff * facing * 0.8 * cov;
+			base = mix(base, vec3(1.2, 0.45, 0.15), eff * facing * 0.40 * cov);
+			add += PAL_ACCENT * eff * facing * 0.15 * cov;
 		}
 	}
 	// caught in the truck's high-beams: machines SHINE back out of the dark

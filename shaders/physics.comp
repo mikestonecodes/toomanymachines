@@ -430,9 +430,16 @@ void main() {
 					vec2 off = b.pos - o.pos;
 					float d = length(off);
 					if (o.kind == KIND_DYING) { // a shell detonation (VAR_BOOM is all the grid holds):
-						// in its first instants it STAMPS OUT an exact circle of the horde
+						// in its first instants it STAMPS an exact circle of the horde;
+						// each bot's fuse ∝ distance, so the whiten-and-die animation
+						// sweeps radially outward from the blast point
 						if (d < BOOM_R && d > 0.001 && BOOM_T - o.life < 0.06) {
-							b.hp = -100.0; // stamped: dies with the quick no-pop fade (see the kill transition)
+							b.hp = -100.0; // stamped — fate sealed
+							// fuse = front-arrival time (inverse of the radius curve) MINUS
+							// the whiten ramp-up, so full white lands exactly as the wave,
+							// the rim-light and the distortion pass through this bot
+							float tHit = pow(clamp((d - 10.0) / (BOOM_R - 10.0), 0.0, 1.0), 1.6666667) * BOOM_T;
+							b.life = 0.02 + max(tHit - 0.24, 0.0) * 6.0; // life decays at 6/s
 							b.vel += (off / d) * 320.0;
 						}
 					} else if (o.kind == KIND_ENEMY || o.kind == KIND_PLAYER || o.kind == KIND_TURRET) {
@@ -452,11 +459,12 @@ void main() {
 			}
 		}
 	}
-	if (b.hp <= 0.0) {
+	// gun/laser kills die immediately; blast-stamped bots (hp = -100) walk on until
+	// their distance fuse runs out, so the deaths sweep radially outward
+	if (b.hp <= 0.0 && (b.hp > -50.0 || b.life <= 0.01)) {
 		b.kind = KIND_DYING;
-		// stamped by a blast (hp = -100) → start past the pop phase: quick char-and-gone.
-		// gun/laser kills play the full pop.
-		b.life = b.hp < -50.0 ? 0.28 : DEATH_T;
+		// stamped → normal → whiten → gone (body.frag, 0.4s); gun/laser kills play the pop
+		b.life = b.hp < -50.0 ? 0.4 : DEATH_T;
 		b.vel *= 0.25;
 		BODIES[id] = b;
 		return;

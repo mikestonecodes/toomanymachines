@@ -145,29 +145,43 @@ main :: proc() {
 		return
 	}
 
-	sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1")
+	// `shot` is a headless capture meant to run ALONGSIDE a live `watch` session, so it must not
+	// disturb it: don't pkill the running game, and build to a separate binary (toomanymachines-shot)
+	// so the two never fight over the executable file (building over a running binary → ETXTBSY,
+	// which is why every launch-a-game path pkills first). Every other mode replaces the game.
+	shot := mode == "shot"
+	bin := shot ? "toomanymachines-shot" : "toomanymachines"
+	if !shot { sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1") }
 	gen_types()                // render.odin @glsl block → tools/gen/types.gen.odin
 	must("odin run tools/gen") // reflect it → shaders/gen.glsl + varying includes
 	build_shaders(false)
+
+	// watch: live-reload dev loop — hand straight to the watcher and return. It does its own
+	// initial odin build + launch (then rebuilds + relaunches on .odin saves, recompiles
+	// shaders on .glsl saves), so we skip both the redundant odin build AND the headless
+	// GPU-AV pass here: watch loads fast and can't be killed by a failing headless run.
+	if mode == "watch" {
+		sh("odin run tools/odin-watch.odin -file -- .")
+		return
+	}
+
 	// `test` compiles the debug_test_run harness in (debug.odin); every other mode leaves
 	// dbg_test_fn nil, so gpuav/shot/normal runs of this same binary are unaffected.
-	build := "odin build . -out:toomanymachines -debug"
+	build := fmt.tprintf("odin build . -out:%s -debug", bin)
 	if mode == "test" { build = strings.concatenate({build, " -define:DEBUG_TEST=true"}, context.temp_allocator) }
 	must(build)
 
 	// GPU-Assisted validation pass: run the sim headless under GPU-AV (runtime descriptor/OOB
 	// checks the CPU-side layers can't see). Aborts non-zero on any finding.
 	fmt.println(">> GPU-Assisted validation pass…")
-	must("./toomanymachines gpuav")
+	must(fmt.tprintf("./%s gpuav", bin))
 
 	switch mode {
-	case "watch":
-		sh("odin run tools/odin-watch.odin -file -- .") // rebuilds on .odin, recompiles shaders on .glsl
 	case "shot":
-		fmt.printf("EXIT: %d\n", sh("./toomanymachines shot") >> 8 & 0xff)
+		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./%s shot", bin)) >> 8 & 0xff)
 	case "test":
-		fmt.printf("EXIT: %d\n", sh("./toomanymachines") >> 8 & 0xff)
+		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./%s", bin)) >> 8 & 0xff)
 	case:
-		fmt.printf("EXIT: %d\n", sh("./toomanymachines") >> 8 & 0xff)
+		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./%s", bin)) >> 8 & 0xff)
 	}
 }

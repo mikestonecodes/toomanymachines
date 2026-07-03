@@ -1,4 +1,5 @@
 /toomanymachines
+/toomanymachines-shot
 *.o
 shaders/gen.glsl
 shaders/spv/
