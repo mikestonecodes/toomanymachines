@@ -21,23 +21,25 @@ uint cell_of(vec2 p) {
 	return uint(c.y) * GRID_SIZE + uint(c.x);
 }
 
-// Push a circle out of the building region along the numeric street-distance gradient
-// and slide the velocity along the facade. Mirrors collide_city in car.odin.
+// Push a circle out of the actual HOUSE RECT under it (analytic face normal from the
+// house frame) and slide the velocity along the facade. Courtyards, terrace gaps and
+// plazas are open ground — anything without a building is walkable/drivable.
+// Mirrors collide_city in car.odin.
 void building_push(inout vec2 p, inout vec2 v, float r) {
-	float pen = bldg_pen(p) + r;
-	if (pen <= 0.0) { return; }
-	const float e = 2.0;
-	vec2 g = vec2(street_d(p + vec2(e, 0.0)) - street_d(p - vec2(e, 0.0)),
-	              street_d(p + vec2(0.0, e)) - street_d(p - vec2(0.0, e)));
-	float gl = length(g);
-	if (gl < 0.0001) { return; }
-	g /= gl; // points from the street into the building
-	p -= g * pen;
-	float vn = dot(v, g);
-	if (vn > 0.0) { v -= g * vn; } // slide along the wall — this is what funnels the streams
+	House hs = house_at(p);
+	if (!hs.ok || hs.sd >= r) { return; }
+	float eu = hs.ext.x - abs(hs.lc.x);
+	float ev = hs.ext.y - abs(hs.lc.y);
+	vec2 n = eu < ev ? hs.u * sign(hs.lc.x) : vec2(-hs.u.y, hs.u.x) * sign(hs.lc.y);
+	p += n * (r - hs.sd);
+	float vn = dot(v, n);
+	if (vn < 0.0) { v -= n * vn; } // slide along the wall
 }
 
-bool in_building(vec2 p) { return bldg_pen(p) > 0.0; }
+bool in_building(vec2 p) {
+	House hs = house_at(p);
+	return hs.ok && hs.sd < 0.0;
+}
 
 // Spawner for the endless assault: variant mix 60/30/10, marching in from a ring just
 // beyond the CURRENT city edge (pc.city_r) — the pressure moves out with the sprawl.
@@ -92,7 +94,8 @@ float laser_hit(vec2 pos, float radius, out vec2 push) {
 void main() {
 	uint id = gl_GlobalInvocationID.x;
 
-	if (pc.mode == 0u) { // clear grid
+	if (pc.mode == 0u) { // clear grid + this frame's shockwave list
+		if (id == 0u) { atomicExchange(STATS[2], 0u); }
 		if (id < GRID_CELLS) { atomicExchange(GCOUNT[id], 0u); }
 		return;
 	}
@@ -101,7 +104,7 @@ void main() {
 	if (pc.mode == 1u) { // scatter live bodies into the bucket grid (wrecks are debris — skip;
 		// DYING stays in ONLY as a detonation, so the horde feels the shockwave)
 		Body b = BODIES[id];
-		if (b.kind == KIND_DEAD || b.kind == KIND_WRECK) { return; }
+		if (b.kind == KIND_DEAD || b.kind == KIND_WRECK || b.kind == KIND_HELPER) { return; } // drones fly above the brawl
 		if (b.kind == KIND_DYING && b.variant != VAR_BOOM) { return; }
 		uint cell = cell_of(b.pos);
 		uint slot = atomicAdd(GCOUNT[cell], 1u);
@@ -112,9 +115,53 @@ void main() {
 	// ── mode 2: step ─────────────────────────────────────────────────────────
 	Body b = BODIES[id];
 
-	if (b.kind == KIND_TURRET) { return; } // gate pylons are static; enemies read them from the grid
+	if (b.kind == KIND_TURRET) { return; } // towers are static; enemies read them from the grid
+
+	if (b.kind == KIND_HELPER) {
+		// ── salvage drone: find a wreck (target slot stashed in gen, +1), fly out,
+		// then haul it home — the wreck follows its carrier, the pit swallows it.
+		uint tgt = b.gen;
+		if (tgt != 0u && BODIES[tgt - 1u].kind != KIND_WRECK) { tgt = 0u; } // sunk/rotted/gone
+		if (tgt == 0u) { // probe a hashed stripe of slots for fresh scrap
+			for (uint k = 0u; k < 8u; k++) {
+				uint slot = ENEMY_LO + (uint(pc.time * 331.0) * 761u + id * 977u + k * 6151u) % MAX_ENEMIES;
+				if (BODIES[slot].kind == KIND_WRECK) { tgt = slot + 1u; break; }
+			}
+		}
+		vec2 ctr = vec2(WORLD * 0.5);
+		// idle: patrol the pit rim in a visible carousel, don't stack over the hole
+		float orb = pc.time * 0.35 + float(id) * 0.26;
+		vec2 goal = ctr + vec2(cos(orb), sin(orb)) * (PIT_R + 170.0);
+		float speed = 300.0;
+		if (tgt != 0u) {
+			Body t = BODIES[tgt - 1u];
+			if (distance(b.pos, t.pos) > 55.0) { goal = t.pos; speed = 430.0; } // fly out to it
+			else { goal = ctr; } // carrying: straight home
+		}
+		vec2 to = goal - b.pos;
+		float td = length(to);
+		vec2 dir = td > 0.001 ? to / td : vec2(1.0, 0.0);
+		float ph = hash1(id * 71u) * TAU;
+		dir += vec2(-dir.y, dir.x) * sin(pc.time * 2.1 + ph) * 0.25; // lazy drone weave
+		b.vel = mix(b.vel, dir * speed, 1.0 - exp(-4.0 * pc.dt));
+		b.pos += b.vel * pc.dt; // airborne: flies straight over the houses
+		b.pos = clamp(b.pos, vec2(10.0), vec2(WORLD - 10.0));
+		if (length(b.vel) > 20.0) { b.angle = atan(b.vel.y, b.vel.x); }
+		b.gen = tgt;
+		BODIES[id] = b;
+		return;
+	}
 
 	if (b.kind == KIND_DYING) { // death burst counts down → wreck (shot-down mechs) or dead
+		// live shell blasts publish themselves for the composite's distortion ripple
+		if (b.variant == VAR_BOOM && id >= BULLET_LO && id < TURRET_LO) {
+			uint idx = atomicAdd(STATS[2], 1u);
+			if (idx < 8u) {
+				STATS[3u + idx * 3u] = floatBitsToUint(b.pos.x);
+				STATS[4u + idx * 3u] = floatBitsToUint(b.pos.y);
+				STATS[5u + idx * 3u] = floatBitsToUint(1.0 - clamp(b.life / BOOM_T, 0.0, 1.0));
+			}
+		}
 		b.life -= pc.dt;
 		if (b.life <= 0.0) {
 			if (id >= ENEMY_LO && id < BULLET_LO && b.variant != VAR_SPARK) {
@@ -154,6 +201,7 @@ void main() {
 		float pitd = length(toPit);
 		vec2 toP = pc.player - b.pos;
 		float pd = length(toP);
+		bool carried = false; // a salvage drone hauling me? (it stashes my slot in gen)
 		if (pitd < PIT_R * 1.5) { // pit suction takes over near the rim
 			b.vel = mix(b.vel, toPit / max(pitd, 0.001) * 280.0, 1.0 - exp(-4.0 * pc.dt));
 			if (pitd < PIT_R * 0.55) { // swallowed: count it, flash the core, free the slot
@@ -169,12 +217,21 @@ void main() {
 		} else if (pd < TOW_D && pd > 46.0) { // magnet-tow: the husk chases the ship
 			b.vel = mix(b.vel, toP / pd * min(pd * 6.0, 620.0), 1.0 - exp(-7.0 * pc.dt));
 		} else {
-			b.vel *= exp(-5.0 * pc.dt); // dropped: grind to a halt
+			for (uint hi = 0u; hi < MAX_HELPERS; hi++) {
+				Body hd = BODIES[HELPER_LO + hi];
+				if (hd.kind != KIND_HELPER || hd.gen != id + 1u) { continue; }
+				if (distance(hd.pos, b.pos) < 90.0) {
+					b.vel = mix(b.vel, (hd.pos - b.pos) * 4.0, 1.0 - exp(-8.0 * pc.dt));
+					carried = true;
+				}
+				break;
+			}
+			if (!carried) { b.vel *= exp(-5.0 * pc.dt); } // dropped: grind to a halt
 		}
 		vec2 lpush; // the laser bulldozes husks too — herd them toward the pit
 		if (laser_hit(b.pos, b.radius, lpush) > 0.0) { b.vel += lpush * pc.dt * 4.0; }
 		b.pos += b.vel * pc.dt;
-		building_push(b.pos, b.vel, b.radius * 0.8);
+		if (!carried) { building_push(b.pos, b.vel, b.radius * 0.8); } // hoisted husks FLY over the houses
 		b.pos = clamp(b.pos, vec2(10.0), vec2(WORLD - 10.0));
 		BODIES[id] = b;
 		return;
@@ -279,31 +336,46 @@ void main() {
 	}
 	if (b.hp < maxhp * 0.34 && pd < 900.0) { desired = -toP / max(pd, 1.0) * spd * 1.5; } // crippled: flee
 
-	// the defense grid — CONSTANT battle: perimeter giants scythe slow MASSIVE bars
-	// across the wasteland; inner plaza turrets whip short fast beams around almost
-	// non-stop. Timing/sweep derive from time + slot id — body.frag draws the same
-	// beams. Bots near a bar flee it; bots under it burn.
+	// the defense grid — CONSTANT battle. Perimeter giants (outside the city only)
+	// scythe slow MASSIVE two-sided laser bars across the wasteland; inner crossings
+	// mount MACHINE-GUN turrets that hose fast one-sided tracer corridors with
+	// ricochet kicks. Timing/sweep derive from time + slot id — body.frag draws the
+	// identical fire. Bots near the line flee it; bots in it get chewed.
 	for (uint ti = 0u; ti < MAX_TURRETS; ti++) {
 		Body tw = BODIES[TURRET_LO + ti];
 		if (tw.kind != KIND_TURRET) { continue; }
-		bool inner = distance(tw.pos, ctr) < pc.city_r;
-		float duty = inner ? 0.55 : 0.30;
-		float rate = inner ? 0.55 : 0.14;
-		if (fract(pc.time * rate + hash1((TURRET_LO + ti) * 77u)) >= duty) { continue; } // idle
-		float len = inner ? 700.0 : TWR_LEN;
+		bool mg = distance(tw.pos, ctr) < pc.city_r;
+		float len = mg ? MG_LEN : TWR_LEN;
 		vec2 dtw = b.pos - tw.pos;
-		if (dot(dtw, dtw) > len * len) { continue; }
-		float ang = hash1((TURRET_LO + ti) * 913u) * TAU + pc.time * (inner ? 1.9 : 0.22);
+		float d2w = dot(dtw, dtw);
+		if (d2w > len * len) { continue; }
+		float dw = sqrt(d2w);
+		// machine-gun rounds are REAL bullets: rewind the sweep by time-of-flight so I'm
+		// hit by the round ARRIVING now — body.frag draws the identical curling stream
+		float te = mg ? pc.time - dw / MG_V : pc.time;
+		float duty = mg ? 0.70 : 0.30;
+		float rate = mg ? 0.90 : 0.14;
+		if (fract(te * rate + hash1((TURRET_LO + ti) * 77u)) >= duty) { continue; } // idle
+		float wd = mg ? MG_W : TWR_W;
+		float ang = hash1((TURRET_LO + ti) * 913u) * TAU + te * (mg ? 2.6 : 0.22);
 		vec2 ad = vec2(cos(ang), sin(ang));
-		float along = clamp(dot(dtw, ad), -len, len); // two-sided lighthouse bar
+		float along = mg ? dw                                   // the round at my range
+		                 : clamp(dot(dtw, ad), -len, len);      // laser: two-sided bar
 		vec2 cp = tw.pos + ad * along;
 		float dd = distance(b.pos, cp);
 		vec2 away = dd > 0.001 ? (b.pos - cp) / dd : vec2(-ad.y, ad.x);
-		if (dd < TWR_W + b.radius) {
-			b.hp -= TWR_DPS * pc.dt;
+		// machine guns fire in BURSTS (gate must match body.frag: hash1(id*55u))
+		bool shooting = !mg || fract(te * 3.3 + hash1((TURRET_LO + ti) * 55u)) > 0.30;
+		if (dd < wd + b.radius && shooting) {
+			b.hp -= (mg ? MG_DPS : TWR_DPS) * pc.dt;
 			b.life = max(b.life, 0.5);
-			b.vel += (away * 500.0 + ad * 300.0) * pc.dt * 4.0;
-		} else if (dd < TWR_W * 4.0) {
+			if (mg) { // rounds slap and ricochet — jittery kicks, not a steady shove
+				float jit = hash1(id * 41u + uint(pc.time * 30.0));
+				b.vel += (ad * 500.0 + away * 300.0 * (jit - 0.3)) * pc.dt * 5.0;
+			} else {
+				b.vel += (away * 500.0 + ad * 300.0) * pc.dt * 4.0;
+			}
+		} else if (dd < wd * 5.0) {
 			desired = mix(desired, away * spd * 2.0, 0.7);
 		}
 	}
@@ -318,6 +390,9 @@ void main() {
 		b.life = max(b.life, 0.35); // simmer, don't strobe — a whole beam of full flashes reads as a white wall
 		b.vel += lpush * pc.dt * 6.0;
 	}
+
+	float vlen = length(b.vel); // cap flings: nothing tunnels through a house in one step
+	if (vlen > 1500.0) { b.vel *= 1500.0 / vlen; }
 
 	b.pos += b.vel * pc.dt;
 
@@ -353,7 +428,8 @@ void main() {
 							b.vel += normalize(o.vel) * KNOCKBACK * 2.0;
 						}
 					} else if (o.kind == KIND_DYING) { // an expanding shockwave (VAR_BOOM is all the grid holds)
-						float R = mix(24.0, BOOM_R, 1.0 - clamp(o.life / BOOM_T, 0.0, 1.0)) + b.radius;
+						// decelerating front — matches the pow curve body.frag draws
+						float R = mix(10.0, BOOM_R, pow(1.0 - clamp(o.life / BOOM_T, 0.0, 1.0), 0.6)) + b.radius;
 						if (d < R && d > 0.001) {
 							b.vel += (off / d) * (1.0 - d / R) * 2600.0 * pc.dt;
 							b.hp -= 26.0 * pc.dt * (1.0 - d / R);

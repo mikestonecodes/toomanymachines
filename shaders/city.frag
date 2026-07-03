@@ -20,90 +20,57 @@ layout(location = 0) out vec4 o_color;
 
 const vec2 SUN = vec2(-0.6, -0.8); // moon, really — key light from screen top-left
 
-// district of a block: 0 residential rows, 1 industrial yards, 2 tower blocks
-float district(vec3 blk) { return floor(hash21(vec2(blk.x, floor(blk.y / 3.0)) * 2.7 + 13.0) * 2.999); }
-
-// distance to the nearest spoke centerline only (houses must clear the avenues)
-float spoke_dist(vec2 p) {
-	vec2 q = p - vec2(WORLD * 0.5);
-	float r = length(q);
-	float sa = atan(q.y, q.x) - SPIRAL * r;
-	float stp = TAU / (SPOKES * 0.5);
-	float da = sa - round(sa / stp) * stp;
-	float d = abs(da) * r;
-	if (r > SPOKE2_R) {
-		float sa2 = sa + stp * 0.5;
-		float da2 = sa2 - round(sa2 / stp) * stp;
-		d = min(d, abs(da2) * r);
-	}
-	return d;
+// The house system (house_at + house_h) lives in common.glsl — physics collides on the
+// same rects this file draws, and body.frag occludes bodies behind the same silhouettes.
+float scene_h(vec2 p) {
+	House hs = house_at(p);
+	return (hs.ok && hs.sd <= 0.0) ? house_h(hs) : 0.0;
 }
-
-// One discrete rect house under p, or h == 0. lc = house-local px (x = radial,
-// y = along the row), ext = rect half-sizes, u = the house's radial axis in world.
-struct House { float h; vec2 lc; vec2 ext; float seed; float dis; vec2 u; };
-
-House house_at(vec2 p) {
-	House hs;
-	hs.h = 0.0;
-	vec3 blk = city_block(p);
-	if (blk.z < 0.5) { return hs; }
-	vec2 q = p - vec2(WORLD * 0.5);
-	float r = length(q);
-	float rB0 = blk.x * RING_SP + BLDG_EDGE;
-	float rB1 = (blk.x + 1.0) * RING_SP - BLDG_EDGE;
-	float rowDepth = (rB1 - rB0) * 0.40; // two rows hug the streets, courtyard between
-	bool outer = r > (rB0 + rB1) * 0.5;
-	float rRow = outer ? rB1 - rowDepth * 0.5 : rB0 + rowDepth * 0.5;
-	float sa = atan(q.y, q.x) - SPIRAL * r;
-	const float S = 190.0; // house pitch along the row
-	float ci = floor(sa * rRow / S);
-	float seed = hash21(vec2(ci, blk.x * 13.0 + blk.y * 3.0 + (outer ? 7.0 : 0.0)));
-	if (seed < 0.16) { return hs; } // missing house → gap in the terrace
-	// house center + straight local frame, tangent-aligned at ITS angle
-	float aC = (ci + 0.5) * S / rRow + SPIRAL * rRow;
-	vec2 cdir = vec2(cos(aC), sin(aC));
-	vec2 c = vec2(WORLD * 0.5) + cdir * rRow;
-	if (spoke_dist(c) < BLDG_EDGE + S * 0.5) { return hs; } // clear of the avenues
-	vec2 d2 = p - c;
-	hs.lc = vec2(dot(d2, cdir), dot(d2, vec2(-cdir.y, cdir.x)));
-	hs.ext = vec2(rowDepth * 0.5 - 4.0 - 10.0 * fract(seed * 3.3),
-	              S * 0.5 - (14.0 + 22.0 * fract(seed * 5.7)));
-	if (sd_box(vec2(hs.lc.x, hs.lc.y), vec2(hs.ext.x, hs.ext.y)) > 0.0) { return hs; }
-	hs.seed = seed;
-	hs.dis = district(blk);
-	hs.u = cdir;
-	float hh = fract(seed * 9.1);
-	float hb = hs.dis < 0.5 ? 0.22 + 0.16 * hh : (hs.dis < 1.5 ? 0.15 + 0.11 * hh : 0.32 + 0.30 * hh);
-	hb *= clamp(1.25 - blk.x * 0.055, 0.6, 1.2); // downtown rises
-	hs.h = clamp(hb, 0.12, 0.62);
-	return hs;
-}
-
-float scene_h(vec2 p) { return house_at(p).h; }
 
 // Rooftops, straight and readable, per district.
 vec3 roof_col(vec2 g, House hs) {
 	float sx = hs.lc.x / hs.ext.x; // -1..1 across the house (radial)
 	float sy = hs.lc.y / hs.ext.y; // -1..1 along it
-	// weathered paint per house — bright enough to stand off the near-black ground
-	vec3 base = mix(vec3(0.135, 0.120, 0.112), vec3(0.185, 0.105, 0.070), step(0.6, fract(hs.seed * 7.7)));
-	base = mix(base, vec3(0.095, 0.130, 0.128), step(0.75, fract(hs.seed * 13.1)));
+	// weathered greys per house — neighbors contrast in VALUE, never in hue
+	vec3 base = mix(vec3(0.112, 0.108, 0.103), vec3(0.150, 0.140, 0.128), step(0.6, fract(hs.seed * 7.7)));
+	base = mix(base, vec3(0.085, 0.083, 0.082), step(0.75, fract(hs.seed * 13.1)));
+	base = mix(base, vec3(0.195, 0.186, 0.174), step(0.85, fract(hs.seed * 23.9))); // pale concrete
+	base = mix(base, vec3(0.052, 0.050, 0.052), step(0.92, fract(hs.seed * 41.3))); // near-black slate
 	vec3 col = base * (0.70 + 0.60 * hs.h);
 	col *= 0.93 + 0.07 * hash21(floor(g / 9.0)); // grit
 
 	float edge = sd_box(hs.lc, hs.ext); // ≤ 0 inside
-	if (hs.dis < 0.5) { // residential: pitched roof, ridge along the row
+	if (hs.h > 0.55) { // ── a TALL one, whatever the district: stepped setback tiers
+		vec2 pg = fract(hs.lc / 30.0) * 30.0;
+		float seam = min(min(pg.x, 30.0 - pg.x), min(pg.y, 30.0 - pg.y));
+		col *= 0.80 + 0.20 * smoothstep(0.0, 2.0, seam);
+		float t1 = sd_box(hs.lc, hs.ext * 0.62); // matches the house_h setback geometry
+		float t2 = sd_box(hs.lc, hs.ext * 0.34);
+		col = mix(col, base * 1.35, 1.0 - smoothstep(-1.5, 1.0, t1));
+		col = mix(col, base * 1.7, 1.0 - smoothstep(-1.5, 1.0, t2));
+		col = mix(col, vec3(0.03), (1.0 - smoothstep(0.0, 2.2, abs(t1))) * 0.8);
+		col = mix(col, vec3(0.03), (1.0 - smoothstep(0.0, 2.2, abs(t2))) * 0.8);
+		float md = length(hs.lc); // antenna mast + steady service light
+		col = mix(col, vec3(0.04), 1.0 - smoothstep(2.0, 4.0, md));
+		col += PAL_LAMP * 1.3 * exp(-md * md / 16.0);
+		col += vec3(0.35, 0.36, 0.4) * (1.0 - smoothstep(0.0, 1.6, abs(md - 8.0))) * 0.5; // guy ring
+	} else if (fract(hs.seed * 7.3) < 0.22) { // ── domed hall
+		float dd2 = length(hs.lc / hs.ext);
+		float dome = 1.0 - smoothstep(0.55, 0.72, dd2);
+		vec3 dc = base * (1.1 + 0.9 * smoothstep(0.4, -0.5, dot(hs.lc, normalize(SUN)) / max(hs.ext.x, 1.0)));
+		col = mix(col, dc, dome);
+		col = mix(col, vec3(0.03), (1.0 - smoothstep(0.0, 0.08, abs(dd2 - 0.64))) * 0.7);
+		col += vec3(0.30, 0.32, 0.36) * exp(-dot(hs.lc + hs.ext * 0.25, hs.lc + hs.ext * 0.25) / (hs.ext.x * hs.ext.x * 0.08)) * dome; // moon glint
+	} else if (hs.dis < 0.5) { // residential: pitched roof, ridge along the row
 		float lit = dot(hs.u, normalize(SUN));
 		col *= 0.80 + 0.38 * sign(sx) * lit;                                  // two slopes
 		col *= 0.82 + 0.18 * smoothstep(0.0, 1.8, abs(fract(hs.lc.y / 12.0) - 0.5) * 12.0); // tile rows
 		col *= 1.0 - (1.0 - smoothstep(0.5, 2.5, abs(hs.lc.x))) * 0.45;       // dark ridge line
 		if (fract(hs.seed * 29.3) < 0.6 && abs(sy - 0.55) < 0.10 && abs(sx) > 0.25 && abs(sx) < 0.55) {
 			col = vec3(0.05); // chimney stack
-			col += PAL_EMBER * 0.5 * step(fract(hs.seed * 51.7), 0.3);
 		}
 		if (fract(hs.seed * 17.9) < 0.5 && abs(sy + 0.35) < 0.12 && sx > 0.15 && sx < 0.65) {
-			col += PAL_WINDOW * 2.2; // lit attic skylight
+			col += PAL_LAMP * 1.3; // lit attic skylight
 		}
 	} else if (hs.dis < 1.5) { // industrial: flat gravel, pipes along the shed, a tank
 		col *= 0.9 + 0.1 * hash21(floor(hs.lc / 7.0));
@@ -117,7 +84,7 @@ vec3 roof_col(vec2 g, House hs) {
 			col = mix(col, vec3(0.03), (1.0 - smoothstep(0.0, 2.5, abs(td))) * 0.8);
 		}
 		if (fract(hs.seed * 43.1) < 0.4 && abs(sy) < 0.5) {
-			col += PAL_WINDOW * 1.5 * (1.0 - smoothstep(0.0, 3.0, abs(hs.lc.x - hs.ext.x * 0.55))); // sodium slit
+			col += PAL_LAMP * 0.9 * (1.0 - smoothstep(0.0, 3.0, abs(hs.lc.x - hs.ext.x * 0.55))); // work-light slit
 		}
 	} else { // tower block: panel grid, vents, aircraft beacon
 		vec2 pg = fract(hs.lc / 38.0) * 38.0;
@@ -126,17 +93,16 @@ vec3 roof_col(vec2 g, House hs) {
 		float vv = hash21(floor(hs.lc / 38.0) + hs.seed * 40.0);
 		if (vv > 0.80) { col *= 0.55 + 0.30 * sin(pg.y * 1.4); } // vent grille
 		if (hs.h > 0.40 && fract(hs.seed * 37.7) < 0.6) {
-			float blink = smoothstep(0.6, 0.95, sin(pc.time * 2.3 + hs.seed * 60.0) * 0.5 + 0.5);
-			col += PAL_ACCENT * 3.0 * exp(-dot(hs.lc, hs.lc) / 30.0) * blink;
+			col += PAL_LAMP * 1.0 * exp(-dot(hs.lc, hs.lc) / 30.0); // steady roof lamp
 		}
 	}
-	// eaves: ink outline + a lit parapet lip — the rim sells the height as it parallaxes
+	// eaves: ink outline + a pale parapet lip — the rim sells the height as it parallaxes
 	col *= smoothstep(-0.5, 4.0, -edge) * 0.55 + 0.45;
-	col += vec3(0.14, 0.115, 0.08) * (1.0 - smoothstep(3.0, 10.0, -edge)) * smoothstep(-1.5, -3.0, edge);
+	col += vec3(0.085, 0.082, 0.080) * (1.0 - smoothstep(3.0, 10.0, -edge)) * smoothstep(-1.5, -3.0, edge);
 	// a rooftop service lamp on some houses — the skyline sparkles at night
 	if (fract(hs.seed * 61.3) < 0.40) {
 		vec2 lp = hs.lc - vec2(hs.ext.x * 0.6, -hs.ext.y * 0.6);
-		col += PAL_WINDOW * 2.0 * exp(-dot(lp, lp) / 18.0);
+		col += PAL_LAMP * 0.9 * exp(-dot(lp, lp) / 18.0);
 	}
 	return col;
 }
@@ -158,12 +124,12 @@ vec3 wall_col(vec2 g, House hs, float t) {
 	float wc = fract(along / 26.0);
 	float win = step(0.22, wc) * step(wc, 0.75) * step(0.25, fl) * step(fl, 0.72) * step(t, hs.h - 0.035);
 	float wh = hash21(vec2(floor(along / 26.0), floor(t / 0.12)) + hs.seed * 31.0);
-	vec3 glow = wh < 0.40 ? PAL_WINDOW * (0.8 + 1.6 * fract(wh * 17.0)) :
-	            (wh < 0.48 ? vec3(0.5, 0.7, 0.9) * 0.8 : vec3(0.015, 0.02, 0.03));
+	vec3 glow = wh < 0.40 ? PAL_LAMP * (0.7 + 1.1 * fract(wh * 17.0)) :
+	            (wh < 0.48 ? vec3(0.30, 0.31, 0.33) : vec3(0.018, 0.018, 0.020));
 	col = mix(col, glow, win * 0.9);
 	col *= mix(0.45, 1.10, smoothstep(0.0, max(hs.h, 0.25), t));    // dark base → lit crown
-	col += PAL_EMBER * 0.22 * (1.0 - smoothstep(0.0, 0.20, t));     // street-lamp uplight
-	col += vec3(0.10, 0.085, 0.06) * smoothstep(hs.h - 0.05, hs.h, t); // lit lip at the roofline
+	col += PAL_LAMP * 0.10 * (1.0 - smoothstep(0.0, 0.20, t));      // street-lamp uplight
+	col += vec3(0.070, 0.068, 0.066) * smoothstep(hs.h - 0.05, hs.h, t); // pale lip at the roofline
 	return col;
 }
 
@@ -220,7 +186,7 @@ vec3 ground_col(vec2 w, vec2 s) {
 	float pen = bldg_pen(w);
 
 	// ── wasteland: layered sediment, ripples, craters, scrap — all under drifting dust
-	vec3 dirt = vec3(0.066, 0.054, 0.040) * (0.66 + 0.34 * hash21(floor(w / 148.0)));
+	vec3 dirt = vec3(0.060, 0.056, 0.050) * (0.66 + 0.34 * hash21(floor(w / 148.0)));
 	dirt *= 0.90 + 0.10 * sin((w.x * 0.35 + w.y * 0.85) * 0.0021 + 2.0 * sin(w.y * 0.0009)); // sediment bands
 	dirt *= 0.94 + 0.06 * sin(dot(w, vec2(0.72, 0.69)) * 0.055 + sin(w.x * 0.013));          // wind ripples
 	dirt *= 0.92 + 0.08 * hash21(floor(w / 9.0));                                            // grain
@@ -233,19 +199,18 @@ vec3 ground_col(vec2 w, vec2 s) {
 			float cd = length(w - cp) - (90.0 + 140.0 * fract(chh * 9.0));
 			dirt *= 1.0 - (1.0 - smoothstep(-60.0, 6.0, cd)) * 0.35;          // bowl shadow
 			dirt *= 1.0 + (1.0 - smoothstep(0.0, 14.0, abs(cd))) * 0.55;      // bright rim
-			if (fract(chh * 5.0) > 0.7) { dirt += PAL_EMBER * 0.35 * exp(-max(cd + 60.0, 0.0) * 0.03) * (0.5 + dustM); } // fresh one, still hot
+			if (fract(chh * 5.0) > 0.7) { dirt += vec3(0.085, 0.082, 0.078) * exp(-max(cd + 60.0, 0.0) * 0.03) * (0.5 + dustM); } // fresh one, still dusted
 		}
 	}
-	dirt = mix(dirt, vec3(0.155, 0.125, 0.088), dustM * 0.30); // the dust sheets themselves
+	dirt = mix(dirt, vec3(0.130, 0.122, 0.110), dustM * 0.30); // the dust sheets themselves
 	{ // scattered marker lamps blinking in the dust
 		vec2 lc = floor(w / 340.0);
 		float lh = hash21(lc * 5.1 + 2.2);
 		if (lh > 0.90) {
 			vec2 lpos = (lc + 0.5 + (vec2(hash21(lc + 3.0), hash21(lc + 7.0)) - 0.5) * 0.7) * 340.0;
 			float ld2 = dot(w - lpos, w - lpos);
-			float blink = 0.6 + 0.4 * sin(pc.time * 2.0 + lh * 50.0);
-			dirt += PAL_ACCENT * 1.8 * exp(-ld2 / 16.0) * blink;
-			dirt += PAL_ACCENT * 0.25 * exp(-ld2 / 2600.0) * blink * (0.5 + dustM); // pool lit through dust
+			dirt += PAL_LAMP * 1.1 * exp(-ld2 / 16.0);
+			dirt += PAL_LAMP * 0.12 * exp(-ld2 / 2600.0) * (0.5 + dustM); // pool lit through dust
 		}
 	}
 	{ // crystal fields — red light growing out of the dirt
@@ -258,9 +223,9 @@ vec3 ground_col(vec2 w, vec2 s) {
 				vec2 spike = cp + rot2(hash21(cell + i) * TAU) * vec2(20.0 + 30.0 * hash21(cell + i + 30.0), 0.0);
 				cd = min(cd, sd_seg(w, cp, spike) - 6.0);
 			}
-			dirt = mix(dirt, vec3(0.12, 0.02, 0.02), 1.0 - smoothstep(-1.0, 2.0, cd));
-			dirt += PAL_ACCENT * (0.9 + 0.3 * sin(pc.time * 1.3 + ch * 40.0)) * exp(-max(cd, 0.0) * 0.05) * 0.35 * (0.5 + dustM);
-			dirt += PAL_ACCENT * 1.6 * (1.0 - smoothstep(-4.0, 1.0, cd));
+			dirt = mix(dirt, vec3(0.105, 0.102, 0.100), 1.0 - smoothstep(-1.0, 2.0, cd));
+			dirt += PAL_LAMP * 0.28 * exp(-max(cd, 0.0) * 0.05) * (0.5 + dustM);
+			dirt += PAL_LAMP * 0.9 * (1.0 - smoothstep(-4.0, 1.0, cd));
 		}
 	}
 
@@ -283,12 +248,12 @@ vec3 ground_col(vec2 w, vec2 s) {
 	col = mix(dirt, pave, cityMix);
 
 	if (pen > 0.0) {
-		// ── courtyard between the terrace rows: packed soil, junk, window light spill
-		col = vec3(0.030, 0.025, 0.020) * (0.75 + 0.25 * hash21(floor(w / 33.0)));
+		// ── courtyard between the terrace rows: packed grit, junk, a faint light spill
+		col = vec3(0.028, 0.027, 0.026) * (0.75 + 0.25 * hash21(floor(w / 33.0)));
 		col *= 0.90 + 0.10 * hash21(floor(w / 7.0));
 		col = mix(col, vec3(0.02), step(0.97, hash21(floor(w / 13.0))) * 0.6); // junk piles
 		float spill = hash21(floor(w / 90.0) + 3.3);
-		if (spill > 0.72) { col += PAL_WINDOW * 0.16 * (0.5 + dustM); } // lit rooms spilling out
+		if (spill > 0.85) { col += PAL_LAMP * 0.04 * (0.5 + dustM); } // a faint lit-room spill
 	} else if (blk.z < 0.5 && blk.x >= 1.0 && cr < pc.city_r - 60.0 && sd > BLDG_EDGE) {
 		// ── plaza: radial pavement, a monument dais glowing at its heart, corner lamps
 		float ns = blk.x * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5;
@@ -302,13 +267,13 @@ vec3 ground_col(vec2 w, vec2 s) {
 		float dd = hd - 42.0; // monument dais
 		col = mix(col, vec3(0.075, 0.068, 0.062), 1.0 - smoothstep(-1.5, 1.0, dd));
 		col = mix(col, vec3(0.02), (1.0 - smoothstep(0.0, 2.0, abs(dd))) * 0.8);
-		col += PAL_EMBER * 1.6 * exp(-hd * hd / 220.0) * (0.8 + 0.2 * sin(pc.time * 1.4)); // the flame
-		col += PAL_EMBER * 0.30 * exp(-hd * hd / 22000.0) * (0.5 + dustM);
+		col += PAL_LAMP * 1.2 * exp(-hd * hd / 220.0); // the monument lantern
+		col += PAL_LAMP * 0.14 * exp(-hd * hd / 22000.0) * (0.5 + dustM);
 		for (float i = 0.0; i < 4.0; i += 1.0) { // corner lamps
 			vec2 lp = heart + rot2(i * TAU / 4.0 + 0.785) * vec2(150.0, 0.0);
 			float ld2 = dot(w - lp, w - lp);
-			col += PAL_WINDOW * 2.2 * exp(-ld2 / 60.0);
-			col += PAL_WINDOW * 0.25 * exp(-ld2 / 7000.0) * (0.5 + dustM);
+			col += PAL_LAMP * 1.1 * exp(-ld2 / 60.0);
+			col += PAL_LAMP * 0.10 * exp(-ld2 / 7000.0) * (0.5 + dustM);
 		}
 	}
 
@@ -320,26 +285,46 @@ vec3 ground_col(vec2 w, vec2 s) {
 	road = mix(road, road * 0.5, smoothstep(0.8, 0.98, hash21(floor(w / 39.0))) * 0.7); // scorch/oil
 	col = mix(col, road, rmask);
 	col += vec3(0.10, 0.09, 0.09) * (1.0 - smoothstep(1.0, 2.6, abs(sd - (STREET_HW - 4.0)))) * roadMix; // curb
-	{ // lane light down the middle — dashes of hot red-orange
+	{ // lane paint down the middle — pale worn dashes, not a light show
 		float ringd = abs(cr - max(round(cr / RING_SP), 1.0) * RING_SP);
 		float along = ringd < spoke_dist(w) ? a * cr : cr;
 		float dash = step(fract(along / 120.0), 0.5);
-		col += PAL_ACCENT * (1.0 - smoothstep(1.2, 3.0, sd)) * dash * roadMix * 0.9;
+		col += vec3(0.135, 0.130, 0.122) * (1.0 - smoothstep(1.2, 3.0, sd)) * dash * roadMix;
 	}
 
 	// contact shadow hugging every block — camera-independent, anchors the footprints
 	col *= 1.0 - smoothstep(-90.0, -2.0, pen) * 0.5 * step(pen, 0.0);
 
-	// ── the defense towers' light playing over the ground, through the dust
+	// ── the defense grid's light playing over the ground, through the dust: perimeter
+	// giants sweep their two-sided laser bars; inner MACHINE-GUN turrets strobe a hot
+	// muzzle pool + tracer flicker down their one-sided corridor. Timing MUST match
+	// physics.comp / body.frag (duty/rate/sweep from time + slot id).
 	for (uint ti = 0u; ti < MAX_TURRETS; ti++) {
 		Body tw = BODIES[TURRET_LO + ti];
 		if (tw.kind != KIND_TURRET) { continue; }
 		vec2 dvec = w - tw.pos;
 		float d2 = dot(dvec, dvec);
 		if (d2 > TWR_LEN * TWR_LEN) { continue; }
-		float phase = fract(pc.time * 0.14 + hash1((TURRET_LO + ti) * 77u));
-		if (phase < 0.30) {
-			float env = smoothstep(0.0, 0.03, phase) * smoothstep(0.30, 0.26, phase);
+		bool mg = distance(tw.pos, ctr) < pc.city_r;
+		float duty = mg ? 0.70 : 0.30;
+		float rate = mg ? 0.90 : 0.14;
+		float phase = fract(pc.time * rate + hash1((TURRET_LO + ti) * 77u));
+		if (mg) { // the bullet stream's glow tracks the rounds (time-of-flight rewind)
+			float dw = sqrt(d2);
+			float te = pc.time - dw / MG_V;
+			float ph = fract(te * rate + hash1((TURRET_LO + ti) * 77u));
+			if (ph < duty && dw < MG_LEN) {
+				float envE = smoothstep(0.0, 0.03, ph) * smoothstep(duty, duty - 0.04, ph);
+				float burstE = step(0.30, fract(te * 3.3 + hash1((TURRET_LO + ti) * 55u)));
+				float angE = hash1((TURRET_LO + ti) * 913u) * TAU + te * 2.6;
+				vec2 rp = tw.pos + vec2(cos(angE), sin(angE)) * dw;
+				float lat2 = dot(w - rp, w - rp);
+				col += PAL_EMBER * exp(-lat2 / 1600.0) * 0.25 * envE * burstE * (0.5 + dustM);
+				float strobe = 0.5 + 0.9 * hash1(uint(pc.time * 34.0) * 13u + TURRET_LO + ti);
+				col += (PAL_EMBER * 1.4 + vec3(0.3)) * exp(-d2 / 9000.0) * 0.5 * envE * burstE * strobe;
+			}
+		} else if (phase < duty) {
+			float env = smoothstep(0.0, 0.03, phase) * smoothstep(duty, duty - 0.04, phase);
 			float ang = hash1((TURRET_LO + ti) * 913u) * TAU + pc.time * 0.22;
 			vec2 ad = vec2(cos(ang), sin(ang));
 			float bd = sd_seg(w, tw.pos - ad * TWR_LEN, tw.pos + ad * TWR_LEN);
@@ -384,7 +369,7 @@ void main() {
 	if (tHit >= 0.0) {
 		vec2 gh = pc.cam + s / (1.0 + PERSP * tHit);
 		House hs = house_at(gh);
-		col = tHit > hs.h - 0.04 ? roof_col(gh, hs) : wall_col(gh, hs, tHit);
+		col = tHit > house_h(hs) - 0.04 ? roof_col(gh, hs) : wall_col(gh, hs, tHit);
 	} else {
 		col = ground_col(g0, s);
 	}

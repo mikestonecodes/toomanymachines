@@ -23,7 +23,8 @@ KIND_BULLET :: u32(2)
 KIND_DEAD   :: u32(3)
 KIND_DYING  :: u32(4) // death-burst animation, then WRECK (enemies) or DEAD
 KIND_WRECK  :: u32(5) // shot-down mech husk: towable, feed it to the pit
-KIND_TURRET :: u32(6) // static gate pylon: auto-zaps bots that funnel past
+KIND_TURRET :: u32(6) // static defense tower (perimeter laser / inner machine gun)
+KIND_HELPER :: u32(7) // friendly salvage drone: hauls wrecks to the pit on its own
 VAR_SPIDER  :: u32(0)
 VAR_SKITTER :: u32(1)
 VAR_BRUTE   :: u32(2)
@@ -32,9 +33,11 @@ VAR_BOOM    :: u32(4) // bullet detonation: an expanding shockwave that flings t
 MAX_ENEMIES :: 80000
 MAX_BULLETS :: 384
 MAX_TURRETS :: 64
+MAX_HELPERS :: 24
 ENEMY_LO    :: 1
 BULLET_LO   :: 1 + MAX_ENEMIES
 TURRET_LO   :: BULLET_LO + MAX_BULLETS
+HELPER_LO   :: TURRET_LO + MAX_TURRETS
 CAR_RADIUS  :: f32(20)
 WORLD       :: f32(18800) // world is [0,WORLD]²; the city grows from the center, wasteland everywhere else
 PIT_R       :: f32(230)          // the corpse pit at the world center
@@ -52,10 +55,15 @@ WRECK_T     :: f32(90)   // a wreck rots away after this long if not fed to the 
 LASER_LEN   :: f32(1400) // the ship's giant laser: reach,
 LASER_W     :: f32(30)   //   half-width,
 LASER_DPS   :: f32(9)    //   damage per second at full burn
-TWR_LEN     :: f32(2400) // defense laser towers: beam reach,
+TWR_LEN     :: f32(2400) // perimeter laser towers: beam reach,
 TWR_W       :: f32(46)   //   beam half-width,
 TWR_DPS     :: f32(30)   //   damage per second — a sweep exterminates whole streams
+MG_LEN      :: f32(800)  // inner machine-gun turrets: tracer reach,
+MG_W        :: f32(26)   //   corridor half-width,
+MG_DPS      :: f32(10)   //   chip damage + ricochet
+MG_V        :: f32(1400) //   muzzle velocity — rounds are REAL bullets (time-of-flight rewind)
 R_TURRET    :: f32(40)
+R_HELPER    :: f32(14)
 BOOM_R      :: f32(170)  // every bullet detonates: shockwave reach
 BOOM_T      :: f32(0.5)  //   and expansion time
 DEATH_T     :: f32(0.55)
@@ -142,19 +150,61 @@ hash21o :: proc(p: [2]f32) -> f32 {
 	return math.mod(q.x * q.y, 1)
 }
 
-// How deep p sits inside a building (negative on streets/plazas/open ground).
-// Blocks live between the curved streets: ring band kb ≥ 1, inside city_r, not a plaza.
-// MUST mirror bldg_pen in common.glsl.
-bldg_pen :: proc(p: [2]f32) -> f32 {
+sd_box2 :: proc(p, b: [2]f32) -> f32 {
+	d := [2]f32{abs(p.x) - b.x, abs(p.y) - b.y}
+	return linalg.length(linalg.max(d, [2]f32{0, 0})) + min(max(d.x, d.y), 0)
+}
+
+// The house rect under p: signed distance to it (huge when the cell holds no house)
+// plus its outward face normal. Courtyards, terrace gaps and plazas are open ground.
+// MUST mirror house_at in common.glsl — the GPU collides every body on the same rects.
+house_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
+	sd = 1e9
 	q := p - CENTER
 	r := linalg.length(q)
 	kb := math.floor(r / RING_SP)
-	if kb < 1 || r > city_r - 60 { return -1e9 }
+	if kb < 1 || r > city_r - 60 { return }
 	ns := kb * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5
 	sa := math.atan2(q.y, q.x) - SPIRAL * r
 	jb := math.floor(sa / (f32(math.TAU) / ns))
-	if hash21o([2]f32{kb, jb} * 1.13 + 4.7) < PLAZA_P { return -1e9 }
-	return street_dist(p) - BLDG_EDGE
+	if hash21o([2]f32{kb, jb} * 1.13 + 4.7) < PLAZA_P { return } // plaza
+	rB0 := kb * RING_SP + BLDG_EDGE
+	rB1 := (kb + 1) * RING_SP - BLDG_EDGE
+	rowDepth := (rB1 - rB0) * 0.40
+	outer := r > (rB0 + rB1) * 0.5
+	rRow := outer ? rB1 - rowDepth * 0.5 : rB0 + rowDepth * 0.5
+	S := 130 + math.floor(hash21o([2]f32{kb, outer ? 1 : 0} * 3.9 + 6.1) * 3) * 65
+	ci := math.floor(sa * rRow / S)
+	seed := hash21o({ci, kb * 13 + jb * 3 + (outer ? 7 : 0)})
+	if seed < 0.16 { return } // gap in the terrace
+	aC := (ci + 0.5) * S / rRow + SPIRAL * rRow
+	cdir := [2]f32{math.cos(aC), math.sin(aC)}
+	c := CENTER + cdir * rRow
+	if street_dist_spokes(c) < BLDG_EDGE + S * 0.5 { return } // clear of the avenues
+	d2 := p - c
+	lc := [2]f32{linalg.dot(d2, cdir), linalg.dot(d2, [2]f32{-cdir.y, cdir.x})}
+	ext := [2]f32{rowDepth * 0.5 - 4 - 14 * math.mod(seed * 3.3, 1), S * 0.5 - (8 + 26 * math.mod(seed * 5.7, 1))}
+	sd = sd_box2(lc, ext)
+	eu := ext.x - abs(lc.x)
+	ev := ext.y - abs(lc.y)
+	n = eu < ev ? cdir * math.sign(lc.x) : [2]f32{-cdir.y, cdir.x} * math.sign(lc.y)
+	return
+}
+
+// Just the spoke part of street_dist (house trimming needs it without the rings).
+street_dist_spokes :: proc(p: [2]f32) -> f32 {
+	q := p - CENTER
+	r := linalg.length(q)
+	sa := math.atan2(q.y, q.x) - SPIRAL * r
+	stp := f32(math.TAU) / (SPOKES * 0.5)
+	da := sa - math.round(sa / stp) * stp
+	d := abs(da) * r
+	if r > SPOKE2_R {
+		sa2 := sa + stp * 0.5
+		da2 := sa2 - math.round(sa2 / stp) * stp
+		d = min(d, abs(da2) * r)
+	}
+	return d
 }
 
 game_init :: proc() {
@@ -167,7 +217,7 @@ game_init :: proc() {
 	barrel = 1
 	input = {}
 	deposits_seen = 0
-	for i in 0 ..< 8 { stats_at(i)^ = 0 }
+	for i in 0 ..< 64 { stats_at(i)^ = 0 }
 	city_r = CITY_R0
 
 	body_at(0)^ = {pos = car_pos, radius = CAR_RADIUS, kind = KIND_PLAYER}
@@ -203,10 +253,16 @@ game_init :: proc() {
 		}
 		spawn_tower(&n, pos, rand.float32_range(0, math.TAU))
 	}
-	for m in 0 ..< 10 { // plaza towers on the inner crossings
+	for m in 0 ..< 10 { // machine-gun turrets on the inner crossings (lasers stay outside)
 		k := f32(2 + m % 4)
 		a := f32((m * 2) % 5) * f32(math.TAU) / (SPOKES * 0.5) + SPIRAL * (k * RING_SP)
 		spawn_tower(&n, CENTER + [2]f32{math.cos(a), math.sin(a)} * (k * RING_SP), a)
+	}
+
+	// Salvage drones: a flight of helpers that seek wrecks and haul them to the pit.
+	for i in 0 ..< MAX_HELPERS {
+		a := f32(i) * f32(math.TAU) / MAX_HELPERS
+		body_at(HELPER_LO + i)^ = {pos = CENTER + [2]f32{math.cos(a), math.sin(a)} * (PIT_R + 140), radius = R_HELPER, angle = a, kind = KIND_HELPER}
 	}
 }
 
@@ -349,22 +405,14 @@ game_update :: proc(dt: f32) {
 	}
 }
 
-// Constrain a circle to the street network: push it out of the building region
-// (bldg_pen > 0) along the numeric street-distance gradient, kill velocity into the
-// facade. The GPU does the identical thing per body in physics.comp.
+// Push the ship out of the house rect under it (analytic face normal), kill velocity
+// into the facade. Anywhere without a building — streets, plazas, courtyards, terrace
+// gaps — is open to fly. Mirrors building_push in physics.comp.
 collide_city :: proc(pos: ^[2]f32, vel: ^[2]f32, r: f32) {
-	pen := bldg_pen(pos^) + r
-	if pen <= 0 { return }
-	e :: f32(2)
-	g := [2]f32{
-		street_dist(pos^ + {e, 0}) - street_dist(pos^ - {e, 0}),
-		street_dist(pos^ + {0, e}) - street_dist(pos^ - {0, e}),
-	}
-	gl := linalg.length(g)
-	if gl < 0.0001 { return }
-	g /= gl // points from the street into the building
-	pos^ -= g * pen
-	if vn := linalg.dot(vel^, g); vn > 0 { vel^ -= g * vn * 1.2 } // cancel + a small bounce
+	sd, n := house_pen(pos^)
+	if sd >= r { return }
+	pos^ += n * (r - sd)
+	if vn := linalg.dot(vel^, n); vn < 0 { vel^ -= n * vn * 1.2 } // cancel + a small bounce
 	// never let wall bounces add net energy (a corner wedge would slingshot the ship)
 	if sp := linalg.length(vel^); sp > SHIP_BOOST_MAX { vel^ *= SHIP_BOOST_MAX / sp }
 }

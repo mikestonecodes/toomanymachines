@@ -26,7 +26,7 @@ GRID_SIZE  :: 192
 GRID_CELLS :: GRID_SIZE * GRID_SIZE
 CELL_CAP   :: 64
 CELL_SIZE  :: WORLD / f32(GRID_SIZE)
-BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS + MAX_TURRETS
+BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS + MAX_TURRETS + MAX_HELPERS
 IMG_SCENE  :: u32(0)
 IMG_BLOOMA :: u32(1)
 IMG_BLOOMB :: u32(2)
@@ -42,7 +42,7 @@ BUF_SPECS := [Res]BufSpec{
 	.Body      = { "BODIES", Body, u64(size_of(Body) * BODY_COUNT), true  }, // host-visible: CPU writes player + bullets
 	.GridCount = { "GCOUNT", u32,  u64(4 * GRID_CELLS),             false },
 	.GridItem  = { "GITEM",  u32,  u64(4 * GRID_CELLS * CELL_CAP),  false },
-	.Stats     = { "STATS",  u32,  u64(4 * 8),                      true  }, // host-visible: GPU counts pit deposits, CPU polls to grow the city
+	.Stats     = { "STATS",  u32,  u64(4 * 64),                     true  }, // host-visible: pit counters + per-frame shockwave list (composite distortion)
 }
 
 // ── offscreen images ── HDR render targets for the post chain, (re)created with the swapchain.

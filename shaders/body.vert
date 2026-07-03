@@ -28,13 +28,17 @@ void main() {
 		ext = pc.laser > 0.02 ? LASER_LEN + 120.0 : 120.0;
 	}
 	else if (b.kind == KIND_BULLET) { ext = 34.0; } // tracer tail
-	else if (b.kind == KIND_TURRET) { // defense tower; its beam needs the whole reach while firing
-		bool inner = distance(b.pos, vec2(WORLD * 0.5)) < pc.city_r;
-		float duty = inner ? 0.55 : 0.30;
-		float rate = inner ? 0.55 : 0.14;
-		float len  = inner ? 700.0 : TWR_LEN;
-		ext = fract(pc.time * rate + hash1(id * 77u)) < duty ? len + 120.0 : b.radius * 4.0;
+	else if (b.kind == KIND_TURRET) { // defense tower; its fire needs the whole reach while shooting
+		bool mg = distance(b.pos, vec2(WORLD * 0.5)) < pc.city_r;
+		float duty = mg ? 0.70 : 0.30;
+		float rate = mg ? 0.90 : 0.14;
+		float len  = mg ? MG_LEN : TWR_LEN;
+		bool hot = fract(pc.time * rate + hash1(id * 77u)) < duty;
+		// mg rounds already in flight outlive the trigger (time-of-flight) — hold the quad
+		if (mg && fract((pc.time - MG_LEN / MG_V) * rate + hash1(id * 77u)) < duty) { hot = true; }
+		ext = hot ? len + 120.0 : b.radius * 4.0;
 	}
+	else if (b.kind == KIND_HELPER) { ext = 120.0; } // drone + its hoist beam
 	else if (b.kind == KIND_WRECK) {
 		ext = b.radius * 2.4;
 		float pd = distance(b.pos, pc.player);
