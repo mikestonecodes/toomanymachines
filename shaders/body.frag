@@ -391,7 +391,7 @@ void turret(vec2 p, Body b) {
 	// the eye: steady ember + a wide warning pool — the tower itself NEVER flashes;
 	// only its rounds and ricochets move
 	add += PAL_ACCENT * soft(length(p) - r * 0.30);
-	add += PAL_ACCENT * 0.20 * exp(-dot(p, p) / (r * r * 4.0));
+	add += PAL_ACCENT * 0.22 * exp(-dot(p, p) / (r * r * 8.0)); // the warning pool on the ground
 }
 
 void helper(vec2 p, Body b) {
@@ -640,10 +640,15 @@ void main() {
 	    && !(b.kind == KIND_WRECK && b.variant == 1u)
 	    && (cov > 0.003 || dot(add, add) > 0.00001)) {
 		vec2 g0 = pc.cam + (gl_FragCoord.xy - pc.screen * 0.5) * ZOOM;
-		for (int i = 0; i < 8; i++) {
-			float tq = 1.0 - float(i) / 7.0;
-			House hs = house_at(g0 + vec2(0.0, LEAN) * tq);
-			if (hs.ok && hs.sd <= 0.0 && house_h(hs) >= tq) { discard; }
+		// the march column can only intersect buildings if it reaches inside the city —
+		// the wasteland horde (most of the 80k) skips this entirely
+		vec2 ctrw = vec2(WORLD * 0.5);
+		if (min(distance(g0, ctrw), distance(g0 + vec2(0.0, LEAN * HMAX), ctrw)) < pc.city_r) {
+			for (int i = 0; i < 6; i++) {
+				float tq = (1.0 - float(i) / 5.0) * HMAX;
+				House hs = house_at(g0 + vec2(0.0, LEAN) * tq);
+				if (hs.ok && hs.sd <= 0.0 && house_h(hs) >= tq) { discard; }
+			}
 		}
 	}
 	o_color = vec4(base * cov + add, cov); // premultiplied; `add` is pure emissive

@@ -341,42 +341,8 @@ vec3 ground_col(vec2 w, vec2 s) {
 	// contact shadow hugging every block — camera-independent, anchors the footprints
 	col *= 1.0 - smoothstep(-90.0, -2.0, pen) * 0.5 * step(pen, 0.0);
 
-	// ── the defense grid's light playing over the ground, through the dust: perimeter
-	// giants sweep their two-sided laser bars; inner MACHINE-GUN turrets strobe a hot
-	// muzzle pool + tracer flicker down their one-sided corridor. Timing MUST match
-	// physics.comp / body.frag (duty/rate/sweep from time + slot id).
-	for (uint ti = 0u; ti < MAX_TURRETS; ti++) {
-		Body tw = BODIES[TURRET_LO + ti];
-		if (tw.kind != KIND_TURRET) { continue; }
-		vec2 dvec = w - tw.pos;
-		float d2 = dot(dvec, dvec);
-		if (d2 > TWR_LEN * TWR_LEN) { continue; }
-		bool mg = distance(tw.pos, ctr) < pc.city_r;
-		float duty = mg ? 0.70 : 0.30;
-		float rate = mg ? 0.90 : 0.14;
-		float phase = fract(pc.time * rate + hash1((TURRET_LO + ti) * 77u));
-		if (mg) { // the bullet stream's glow tracks the rounds (time-of-flight rewind)
-			float dw = sqrt(d2);
-			float te = pc.time - dw / MG_V;
-			float ph = fract(te * rate + hash1((TURRET_LO + ti) * 77u));
-			if (ph < duty && dw < MG_LEN) {
-				float envE = smoothstep(0.0, 0.03, ph) * smoothstep(duty, duty - 0.04, ph);
-				float burstE = step(0.30, fract(te * 3.3 + hash1((TURRET_LO + ti) * 55u)));
-				float angE = hash1((TURRET_LO + ti) * 913u) * TAU + te * 2.6;
-				vec2 rp = tw.pos + vec2(cos(angE), sin(angE)) * dw;
-				float lat2 = dot(w - rp, w - rp);
-				col += PAL_EMBER * exp(-lat2 / 1600.0) * 0.25 * envE * burstE * (0.5 + dustM);
-			}
-		} else if (phase < duty) {
-			float env = smoothstep(0.0, 0.03, phase) * smoothstep(duty, duty - 0.04, phase);
-			vec2 outw = tw.pos - ctr; // always OUTWARD, away from the city
-			float ang = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1((TURRET_LO + ti) * 913u) * TAU) * 1.1;
-			vec2 ad = vec2(cos(ang), sin(ang));
-			float bd = sd_seg(w, tw.pos, tw.pos + ad * TWR_LEN);
-			col += PAL_EMBER * exp(-bd * bd / 9000.0) * 0.35 * env * (0.5 + dustM);
-		}
-		col += PAL_ACCENT * exp(-d2 / 26000.0) * 0.08 * (0.5 + dustM); // idle warning pool
-	}
+	// (the turrets' own sprites carry their fire + warning light — a per-pixel loop
+	// over all 64 towers here cost more than the whole rest of the ground)
 
 	// world edge: a thin hazard line, then haze out into the void
 	float ed = min(min(w.x, w.y), min(WORLD - w.x, WORLD - w.y));
@@ -393,14 +359,15 @@ void main() {
 	// straight up-screen by LEAN·t, a pure translation: buildings never shear, the
 	// roof sits directly behind the street facade. March down, bisect the first hit.
 	float tHit = -1.0;
-	{
-		const int N = 8;
-		const float STEP = 1.0 / float(N - 1);
+	// buildings only exist inside the city — wasteland columns skip the march outright
+	if (min(distance(g0, vec2(WORLD * 0.5)), distance(g0 + vec2(0.0, LEAN * HMAX), vec2(WORLD * 0.5))) < pc.city_r) {
+		const int N = 12; // marches the full HMAX ceiling — skyscrapers poke way above 1.0
+		const float STEP = HMAX / float(N - 1);
 		for (int i = 0; i < N; i++) {
-			float t = 1.0 - float(i) * STEP;
+			float t = HMAX - float(i) * STEP;
 			float sh = scene_h(g0 + vec2(0.0, LEAN) * t);
 			if (sh > 0.0 && sh >= t) {
-				float aT = t, bT = min(t + STEP, 1.0);
+				float aT = t, bT = min(t + STEP, HMAX);
 				for (int k = 0; k < 4; k++) {
 					float m = (aT + bT) * 0.5;
 					float mh = scene_h(g0 + vec2(0.0, LEAN) * m);

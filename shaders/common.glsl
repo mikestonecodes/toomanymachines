@@ -173,10 +173,11 @@ House house_at(vec2 p) {
 	float rc2 = (blk.x + 0.5) * RING_SP;
 	float arcHalf = stp2 * 0.5 * rc2 - BLDG_EDGE;
 	float ay = (sa - (blk.y + 0.5) * stp2) * r; // arc offset from the sector centerline
-	float bseed = hash21(vec2(blk.x, jw2) * 3.1 + 9.2);
-	float edgeK = smoothstep(pc.city_r - RING_SP * 2.7, pc.city_r - RING_SP * 1.1, rc2);
 	float pen = street_d(p) - BLDG_EDGE;                          // depth into the plot
 	if (pz.z > 0.0) { pen = min(pen, length(p - pz.xy) - pz.z); } // the plaza carves it
+	if (pen <= 0.0) { return hs; } // open ground — skip ALL the per-house work (hot path!)
+	float bseed = hash21(vec2(blk.x, jw2) * 3.1 + 9.2);
+	float edgeK = smoothstep(pc.city_r - RING_SP * 2.7, pc.city_r - RING_SP * 1.1, rc2);
 	float band = RING_SP - 2.0 * BLDG_EDGE;
 	float wallD = 58.0 + 70.0 * fract(bseed * 7.7);               // perimeter wall depth
 	if (fract(bseed * 4.3) < 0.10 + edgeK * 0.35) { wallD = band; } // SOLID: a full-plot giant
@@ -205,14 +206,14 @@ House house_at(vec2 p) {
 	         : cls < 0.55 ? 0.26 + 0.12 * hh   // rowhouses
 	         : cls < 0.75 ? 0.42 + 0.16 * hh   // mid-rise
 	         : cls < 0.92 ? 0.62 + 0.20 * hh   // slab
-	         :              0.90 + 0.10 * hh;  // SKYSCRAPER
+	         :              2.0 + 0.9 * hh;   // SKYSCRAPER — WAY above everything else
 	hb *= clamp(1.25 - blk.x * 0.055, 0.6, 1.2); // downtown rises...
 	hb *= 1.0 + edgeK * 0.55;                    // ...and the OUTSKIRTS rise higher still
-	if (wallD >= band) { hb = max(hb, 0.50 + 0.42 * fract(bseed * 3.7) + edgeK * 0.15); }
+	if (wallD >= band) { hb = max(hb, 0.6 + 1.6 * fract(bseed * 3.7) + edgeK * 0.5); }
 	float chunky = min(wallD * 0.5, 60.0);
-	hb = min(hb, 0.30 + chunky * 0.020); // thin rings stay lower — no toothpick walls
-	if (fract(seed * 97.3) > 0.93) { hb = max(hb, 0.80 + 0.20 * fract(seed * 53.0)); } // landmark
-	hs.h = clamp(hb, 0.10, 1.0);
+	hb = min(hb, 0.30 + chunky * 0.045); // thin rings stay lower — no toothpick walls
+	if (fract(seed * 97.3) > 0.93) { hb = max(hb, 2.2 + 0.7 * fract(seed * 53.0)); } // landmark SPIRE
+	hs.h = clamp(hb, 0.10, HMAX - 0.05);
 	hs.ok = true;
 	hs.sd = max(-pen, pen - wallD); // inside the extruded plot ring (≤ 0)
 	return hs;
@@ -237,7 +238,7 @@ float house_h(House hs) {
 		h *= 0.72;
 		if (dep > wallD2 * 0.38) { h = hs.h * 0.86; }
 		if (dep > wallD2 * 0.70) { h = hs.h; }
-		if (fract(hs.seed * 71.7) < 0.45 && length(lg) < 5.0) { h = min(hs.h + 0.2, 1.0); }
+		if (fract(hs.seed * 71.7) < 0.45 && length(lg) < 5.0) { h = min(hs.h + 0.2, HMAX); }
 	} else if (hs.dis < 0.5 && !solid && hs.ext.x < 48.0) { // pitched houses
 		h *= 1.0 - 0.32 * abs(sx);
 		if (fract(hs.seed * 29.3) < 0.6 && abs(sy - 0.55) < 0.10 && abs(sx) > 0.25 && abs(sx) < 0.55) { h += 0.05; }

@@ -80,6 +80,7 @@ HP_BRUTE    :: f32(10)
 KNOCKBACK   :: f32(90)
 ZOOM        :: f32(1.35) // world px per screen px — pulled back so the horde reads
 LEAN        :: f32(95)   // oblique fake-3D: world px of straight up-screen lean per unit height — a pure TRANSLATION, so buildings never shear. Tuned so towers read TALL while the view stays TOP-DOWN
+HMAX        :: f32(3.0)  // height ceiling (march top): ordinary buildings live ≤ 1.0, SKYSCRAPERS/landmarks/giants climb WAY above it
 // @glsl-end
 
 // CPU-only tuning.

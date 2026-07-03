@@ -3,6 +3,7 @@ package main
 import "core:fmt"
 import "core:math"
 import "core:os"
+import "core:time"
 
 // Debug + test harness — headless drive, screenshots and input injection. Compiled
 // only in debug builds; the game is ALWAYS built with -debug (tools/build.odin), and
@@ -24,6 +25,8 @@ dbg_exit       :: proc() { should_quit = true }
 // `test` mode). A normal/`shot`/`gpuav` build leaves it nil, so debug_test_run can never
 // hijack those runs. Mirrors ../fishlab's harness.
 dbg_test_fn: proc()
+dbg_upd_ms, dbg_rnd_ms: f64 // per-frame CPU spans measured by the main loop (update, record)
+dbg_acq_ms, dbg_sub_ms: f64 // fence+acquire (main loop, pre-input), submit+present (render)
 when #config(DEBUG_TEST, false) {
 	@(init)
 	dbg_test_init :: proc "contextless" () { dbg_test_fn = debug_test_run }
@@ -72,8 +75,36 @@ gpuav_drive :: proc(frame_n: int) {
 // dbg_screenshot("name"), finish with dbg_exit(). game_init() restarts (the R key).
 debug_test_run :: proc() {
 	@(static) step := 0
+	@(static) t0, last: time.Tick
+	@(static) worst: f64
+	@(static) over16: int
+	@(static) gsum: [6]f64
 	step += 1
-
+	now := time.tick_now()
+	if step == 1 { t0 = now; last = now; car_pos = CENTER + {1100, -1100}; cam = car_pos }
+	ft := time.duration_milliseconds(time.tick_diff(last, now))
+	last = now
+	@(static) usum, rsum, asum, ssum: f64
+	if step > 10 {
+		if ft > worst { worst = ft }
+		if ft > 16.9 { over16 += 1 }
+		for i in 0 ..< 6 { gsum[i] += gpu_ms[i] }
+		usum += dbg_upd_ms
+		rsum += dbg_rnd_ms
+		asum += dbg_acq_ms
+		ssum += dbg_sub_ms
+	}
+	input.up = true
+	if step == 600 {
+		total := time.duration_milliseconds(time.tick_diff(t0, now))
+		n := f64(step - 10)
+		fmt.printfln("600 frames: avg %.2f ms, worst %.2f ms, %d over 16.9ms", total / 599.0, worst, over16)
+		fmt.printfln("GPU avg ms — physics %.2f | city %.2f | bodies %.2f | bloom %.2f | composite %.2f | total %.2f",
+			gsum[0] / n, gsum[1] / n, gsum[2] / n, gsum[3] / n, gsum[4] / n, gsum[5] / n)
+		fmt.printfln("CPU avg ms — fence+acquire %.2f | update %.2f | record %.2f (submit+present %.2f)",
+			asum / n, usum / n, rsum / n, ssum / n)
+		dbg_exit()
+	}
 }
 
 }

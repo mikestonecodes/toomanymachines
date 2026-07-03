@@ -114,8 +114,18 @@ float laser_hit(vec2 pos, float radius, out vec2 push) {
 	return scale;
 }
 
+shared vec2 sh_tpos[MAX_TURRETS]; // the turret fleet, cached per workgroup — the enemy
+shared uint sh_tkind[MAX_TURRETS]; // loop over it ran 80k×64 buffer reads a frame without this
+
 void main() {
 	uint id = gl_GlobalInvocationID.x;
+	if (pc.mode == 2u) { // one cooperative load before ANY early return (uniform barrier)
+		uint li = gl_LocalInvocationID.x; // local_size_x = 64 == MAX_TURRETS
+		Body tw0 = BODIES[TURRET_LO + li];
+		sh_tpos[li] = tw0.pos;
+		sh_tkind[li] = tw0.kind;
+		barrier();
+	}
 
 	if (pc.mode == 0u) { // clear grid + this frame's shockwave list
 		if (id == 0u) { atomicExchange(STATS[2], 0u); }
@@ -344,11 +354,11 @@ void main() {
 	// ricochet kicks. Timing/sweep derive from time + slot id — body.frag draws the
 	// identical fire. Bots near the line flee it; bots in it get chewed.
 	for (uint ti = 0u; ti < MAX_TURRETS; ti++) {
-		Body tw = BODIES[TURRET_LO + ti];
-		if (tw.kind != KIND_TURRET) { continue; }
-		bool mg = distance(tw.pos, ctr) < pc.city_r;
+		if (sh_tkind[ti] != KIND_TURRET) { continue; } // shared cache — no buffer traffic
+		vec2 twpos = sh_tpos[ti];
+		bool mg = distance(twpos, ctr) < pc.city_r;
 		float len = mg ? MG_LEN : TWR_LEN;
-		vec2 dtw = b.pos - tw.pos;
+		vec2 dtw = b.pos - twpos;
 		float d2w = dot(dtw, dtw);
 		if (d2w > len * len) { continue; }
 		float dw = sqrt(d2w);
@@ -362,13 +372,13 @@ void main() {
 		float ang;
 		if (mg) { ang = hash1((TURRET_LO + ti) * 913u) * TAU + te * 2.6; }
 		else { // perimeter laser: always OUTWARD, sweeping a cone away from the city
-			vec2 outw = tw.pos - ctr;
+			vec2 outw = twpos - ctr;
 			ang = atan(outw.y, outw.x) + sin(pc.time * 0.35 + hash1((TURRET_LO + ti) * 913u) * TAU) * 1.1;
 		}
 		vec2 ad = vec2(cos(ang), sin(ang));
 		float along = mg ? dw                                   // the round at my range
 		                 : clamp(dot(dtw, ad), 0.0, len);       // laser: one-sided, outward
-		vec2 cp = tw.pos + ad * along;
+		vec2 cp = twpos + ad * along;
 		float dd = distance(b.pos, cp);
 		vec2 away = dd > 0.001 ? (b.pos - cp) / dd : vec2(-ad.y, ad.x);
 		// machine guns fire in BURSTS (gate must match body.frag: hash1(id*55u))

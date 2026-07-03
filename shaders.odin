@@ -7,7 +7,7 @@ import vk "vendor:vulkan"
 
 // The game only READS precompiled SPIR-V (shaders/spv/, produced by tools/build.odin). No shader
 // compilation lives here. Hot reload watches the compiled .spv files (the ones listed in
-// PIPE_SPECS) and rebuilds the pipelines when the watcher recompiles them — see tools/odin-watch.
+// PIPE_SPECS) and rebuilds the pipelines when the watcher recompiles them — see build.odin `watch`.
 
 // Load a precompiled SPIR-V file → VkShaderModule (0 on failure).
 load_spv :: proc(path: string) -> vk.ShaderModule {

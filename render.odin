@@ -1,6 +1,7 @@
 package main
 
 import "core:math"
+import "core:time"
 import vk "vendor:vulkan"
 
 // The high-level render description — nothing but the buffer/image/pipeline lists, init,
@@ -79,10 +80,9 @@ render_init :: proc() {
 
 // One frame: GPU sim (clear → scatter → step), draw city + bodies into the HDR scene,
 // bloom it down (bright-extract+H at half res, then V), composite to the swapchain.
-render :: proc(dt: f32) {
-	cmd, img, ok := frame_begin()
-	if !ok { return } // swapchain out of date; recreated for next frame
-
+render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
+	// frame_begin already ran at the top of the main loop — the fence+acquire block sits
+	// BEFORE input sampling so the frame is recorded from fresh input (main.odin).
 	w, h := f32(win_w), f32(win_h)
 	shake := [2]f32{math.sin(sim_time * 143), math.cos(sim_time * 119)} * cam_shake
 	pc := Push{screen = {w, h}, cam = cam + shake, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, city_r = city_r, angle = car_angle}
@@ -99,6 +99,7 @@ render :: proc(dt: f32) {
 	}
 	// step → the draw stages read bodies (body.vert/.frag fetch Body, city.frag reads the truck angle)
 	mem_barrier(cmd, {.COMPUTE_SHADER}, {.SHADER_WRITE}, {.VERTEX_SHADER, .FRAGMENT_SHADER}, {.SHADER_READ})
+	gpu_stamp(cmd, 1) // physics done
 
 	// HDR scene: procedural city backdrop, then every body as an instanced SDF sprite.
 	img_pass_begin(cmd, .Scene)
@@ -106,10 +107,12 @@ render :: proc(dt: f32) {
 	vk.CmdPushConstants(cmd, vkc.pipe_layout, {.COMPUTE, .VERTEX, .FRAGMENT}, 0, size_of(Push), &pc)
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.City])
 	vk.CmdDraw(cmd, 3, 1, 0, 0)
+	gpu_stamp(cmd, 2) // city done
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Body])
 	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1) // the horde, bullets, pylons…
 	vk.CmdDraw(cmd, 6, 1, 0, 0)                   // …then the ship, always on top of the crowd
 	img_pass_end(cmd, .Scene)
+	gpu_stamp(cmd, 3) // bodies done
 
 	// Bloom (fishlab's chain): mode 0 = bright-extract + horizontal gaussian (Scene→BloomA),
 	// mode 1 = vertical gaussian (BloomA→BloomB). Both at half res.
@@ -121,12 +124,16 @@ render :: proc(dt: f32) {
 		vk.CmdDraw(cmd, 3, 1, 0, 0)
 		img_pass_end(cmd, m == 0 ? Img.BloomA : Img.BloomB)
 	}
+	gpu_stamp(cmd, 4) // bloom done
 
 	// Composite → swapchain: scene + bloom, ACES tonemap, film grain, vignette.
 	pass_begin(cmd, img)
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Composite])
 	vk.CmdDraw(cmd, 3, 1, 0, 0)
 	pass_end(cmd, img)
+	gpu_stamp(cmd, 5) // composite done — whole GPU frame
 
+	when ODIN_DEBUG { dbg_t3 := time.tick_now() }
 	frame_end(cmd, img)
+	when ODIN_DEBUG { dbg_sub_ms = time.duration_milliseconds(time.tick_diff(dbg_t3, time.tick_now())) }
 }

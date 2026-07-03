@@ -2,17 +2,18 @@ package main
 
 // Build + run orchestrator. Run from the project root (see ../run.sh):
 //   odin run tools/build.odin -file            build shaders + game, run (Vulkan validation ON)
-//   odin run tools/build.odin -file -- watch   ... then hand off to the live-reload watcher
-//   odin run tools/build.odin -file -- shot    ... headless: drive the game, screenshot, exit
-//   odin run tools/build.odin -file -- test    ... build with the test harness (-define:DEBUG_TEST) + run debug_test_run
-//   odin run tools/build.odin -file -- shaders  recompile shaders only, + naga (used by the watcher)
+//   odin run tools/build.odin -file -- watch   live-reload dev loop (release build: no validation)
+//   odin run tools/build.odin -file -- shot    headless: drive the game, screenshot, exit
+//   odin run tools/build.odin -file -- test    build with the test harness (-define:DEBUG_TEST) + run debug_test_run
 // Shaders compile with validation on (glslc -Werror + spirv-val); the game reads shaders/spv/*.spv.
 
+import "core:c"
 import "core:c/libc"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
 import "core:strings"
+import "core:time"
 
 // src : glslc shader stage. Compiles to shaders/spv/<src>.spv.
 SHADERS := [][2]string{
@@ -29,11 +30,20 @@ sh :: proc(cmd: string) -> int {
 	return int(libc.system(strings.clone_to_cstring(cmd, context.temp_allocator)))
 }
 
+soft: bool // watch mode: a failed step prints and keeps the loop alive instead of exiting
+
 must :: proc(cmd: string) {
 	if sh(cmd) != 0 {
 		fmt.eprintln("build failed:", cmd)
-		os.exit(1)
+		if !soft { os.exit(1) }
 	}
+}
+
+// Regenerate the shared GLSL from the @glsl blocks, then compile every shader to SPIR-V.
+prep :: proc() {
+	gen_types()                // @glsl blocks → tools/gen/types.gen.odin
+	must("odin run tools/gen") // reflect them → shaders/gen.glsl + accessors
+	build_shaders(soft)        // GLSL → shaders/spv/*.spv (naga cross-check in watch mode)
 }
 
 // Compile every shader to shaders/spv/*.spv with validation on (glslc -Werror + spirv-val).
@@ -132,16 +142,10 @@ gen_types :: proc() {
 main :: proc() {
 	mode := len(os.args) > 1 ? os.args[1] : "run"
 
-	// Watcher recompile: shaders only, with naga feedback — no regen, no game build, no run.
-	if mode == "shaders" {
-		build_shaders(true)
-		return
-	}
-	// Watcher, render.odin changed: refresh the generated GLSL from its @glsl block, then shaders.
-	if mode == "regen" {
-		gen_types()
-		must("odin run tools/gen")
-		build_shaders(true)
+	// watch: the HUMAN's live-reload play loop (runtime validation OFF). Own loop below; no
+	// GPU-AV pass — it loads fast and must survive a failing compile. Claude must NOT use watch.
+	if mode == "watch" {
+		watch()
 		return
 	}
 
@@ -152,18 +156,7 @@ main :: proc() {
 	shot := mode == "shot"
 	bin := shot ? "toomanymachines-shot" : "toomanymachines"
 	if !shot { sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1") }
-	gen_types()                // render.odin @glsl block → tools/gen/types.gen.odin
-	must("odin run tools/gen") // reflect it → shaders/gen.glsl + varying includes
-	build_shaders(false)
-
-	// watch: live-reload dev loop — hand straight to the watcher and return. It does its own
-	// initial odin build + launch (then rebuilds + relaunches on .odin saves, recompiles
-	// shaders on .glsl saves), so we skip both the redundant odin build AND the headless
-	// GPU-AV pass here: watch loads fast and can't be killed by a failing headless run.
-	if mode == "watch" {
-		sh("odin run tools/odin-watch.odin -file -- .")
-		return
-	}
+	prep()
 
 	// `test` compiles the debug_test_run harness in (debug.odin); every other mode leaves
 	// dbg_test_fn nil, so gpuav/shot/normal runs of this same binary are unaffected.
@@ -176,12 +169,80 @@ main :: proc() {
 	fmt.println(">> GPU-Assisted validation pass…")
 	must(fmt.tprintf("./%s gpuav", bin))
 
-	switch mode {
-	case "shot":
-		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./%s shot", bin)) >> 8 & 0xff)
-	case "test":
-		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./%s", bin)) >> 8 & 0xff)
-	case:
-		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./%s", bin)) >> 8 & 0xff)
+	arg := mode == "shot" ? " shot" : ""
+	fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./%s%s", bin, arg)) >> 8 & 0xff)
+}
+
+// --- watch: live-reload dev loop -------------------------------------------
+// Two inotify watches: the root (.odin saves → regen + recompile shaders + rebuild + relaunch)
+// and shaders/ (.glsl saves → recompile SPIR-V only; the running game reloads the new .spv on its
+// own). Everything runs in-process (prep/build_shaders/odin build) — a failed step prints and the
+// loop lives on (soft=true). Flat project, no recursive scan.
+foreign import c_ "system:c"
+foreign c_ {
+	inotify_init      :: proc() -> c.int ---
+	inotify_add_watch :: proc(fd: c.int, path: cstring, mask: c.uint) -> c.int ---
+	read              :: proc(fd: c.int, buf: rawptr, count: c.size_t) -> c.ssize_t ---
+	poll              :: proc(fds: rawptr, nfds: c.ulong, timeout: c.int) -> c.int ---
+}
+Poll_Fd :: struct { fd: c.int, events, revents: c.short }
+Inotify_Event :: struct #packed { wd: c.int, mask, cookie, len: c.uint }
+WATCH_MASK :: 0x00000002 | 0x00000080 | 0x00000008 // IN_MODIFY | IN_MOVED_TO | IN_CLOSE_WRITE
+
+// Rebuild + relaunch as a RELEASE build (no -debug → ODIN_DEBUG off → validation compiled out):
+// this is the human's frame-time loop, fast and unvalidated. `./run.sh`/shot/test build -debug.
+launch :: proc() {
+	fmt.println("Building…")
+	sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1")
+	if sh("odin build . -out:toomanymachines") == 0 {
+		fmt.println("OK — launching (release build: no validation, fast)")
+		sh("nohup ./toomanymachines >/dev/null 2>&1 &")
+	} else {
+		fmt.println("BUILD FAILED")
 	}
+}
+
+watch :: proc() {
+	fmt.println(">> watch = the HUMAN's play loop (release build, no validation). Claude: use ./run.sh / shot / test.")
+	soft = true
+	prep(); launch() // initial build + launch
+
+	fd := inotify_init()
+	if fd < 0 { fmt.eprintln("inotify_init failed"); return }
+	if inotify_add_watch(fd, ".", WATCH_MASK) < 0 { fmt.eprintln("add_watch . failed"); return }
+	if inotify_add_watch(fd, "shaders", WATCH_MASK) < 0 { fmt.eprintln("add_watch shaders failed"); return }
+	fmt.println("Watching . (.odin) + shaders (.glsl)")
+
+	buf: [4096]u8
+	fds := Poll_Fd{fd = fd, events = 0x0001 /*POLLIN*/}
+	for {
+		if poll(&fds, 1, -1) <= 0 || (fds.revents & 0x0001) == 0 { continue }
+		time.sleep(120 * time.Millisecond) // debounce editors writing several files at once
+
+		odin, glsl := false, false
+		for {
+			n := read(fd, &buf[0], 4096)
+			if n <= 0 { break }
+			for i := 0; i < int(n); {
+				ev := (^Inotify_Event)(&buf[i])
+				if ev.len > 0 {
+					name := string(cstring(&buf[i + size_of(Inotify_Event)]))
+					if strings.has_suffix(name, ".odin") {
+						odin = true // any .odin may hold an @glsl block
+					} else if name != "gen.glsl" && has_shader_ext(name) {
+						glsl = true // gen.glsl is generated, not a source
+					}
+				}
+				i += size_of(Inotify_Event) + int(ev.len)
+			}
+			if int(n) < 4096 { break }
+		}
+		if odin      { prep(); launch() }   // .odin → regen GLSL, recompile shaders, rebuild + relaunch
+		else if glsl { build_shaders(true) } // .glsl → recompile .spv; the running game reloads it
+	}
+}
+
+has_shader_ext :: proc(name: string) -> bool {
+	for ext in ([]string{".vert", ".frag", ".comp", ".glsl"}) { if strings.has_suffix(name, ext) { return true } }
+	return false
 }

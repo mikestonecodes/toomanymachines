@@ -42,15 +42,22 @@ main :: proc() {
 
 	last := time.tick_now()
 	frame_n := 0
+	resized := false
 	for !should_quit {
+		// Block FIRST: the previous frame's fence + swapchain acquire is where the loop waits
+		// out the display. Sampling input AFTER it means the frame is recorded from input
+		// microseconds old instead of a whole refresh stale.
+		when ODIN_DEBUG { dbg_t2 := time.tick_now() }
+		cmd, img, frame_ok := frame_begin()
+		when ODIN_DEBUG { dbg_acq_ms = time.duration_milliseconds(time.tick_diff(dbg_t2, time.tick_now())) }
+
 		ev: SDL.Event
 		for SDL.PollEvent(&ev) {
 			#partial switch ev.type {
 			case .QUIT:
 				should_quit = true
 			case .WINDOW_RESIZED, .WINDOW_PIXEL_SIZE_CHANGED:
-				update_size()
-				vk_resize()
+				resized = true // an image is already acquired — recreate only after it presents
 			case .KEY_DOWN:
 				#partial switch ev.key.scancode {
 				case .ESCAPE: should_quit = true
@@ -89,13 +96,17 @@ main :: proc() {
 		// compiled — the game is built -debug, so ODIN_DEBUG holds; a no-op interactively.
 		when ODIN_DEBUG { dbg_drive_frame(frame_n) }
 
+		when ODIN_DEBUG { dbg_t := time.tick_now() }
 		game_update(dt)
-		render(dt)
+		when ODIN_DEBUG { dbg_upd_ms = time.duration_milliseconds(time.tick_diff(dbg_t, time.tick_now())); dbg_t = time.tick_now() }
+		if frame_ok { render(dt, cmd, img) }
+		when ODIN_DEBUG { dbg_rnd_ms = time.duration_milliseconds(time.tick_diff(dbg_t, time.tick_now())) }
 
+		if resized { resized = false; update_size(); vk_resize() }
 		frame_n += 1
-		when ODIN_DEBUG { // shader hot reload is a dev-only convenience; no file polling in release
-			if frame_n % 30 == 0 && !gpuav_mode { hot_reload_poll() }
-		}
+		// Shader hot reload: pick up .spv the watcher recompiled (the human's watch loop runs the
+		// release build, so this can't be ODIN_DEBUG-gated). Skipped during the headless gpuav drive.
+		if frame_n % 30 == 0 && !gpuav_mode { hot_reload_poll() }
 		free_all(context.temp_allocator)
 	}
 	if gpuav_mode { fmt.println("GPU-AV pass: clean (no runtime validation errors)") }

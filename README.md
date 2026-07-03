@@ -45,12 +45,11 @@ Modern, bindless Vulkan — deliberately small:
 | `render.odin`           | high-level surface: buffer list, pipeline list, init, render() |
 | `shaders.odin`          | loads compiled `.spv` + hot-reload trigger               |
 | `tools/gen/`            | reflects the `@glsl` blocks → `shaders/gen.glsl`         |
-| `tools/build.odin`      | build step: GLSL → validated SPIR-V in `shaders/spv/`    |
+| `tools/build.odin`      | build step: GLSL → validated SPIR-V + game; `watch` = live-reload loop |
 | `car.odin`              | CPU game: player movement + bullet spawning              |
 | `shaders/common.glsl`   | shared shader contract (bindless decls, push constant, consts) |
 | `shaders/physics.comp`  | GPU sim: bucket grid + chase/separate/shoot/respawn      |
 | `shaders/circle.{vert,frag}` | instanced circle-SDF render (own vertex→fragment varyings) |
-| `tools/odin-watch.odin` | inotify watcher (rebuilds the binary on `.odin` edits)   |
 
 ## Run
 

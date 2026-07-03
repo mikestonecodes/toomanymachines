@@ -57,7 +57,15 @@ vkc: struct {
 	in_flight:   [FRAMES_IN_FLIGHT]vk.Fence,
 	render_done: [dynamic]vk.Semaphore, // one per swapchain image
 	frame:       u32,
+
+	// GPU profiler: per-pass timestamps (one pool per in-flight slot)
+	qpools:    [FRAMES_IN_FLIGHT]vk.QueryPool,
+	ts_period: f32, // ns per timestamp tick
 }
+
+// Last completed frame's per-pass GPU times, milliseconds:
+// [0] physics  [1] city  [2] bodies  [3] bloom  [4] composite  [5] whole frame
+gpu_ms: [6]f64
 
 vkok :: proc(r: vk.Result, what: string, loc := #caller_location) {
 	if r != .SUCCESS { fmt.panicf("vulkan: %s failed: %v", what, r, loc = loc) }
@@ -74,6 +82,9 @@ vk_init :: proc() {
 	for i in 0 ..< ext_count { append(&exts, sdl_exts[i]) }
 
 	layers: [dynamic]cstring
+	// Validation is a BUILD property, not a runtime flag: debug builds validate (./run.sh, shot,
+	// gpuav, test), the release build (the watch loop's play launch) has this whole block compiled
+	// out. Zero-tolerance — when on, the debug callback aborts on any error (see debug_callback).
 	when ODIN_DEBUG {
 		if has_layer(VALIDATION_LAYER) {
 			append(&layers, cstring(VALIDATION_LAYER))
@@ -147,6 +158,7 @@ vk_init :: proc() {
 		runtimeDescriptorArray                        = true,
 		descriptorBindingPartiallyBound               = true,
 		descriptorBindingStorageBufferUpdateAfterBind = true,
+		hostQueryReset                                = true, // prime the profiler query pools from the host
 		descriptorBindingSampledImageUpdateAfterBind  = true,
 		shaderStorageBufferArrayNonUniformIndexing    = true,
 		scalarBlockLayout                             = true,
@@ -198,6 +210,12 @@ vk_init :: proc() {
 	for i in 0 ..< FRAMES_IN_FLIGHT {
 		vkok(vk.CreateSemaphore(vkc.device, &sci, nil, &vkc.img_avail[i]), "CreateSemaphore")
 		vkok(vk.CreateFence(vkc.device, &fci, nil, &vkc.in_flight[i]), "CreateFence")
+	}
+
+	qpci := vk.QueryPoolCreateInfo{sType = .QUERY_POOL_CREATE_INFO, queryType = .TIMESTAMP, queryCount = 8}
+	for i in 0 ..< FRAMES_IN_FLIGHT {
+		vkok(vk.CreateQueryPool(vkc.device, &qpci, nil, &vkc.qpools[i]), "CreateQueryPool")
+		vk.ResetQueryPool(vkc.device, vkc.qpools[i], 0, 8) // host-prime: queries must be reset before first use
 	}
 
 	bindless_init()
@@ -504,14 +522,29 @@ frame_begin :: proc() -> (cmd: vk.CommandBuffer, img: u32, ok: bool) {
 	if acq != .SUCCESS && acq != .SUBOPTIMAL_KHR { vkok(acq, "AcquireNextImage") }
 	vk.ResetFences(vkc.device, 1, &fence)
 
+	// GPU profiler: the fence guarantees this slot's previous frame finished — harvest
+	// its timestamps into gpu_ms before the pool is reset and re-recorded below.
+	ts: [6]u64
+	if vk.GetQueryPoolResults(vkc.device, vkc.qpools[vkc.frame], 0, 6, size_of(ts), &ts[0], 8, {._64}) == .SUCCESS {
+		for i in 0 ..< 5 { gpu_ms[i] = f64(ts[i + 1] - ts[i]) * f64(vkc.ts_period) / 1e6 }
+		gpu_ms[5] = f64(ts[5] - ts[0]) * f64(vkc.ts_period) / 1e6
+	}
+
 	cmd = vkc.cmds[vkc.frame]
 	vk.ResetCommandBuffer(cmd, {})
 	begin := vk.CommandBufferBeginInfo{sType = .COMMAND_BUFFER_BEGIN_INFO, flags = {.ONE_TIME_SUBMIT}}
 	vk.BeginCommandBuffer(cmd, &begin)
+	vk.CmdResetQueryPool(cmd, vkc.qpools[vkc.frame], 0, 8)
+	gpu_stamp(cmd, 0)
 	vk.CmdBindDescriptorSets(cmd, .COMPUTE, vkc.pipe_layout, 0, 1, &vkc.desc_set, 0, nil)
 	vk.CmdBindDescriptorSets(cmd, .GRAPHICS, vkc.pipe_layout, 0, 1, &vkc.desc_set, 0, nil)
 	ok = true
 	return
+}
+
+// Write profiler timestamp i (render.odin brackets each pass with these).
+gpu_stamp :: proc(cmd: vk.CommandBuffer, i: u32) {
+	vk.CmdWriteTimestamp(cmd, {.BOTTOM_OF_PIPE}, vkc.qpools[vkc.frame], i)
 }
 
 // Transition the swapchain image to a color target and open dynamic rendering (clear + viewport).
@@ -620,6 +653,7 @@ pick_physical_device :: proc() {
 	vkc.phys = best
 	props: vk.PhysicalDeviceProperties
 	vk.GetPhysicalDeviceProperties(best, &props)
+	vkc.ts_period = props.limits.timestampPeriod
 	fmt.println("vulkan: GPU:", string(cstring(&props.deviceName[0])))
 }
 
@@ -654,6 +688,16 @@ create_swapchain :: proc() {
 	count := caps.minImageCount + 1
 	if caps.maxImageCount > 0 && count > caps.maxImageCount { count = caps.maxImageCount }
 
+	// Prefer MAILBOX: FIFO quantizes any frame that slips past a vblank into a 33ms
+	// double-frame — visible stutter when the frame cost rides the 16.7ms edge.
+	// MAILBOX always presents the newest image, so a slow frame costs only itself.
+	pmode := vk.PresentModeKHR.FIFO
+	pmn: u32
+	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.phys, vkc.surface, &pmn, nil)
+	pmodes := make([]vk.PresentModeKHR, pmn, context.temp_allocator)
+	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.phys, vkc.surface, &pmn, raw_data(pmodes))
+	for m in pmodes { if m == .MAILBOX { pmode = .MAILBOX; break } }
+
 	sci := vk.SwapchainCreateInfoKHR{
 		sType            = .SWAPCHAIN_CREATE_INFO_KHR,
 		surface          = vkc.surface,
@@ -666,7 +710,7 @@ create_swapchain :: proc() {
 		imageSharingMode = .EXCLUSIVE,
 		preTransform     = caps.currentTransform,
 		compositeAlpha   = {.OPAQUE},
-		presentMode      = .FIFO,
+		presentMode      = pmode,
 		clipped          = true,
 	}
 	vkok(vk.CreateSwapchainKHR(vkc.device, &sci, nil, &vkc.swapchain), "CreateSwapchain")
