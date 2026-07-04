@@ -609,7 +609,14 @@ game_update :: proc(dt: f32) {
 		if off := aim_world - car_pos; linalg.length(off) > 0.001 {
 			a := linalg.normalize(off)
 			ap := [2]f32{-a.y, a.x}
-			muz := car_pos + a * (pr + 14) + ap * (barrel * (rd.walker ? pr * 0.44 : 5))
+			// walkers fire from the shoulder hardpoints (fixed in the BODY frame, matching
+			// player_mech's mounts) — cars from the hull turret
+			muz: [2]f32
+			if rd.walker {
+				muz = car_pos + fwd * (-0.04 * pr) + perp * (barrel * pr * 0.50) + a * (pr * 0.95)
+			} else {
+				muz = car_pos + a * (pr + 14) + ap * (barrel * 5)
+			}
 			switch weapon {
 			case .Cannon: spawn_shell(muz, aim_world, BULLET_SPEED)
 			case .Auto:   spawn_shell(muz, aim_world + {rand.float32_range(-34, 34), rand.float32_range(-34, 34)}, BULLET_SPEED)

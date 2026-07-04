@@ -76,7 +76,7 @@ void plate(vec2 p, vec2 ctr, float d, vec3 c, float seed) {
 	// GRUNGE, after the gloss so dirt KILLS the shine: oily smudges ground into the
 	// metal, collecting deepest in the streak valleys — filthy field machines
 	float grime = vnoise(p * 0.13 + seed * 41.0);
-	col *= 1.0 - smoothstep(0.60, 0.25, grime + brush * 0.35) * 0.62 * gGrime;
+	col *= 1.0 - smoothstep(0.66, 0.25, grime + brush * 0.35) * 0.62 * gGrime; // wide, filthy coverage
 	lay(col, soft(d));
 }
 
@@ -185,15 +185,20 @@ void player_mech(vec2 p, Body b) {
 		plate(p, vec2(-r * 0.08, 0.0), length(p - vec2(-r * 0.08, 0.0)) - r * 0.20, RIG_STEEL * 0.9, 11.0);
 		add += RIG_GRN * 0.8 * soft(length(p - vec2(-r * 0.08, 0.0)) - r * 0.09) * (0.85 + 0.15 * sin(pc.time * 2.2)); // the reactor burns team green
 	}
-	// twin SHOULDER guns tracking the mouse, recoiling with the barrage
+	// twin SHOULDER guns: the MOUNTS are bolted to the shoulders — fixed in the body
+	// frame, they never orbit with the aim; only the barrels slew to the mouse. The
+	// hardware is SOLID: it masks the deck lights under it, nothing glows through.
 	float ta = atan(pc.aim.y - b.pos.y, pc.aim.x - b.pos.x) - b.angle;
 	vec2 td = vec2(cos(ta), sin(ta));
-	vec2 tp2 = vec2(-td.y, td.x);
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
-		vec2 mnt = tp2 * (s * r * 0.44);
+		vec2 mnt = vec2(-r * 0.04, s * r * 0.50); // the shoulder hardpoint
 		float blen = r * 0.95 - pc.muzzle * 5.0;
-		lay(BOT_LINE * 2.2, soft(sd_seg(p, mnt, mnt + td * blen) - 2.6));
-		plate(p, mnt, length(p - mnt) - r * 0.18, vec3(0.155, 0.160, 0.170), s + 7.0);
+		float bw = max(2.4, r * 0.05);
+		float gcov = max(soft(sd_seg(p, mnt, mnt + td * blen) - bw),
+		                 soft(length(p - mnt) - r * 0.18));
+		add *= 1.0 - gcov * 0.92; // solid steel over the lights
+		lay(BOT_LINE * 2.2, soft(sd_seg(p, mnt, mnt + td * blen) - bw));
+		plate(p, mnt, length(p - mnt) - r * 0.18, gPlateB * 1.1, s + 7.0);
 		if (pc.muzzle > 0.02) {
 			vec2 tip = mnt + td * (blen + 4.0);
 			float md = length(p - tip);
@@ -595,10 +600,10 @@ void spider(vec2 p, Body b, float t) {
 	mech_leg(p, r, -2.36, gt,           wUp, wLo);
 	// hull: main deck + front glacis + rear engine block
 	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.72, r * 0.56)) - r * 0.14, gPlateA, 1.0);
+	// NO deck marking at all — every painted shape read as a glyph (=>, =|, a big O);
+	// the red is the EYES' job. Plain armor: glacis…
 	plate(p, vec2(r * 0.5, 0.0), sd_box(p - vec2(r * 0.5, 0.0), vec2(r * 0.26, r * 0.42)) - r * 0.08, gPlateB, 2.0);
 	plate(p, vec2(-r * 0.55, 0.0), sd_box(p - vec2(-r * 0.55, 0.0), vec2(r * 0.20, r * 0.34)) - r * 0.06, gPlateB * 0.75, 3.0);
-	// unit roundel: a painted RING aft on the deck — round, never a glyph
-	lay(gMark, soft(abs(length(p - vec2(-r * 0.18, 0.0)) - r * 0.15) - r * 0.05) * 0.8);
 	// corner deck bolts — visible fasteners say MACHINE
 	for (float sx = -1.0; sx <= 1.0; sx += 2.0) {
 		for (float sy = -1.0; sy <= 1.0; sy += 2.0) {
@@ -662,9 +667,8 @@ void brute(vec2 p, Body b, float t) {
 			lay(BOT_LINE, soft(length(p - pod - vec2(k * r * 0.2, 0.0)) - r * 0.055));
 		}
 	}
-	// forward glacis + a big unit ROUNDEL on the deck (team paint) — round, never a glyph
+	// forward glacis — plain armor, NO marking (painted shapes all read as glyphs)
 	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.56, 0.0), vec2(r * 0.22, r * 0.34)) - r * 0.06, gPlateB, 6.0);
-	lay(gMark, soft(abs(length(p - vec2(r * 0.05, 0.0)) - r * 0.20) - r * 0.06) * 0.9);
 	// core vents: two hot slits, pulsing
 	float pulse = 0.8 + 0.3 * sin(pc.time * 3.0 + float(v_id));
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
@@ -1120,7 +1124,9 @@ void main() {
 	else if (v_id >= ENEMY_LO && v_id < BULLET_LO) {
 		gPlateA = vec3(0.120, 0.121, 0.136); // SLIGHTLY cool steel — a faint blue cast lifts the horde off the warm city
 		gPlateB = vec3(0.063, 0.064, 0.075);
-		gBrush  = 2.0; // worked-over, filthy war metal (gGrime already heavy for everyone)
+		gBrush  = 2.6; // the most worked-over, filthiest metal on the field
+		gGrime  = 1.2;
+		gEye    = vec3(1.60, 0.16, 0.06); // HDR red — the eyes BLOOM like the player's green
 		gMark   = vec3(0.85, 0.13, 0.04);    // BRIGHT red unit paint — the enemy's language
 	}
 	if      (b.kind == KIND_PLAYER) { ship(p, b); }
@@ -1229,8 +1235,10 @@ void main() {
 		// the wasteland horde (most of the 80k) skips this entirely
 		vec2 ctrw = vec2(WORLD * 0.5);
 		if (min(distance(g0, ctrw), distance(g0 + vec2(0.0, LEAN * HMAX), ctrw)) < pc.city_r) {
-			for (int i = 0; i < 6; i++) {
-				float tq = (1.0 - float(i) / 5.0) * HMAX;
+			for (int i = 0; i < 8; i++) {
+				float u = 1.0 - float(i) / 7.0;
+				float tq = HMAX * u * u; // quadratic march: dense near the GROUND, where
+				                         // low roof edges used to leak bots over them
 				House hs = house_at(g0 + vec2(0.0, LEAN) * tq);
 				if (hs.ok && hs.sd <= 0.0 && house_h(hs) >= tq) { discard; }
 			}
