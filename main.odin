@@ -79,7 +79,7 @@ main :: proc() {
 				case ._7: ride = 6
 				case ._8: ride = 7
 				case ._9: ride = 8
-				// weapons on the QWERTY row (W drives, so it's skipped)
+				// weapons: shell patterns on the QWERTY row (W drives, so it's skipped)…
 				case .Q: weapon = .Cannon
 				case .E: weapon = .Auto
 				case .R: weapon = .Burst
@@ -89,6 +89,14 @@ main :: proc() {
 				case .I: weapon = .Nova
 				case .O: weapon = .Wall
 				case .P: weapon = .Airstrike
+				// …and the MOUNTED hardware on the bottom row (hold LMB to hose)
+				case .Z: weapon = .Sing
+				case .X: weapon = .Beams
+				case .C: weapon = .Scythe
+				case .V: weapon = .Flamer
+				case .B: weapon = .Arc
+				case .N: weapon = .Vortex
+				case .M: weapon = .Mines
 				// builds on the home row (A/S/D steer, so F..L carry the variants)
 				case .F: style = 0
 				case .G: style = 1

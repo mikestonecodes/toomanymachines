@@ -99,6 +99,9 @@ vec3 city_block(vec2 p) {
 	float r = length(q);
 	float kb = floor(r / RING_SP);
 	if (kb < 1.0 || r > pc.city_r - 60.0) { return vec3(kb, 0.0, 0.0); }
+	// a band with no DRAWABLE area doesn't exist — otherwise building_push ejects
+	// bodies off the phantom facade of a block that never draws (mirrors block_pen)
+	if (kb * RING_SP + BLDG_EDGE >= pc.city_r - 60.0) { return vec3(kb, 0.0, 0.0); }
 	float ns = kb * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5;
 	float jb = floor((atan(q.y, q.x) - SPIRAL * r) / (TAU / ns));
 	return vec3(kb, jb, 1.0);

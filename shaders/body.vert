@@ -18,7 +18,10 @@ void main() {
 	uint id = uint(gl_InstanceIndex);
 	Body b = BODIES[id];
 	v_id = id;
-	if (b.kind == KIND_DEAD) { // park the quad outside the clip volume
+	// the body pass runs TWICE (render.odin): pc.mode 0 lays the ground wrecks, mode 1
+	// draws everything alive/airborne over them — dead husks never paint over live bots
+	bool groundWreck = b.kind == KIND_WRECK && b.variant != 1u;
+	if (b.kind == KIND_DEAD || (pc.mode == 0u) != groundWreck) { // park outside the clip volume
 		gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 		v_local = vec2(0.0);
 		return;
@@ -30,11 +33,21 @@ void main() {
 		// impact can draw (target slot in gen, same state physics chews enemies with)
 		ext = distance(b.pos, BODIES[b.gen - 1u].pos) + 90.0;
 	}
-	if (b.kind == KIND_PLAYER) { // any garage ride + its flash; the laser needs the whole reach
+	if (b.kind == KIND_PLAYER) { // any garage ride + its flash; the laser + the mounted
+		// weapons (pc.pweap while pc.pfire holds) need their whole reach
 		ext = pc.laser > 0.02 ? LASER_LEN * laser_k() + 160.0 : max(120.0, b.radius * 3.2);
+		if (pc.pfire > 0.03) {
+			float wreach = pc.pweap == WEAP_SING   ? distance(pc.aim, b.pos) + 800.0 :
+			               pc.pweap == WEAP_BEAMS  ? 980.0 :
+			               pc.pweap == WEAP_SCYTHE ? 900.0 :
+			               pc.pweap == WEAP_FLAMER ? 480.0 :
+			               pc.pweap == WEAP_ARC    ? 430.0 :
+			               pc.pweap == WEAP_VORTEX ? distance(pc.aim, b.pos) + 540.0 : 0.0;
+			ext = max(ext, wreach);
+		}
 	}
 	else if (b.kind == KIND_BULLET) { // the plasma orb + the trail it has LEFT behind so far
-		ext = clamp((b.hp - b.life) * BULLET_SPEED + 24.0, 36.0, 224.0);
+		ext = b.variant == VAR_MINE ? 26.0 : clamp((b.hp - b.life) * BULLET_SPEED + 24.0, 36.0, 224.0);
 	}
 	else if (b.kind == KIND_TURRET) { // defense tower; its fire needs the whole reach while shooting
 		bool mg = distance(b.pos, vec2(WORLD * 0.5)) < pc.city_r;
@@ -48,7 +61,7 @@ void main() {
 	}
 	else if (b.kind == KIND_HELPER) {
 		// only a FETCHING drone needs quad room for its hoist beam; the other 200+
-		// idle escorts get tight quads (240 fat overlapping quads = fill-rate death)
+		// idle wanderers get tight quads (240 fat overlapping quads = fill-rate death)
 		ext = (b.gen != 0u && b.gen != 0x80000000u) ? 190.0 : 66.0;
 	}
 	else if (b.kind == KIND_WRECK) { ext = b.radius * (b.variant == 1u ? 3.4 : 2.4); } // hoisted husks draw larger

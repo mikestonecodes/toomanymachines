@@ -38,6 +38,15 @@ VAR_RAIDER  :: u32(6) // ally gun-car: circles its prey, strafing
 VAR_SUICIDE :: u32(7) // ally flying drone bomb: staged at the center, dives the horde
 VAR_GUNNER  :: u32(8) // ally rifle mech: marches the avenues hosing autofire
 VAR_BOMBER  :: u32(9) // ally high wing: patrols from the center, dive-bombs warbands
+VAR_MINE    :: u32(10) // player proximity mine (a KIND_BULLET that waits, then BOOMs)
+// mounted-weapon ids the shaders branch on — MUST equal the Weapon enum positions
+WEAP_SING   :: u32(9)  // Z: the SINGULARITY — a charging well that reels the horde
+                       //    into the cursor, then erupts into a massive ring bomb
+WEAP_BEAMS  :: u32(10) // X: twin giant lasers off the flanks
+WEAP_SCYTHE :: u32(11) // C: a laser blade sweeping an arc around the aim
+WEAP_FLAMER :: u32(12) // V: rolling fire cone — burns + shoves the horde back
+WEAP_ARC    :: u32(13) // B: crackling discharge field around the rig
+WEAP_VORTEX :: u32(14) // N: drags the horde into the cursor (herding, no damage)
 // the GARAGE — 1..9 pick what the PLAYER body is (player.variant = ride index)
 RIDE_TRUCK    :: u32(0)
 RIDE_BUGGY    :: u32(1)
@@ -145,10 +154,18 @@ STYLES := [6]struct { scale, speed, fire: f32 }{ // F G H J K L — the build of
 	{1.60, 0.62, 1.45}, // K colossal
 	{1.10, 1.10, 0.62}, // L prototype — rapid fire
 }
-Weapon :: enum { Cannon, Auto, Burst, Rail, Mortar, Lance, Nova, Wall, Airstrike } // Q E R T Y U I O P
+// Q E R T Y U I O P = shell patterns; Z X C V B N M = MOUNTED hardware (the WEAP_* ids
+// above must match this order — the shaders branch on pc.pweap for the held mounts).
+Weapon :: enum {
+	Cannon, Auto, Burst, Rail, Mortar, Lance, Nova, Wall, Airstrike, // shells
+	Sing, Beams, Scythe, Flamer, Arc, Vortex,                        // held mounts (LMB hoses/charges)
+	Mines,                                                           // M: drops off the tail
+}
 WEAPON_INT := [Weapon]f32{ // seconds between triggers, × ride.fire × style.fire
 	.Cannon = 0.24, .Auto = 0.07, .Burst = 0.55, .Rail = 0.60, .Mortar = 0.95,
 	.Lance = 0.10, .Nova = 1.60, .Wall = 1.60, .Airstrike = 3.00,
+	.Sing = 0.1, .Beams = 0.1, .Scythe = 0.1, .Flamer = 0.1, .Arc = 0.1, .Vortex = 0.1, // held: no trigger cadence
+	.Mines = 0.30,
 }
 BULLET_RADIUS  :: f32(11)
 VEL_HARD_CAP   :: f32(1800) // wall bounces must never add net energy, whatever the ride
@@ -166,9 +183,13 @@ muzzle:      f32 // firing flash/recoil envelope: 1 on shot → decays to 0
 throttle_v:  f32 // smoothed |throttle| for the engine glow
 boost_v:     f32 // smoothed boost for the flame
 laser_v:     f32 // smoothed laser burn: RMB held → 1
+fire_v:      f32 // smoothed LMB hold for the MOUNTED weapons (Z..N) → pc.pfire
+sing_charge: f32 // the SINGULARITY's charge 0..1 (drives its pull + core; pc.pfire while on Z)
 fire_timer:  f32
 bullet_head: int
 barrel:      f32 // the two barrels alternate: ±1
+gait_odo:    f32 // walker rides: integrated gait phase (rad) — packed into the player
+                 //   body's `life` so body.frag plants the feet against real travel
 run_seed:      u32 // per-run salt for the warband cluster hash
 ride:          int // 1-9: which garage vehicle the player body is (index into RIDES)
 style:         int // F/G/H/J/K/L: the ride's build (index into STYLES)
@@ -230,6 +251,10 @@ block_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	r := linalg.length(q)
 	kb := math.floor(r / RING_SP)
 	if kb < 1 || r > city_r - 60 { return }
+	// the band only exists if it has DRAWABLE area: without this, a point on the
+	// outermost ring street passes the r-gate and gets ejected off the facade of a
+	// band that starts BEYOND the gate — an invisible wall at the city edge
+	if kb * RING_SP + BLDG_EDGE >= city_r - 60 { return }
 	ns := kb * RING_SP >= SPOKE2_R ? SPOKES : SPOKES * 0.5
 	sa := math.atan2(q.y, q.x) - SPIRAL * r
 	jb := math.floor(sa / (f32(math.TAU) / ns))
@@ -267,9 +292,10 @@ game_init :: proc() {
 	car_vel = {}
 	car_angle = 0
 	cam = car_pos
-	cam_shake, muzzle, throttle_v, boost_v, laser_v, fire_timer = 0, 0, 0, 0, 0, 0
+	cam_shake, muzzle, throttle_v, boost_v, laser_v, fire_v, sing_charge, fire_timer = 0, 0, 0, 0, 0, 0, 0, 0
 	bullet_head = 0
 	barrel = 1
+	gait_odo = 0
 	ride, style = 0, 0
 	weapon = .Cannon
 	input = {}
@@ -439,6 +465,16 @@ game_update :: proc(dt: f32) {
 		car_vel *= 1 - (1 - maxsp / sp) * (1 - math.exp(-3 * dt)) // soft cap: boost bleeds off, no jerk
 	}
 	car_pos += car_vel * dt
+	if rd.walker {
+		// gait odometer: phase advances with real travel (signed — reversing steps back)
+		// plus turning in place (the legs must step through a pivot). Rate mirrors
+		// gait_ph in body.frag: feet plant when it holds, freeze at a standstill.
+		kg := min(5.0 / pr, 0.22)
+		gait_odo += (linalg.dot(car_vel, fwd) + abs(steer) * turn * pr * 0.6) * dt * kg
+		// wrap in exact TAU multiples — invisible to the legs, keeps f32 precision
+		if gait_odo > 1e4 { gait_odo -= f32(math.TAU) * 1500 }
+		if gait_odo < -1e4 { gait_odo += f32(math.TAU) * 1500 }
+	}
 	if !rd.airborne { collide_city(&car_pos, &car_vel, pr) }
 	for a in 0 ..< 2 {
 		if car_pos[a] < pr + 4 { car_pos[a] = pr + 4; car_vel[a] = max(car_vel[a], 0) }
@@ -462,11 +498,52 @@ game_update :: proc(dt: f32) {
 	// the LANCE weapon (U) fires the laser off LMB too — RMB always burns it
 	las := input.laser || (weapon == .Lance && input.fire)
 	laser_v += ((las ? f32(1) : 0) - laser_v) * (1 - math.exp(-9 * dt))
+	// the MOUNTED weapons (Z..N) are HELD, not triggered: LMB hoses them via pc.pfire —
+	// physics.comp applies the burn and body.frag draws it, all off this one envelope
+	held := false
+	#partial switch weapon {
+	case .Sing, .Beams, .Scythe, .Flamer, .Arc, .Vortex: held = true
+	}
+	fire_v += ((input.fire && held ? f32(1) : 0) - fire_v) * (1 - math.exp(-12 * dt))
+	if fire_v > 0.05 { // mount feel: hum, thrust-back
+		#partial switch weapon {
+		case .Flamer:
+			if off := aim_world - car_pos; linalg.length(off) > 0.001 {
+				car_vel -= linalg.normalize(off) * 240 * fire_v * dt // the cone pushes back
+			}
+			cam_shake = min(cam_shake + fire_v * 4 * dt, 3)
+		case .Beams, .Scythe, .Arc: cam_shake = min(cam_shake + fire_v * 5 * dt, 3.5)
+		}
+	}
+	// ── the SINGULARITY (Z): hold = the well charges and REELS the horde into the
+	// cursor (physics pulls off pc.pfire = the charge); release — or top it out — and
+	// the point ERUPTS: a heart shell plus a ring of overlapping detonations blooming
+	// outward through the crowd the well just packed together.
+	if weapon == .Sing {
+		if input.fire { sing_charge = min(sing_charge + dt / 1.8, 1) }
+		if sing_charge >= 1 || (!input.fire && sing_charge > 0.12) {
+			spawn_shell(aim_world - {70, 0}, aim_world, BULLET_SPEED) // the heart goes first
+			for i in 0 ..< 8 {
+				d := [2]f32{math.cos(f32(i) * f32(math.TAU) / 8), math.sin(f32(i) * f32(math.TAU) / 8)}
+				t := aim_world + d * 110
+				spawn_shell(t - d * (90 + f32(i) * 16), t, BULLET_SPEED)
+			}
+			cam_shake = 8
+			muzzle = 1
+			sing_charge = 0
+		} else if !input.fire {
+			sing_charge = 0 // let go early: the well just collapses, no bomb
+		}
+		cam_shake = min(cam_shake + sing_charge * 9 * dt, 6) // the rumble builds with the charge
+	} else {
+		sing_charge = 0
+	}
 	perp := [2]f32{-fwd.y, fwd.x}
-	// drift slip → banking, read by body.frag (walkers never bank — they stride)
+	// drift slip → banking, read by body.frag; walkers never bank — their `life` slot
+	// carries the gait odometer instead (the legs stride against real travel)
 	lean := drift ? clamp(linalg.dot(car_vel, perp) / 520, -1, 1) : 0
 	// hp=999: battle_damage's soot/ember overlay must never touch the player's rig
-	body_at(0)^ = {pos = car_pos, vel = car_vel, radius = pr, life = lean, hp = 999, angle = car_angle, kind = KIND_PLAYER, variant = u32(ride), gen = u32(style)}
+	body_at(0)^ = {pos = car_pos, vel = car_vel, radius = pr, life = rd.walker ? gait_odo : lean, hp = 999, angle = car_angle, kind = KIND_PLAYER, variant = u32(ride), gen = u32(style)}
 
 	// ── blast pressure: every detonation near the player SHOVES the ride and rattles
 	// the camera — physics publishes the live blast list into STATS[2..] (the same list
@@ -528,7 +605,7 @@ game_update :: proc(dt: f32) {
 	// flies STRAIGHT to its target point and booms exactly there (life = flight time;
 	// physics booms on expiry). Q..P pick the pattern; cadence scales with the ride.
 	fire_timer -= dt
-	if input.fire && weapon != .Lance && fire_timer <= 0 {
+	if input.fire && weapon != .Lance && !held && fire_timer <= 0 {
 		if off := aim_world - car_pos; linalg.length(off) > 0.001 {
 			a := linalg.normalize(off)
 			ap := [2]f32{-a.y, a.x}
@@ -551,13 +628,25 @@ game_update :: proc(dt: f32) {
 				fl := 0.22 + f32(i) * 0.055
 				spawn_shell(t - a * (BULLET_SPEED * fl), t, BULLET_SPEED)
 			}
+			case .Mines: // a proximity mine dropped off the tail — it settles, arms, and
+				// BOOMs when the horde steps close (physics owns the trip)
+				body_at(BULLET_LO + bullet_head)^ = {
+					pos    = car_pos - fwd * (pr + 12),
+					vel    = car_vel * 0.2 - fwd * 60,
+					radius = BULLET_RADIUS,
+					hp     = 25, // total fuse — physics arms it a beat after (hp - life)
+					life   = 25,
+					angle  = car_angle, kind = KIND_BULLET, variant = VAR_MINE,
+				}
+				bullet_head = (bullet_head + 1) % MAX_BULLETS
+			case .Sing, .Beams, .Scythe, .Flamer, .Arc, .Vortex: // held mounts — gated out above
 			}
 			fire_timer = WEAPON_INT[weapon] * rd.fire * st.fire
 			barrel = -barrel
-			muzzle = 1
+			muzzle = weapon == .Mines ? muzzle : 1
 			heavy := weapon == .Rail || weapon == .Airstrike || ride == int(RIDE_TANK)
-			cam_shake = min(cam_shake + (heavy ? 6.0 : rd.walker ? 2.6 : 4.2), 8)
-			car_vel -= a * (rd.walker ? 16 : 58) * (weapon == .Auto ? 0.3 : 1) // recoil
+			cam_shake = min(cam_shake + (weapon == .Mines ? 0.5 : weapon == .Auto ? 1.1 : heavy ? 6.0 : rd.walker ? 2.6 : 4.2), 8) // Auto: rapid cadence, gentle kick
+			car_vel -= a * (rd.walker ? 16 : 58) * (weapon == .Auto ? 0.3 : weapon == .Mines ? 0 : 1) // recoil
 		}
 	}
 }

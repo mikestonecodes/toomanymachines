@@ -6,25 +6,28 @@
 // towable wrecks, bullet bolts, death breakups. Output is premultiplied; `add` is pure
 // emissive (HDR > 1) that feeds the bloom pass.
 //
-// The BOTS are painted like flat military-illustration mechs, not shiny metal: matte
-// khaki/olive armor plates with hard two-tone cel shading, chipped paint speckles and
-// small orange unit markings. Red glow is reserved for sensors/cores — on the night
-// ground the horde reads as a field of red eyes. Battle damage shows: below half HP the
-// paint chars and embers gutter out of the hull.
+// The BOTS are machined-metal war machines: hard two-tone cel shading over BRUSHED
+// metal plates (directional grinding streaks + wear, smooth noise — never a grid) with
+// a broad sheen — and no outlines. Chrome leg pistons + joint bearings + deck hardware
+// keep them reading as BOTS, not creatures. The horde is dusty rust-toned steel (the city's own warm family, a notch
+// more saturated) with red unit paint and RED-burning
+// sensor eyes (a field of red eyes in the dark); YOUR team burns bright GREEN
+// (RIG_GRN): the army's dusty grey and the player's bright stainless both wear green
+// lights/markings — red enemy, green friend, at a glance.
+// Red is reserved for damage/blast heat. Battle damage: below half HP the paint chars
+// and embers gutter out of the hull.
 
 // Vertex → fragment interface (must match body.vert's `out`s).
 layout(location = 0) in vec2      v_local;
 layout(location = 1) in flat uint v_id;
 layout(location = 0) out vec4 o_color;
 
-// the invaders' paint (linear; the composite sRGB-encodes) — dusty greys, red markings:
-// everything lives in the 60/30/10 palette, hue is reserved for the accents
-const vec3 BOT_KHAKI  = vec3(0.305, 0.285, 0.232); // dusty khaki plate
-const vec3 BOT_OLIVE  = vec3(0.168, 0.166, 0.128); // faded olive plate
 const vec3 BOT_ORANGE = vec3(0.72, 0.14, 0.05);  // red unit marking
 const vec3 BOT_LINE   = vec3(0.045, 0.045, 0.040); // panel lining / lower struts
 
 const vec3 SHIP_CHROME = vec3(0.40, 0.41, 0.44); // polished trim (helper dome)
+const vec3 RIG_STEEL  = vec3(0.29, 0.30, 0.33); // the player's hull: pale WORKED steel — still the brightest metal out here, never showroom
+const vec3 RIG_GRN    = vec3(0.16, 1.35, 0.24); // YOUR TEAM's light: bright green — the horde burns red, you burn green
 
 // painter state: alpha-composited base + emissive add
 vec3  base = vec3(0.0);
@@ -33,10 +36,15 @@ vec3  add  = vec3(0.0);
 vec2  gL   = vec2(-0.7, -0.7); // light dir in body frame, set per bot
 float gCS  = 3.0;              // paint-chip cell size, scaled to the bot
 // team paint: the SAME chassis sprites serve the enemy horde, YOUR army and the garage
-// rides — only the marking/eye colors flip. Red is the enemy's language; the player's
-// side wears amber (main() sets these per body before dispatch).
-vec3 gMark = BOT_ORANGE;  // unit markings / bands
-vec3 gEye  = PAL_ACCENT;  // sensor / warhead glow
+// rides — only the paint flips (main()/ship() set these per body before dispatch).
+// The horde wears dark-green plate + red markings; your army dusty grey + amber; the
+// player's rides bright clean stainless. Defaults here are the friendly grey.
+vec3 gMark   = BOT_ORANGE;               // unit markings / bands
+vec3 gEye    = PAL_ACCENT;               // sensor / warhead glow
+vec3 gPlateA = vec3(0.305, 0.285, 0.232); // primary armor plate
+vec3 gPlateB = vec3(0.168, 0.166, 0.128); // secondary / recessed plate
+float gBrush = 1.7;                       // brushing depth — every machine here is worked metal
+float gGrime = 0.80;                      // oily grime ground into the brushing — HEAVY on every machine, yours included
 
 void lay(vec3 c, float a) {
 	a = clamp(a, 0.0, 1.0);
@@ -46,19 +54,44 @@ void lay(vec3 c, float a) {
 
 float soft(float d) { return 1.0 - smoothstep(-1.2, 1.2, d); } // sdf → coverage
 
-// One armor plate: hard two-tone cel shade split across the plate center along the
-// light, chipped paint, dark lining at the edge — and a crisp specular bevel on the
-// lit side, so every plate reads as machined METAL.
+// One armor plate: SMOOTH machined metal, NO outlines of any kind — just a hard
+// two-tone cel shade split along the light, a broad polished SHEEN climbing toward the
+// light, and a whisper of per-plate tint so adjacent panels read apart. Edges separate
+// by value alone, like bare stamped facets.
 void plate(vec2 p, vec2 ctr, float d, vec3 c, float seed) {
-	float litSide = step(0.0, dot(p - ctr, gL));
-	float shade = mix(0.66, 1.08, litSide);
-	vec3 col = c * shade;
-	float ch = hash21(floor(p / gCS) + seed * 17.0);
-	col = mix(col, c * 0.42, step(0.93, ch) * 0.75);     // chipped paint
-	float bevel = smoothstep(-3.6, -2.4, d) * (1.0 - smoothstep(-2.4, -1.6, d));
-	col += vec3(0.44, 0.45, 0.49) * bevel * litSide;     // specular bevel glint — machined METAL
-	col = mix(col, BOT_LINE, smoothstep(-2.4, -1.1, d)); // panel lining
+	float lit = dot(p - ctr, gL);
+	float litSide = step(0.0, lit);
+	vec3 col = c * mix(0.62, 1.12, litSide);
+	col *= 0.95 + 0.10 * fract(seed * 61.7);             // per-PLATE tint
+	// brushed-metal texture: two octaves of directional grinding streaks + broad wear
+	// mottling — SMOOTH noise only, stretched along the body axis (no cells, no grid);
+	// gBrush scales the depth per team
+	float brush = 0.65 * vnoise(vec2(p.x * 0.30, p.y * 2.6) + seed * 11.0)
+	            + 0.35 * vnoise(vec2(p.x * 0.62, p.y * 6.5) + seed * 29.0);
+	col *= 1.0 + (brush - 0.5) * 0.30 * gBrush;
+	col *= 0.93 + 0.11 * vnoise(p * 0.16 + seed * 23.0);
+	// the streaks COMB the gloss — anisotropic highlight, the actual "brushed" read
+	float sheen = clamp(lit / (gCS * 5.0), 0.0, 1.0) * (1.0 + (brush - 0.5) * 0.9 * gBrush);
+	col += (c * 1.3 + vec3(0.10)) * sheen * sheen * 0.5; // neutral term: even dark steel GLINTS
+	// GRUNGE, after the gloss so dirt KILLS the shine: oily smudges ground into the
+	// metal, collecting deepest in the streak valleys — filthy field machines
+	float grime = vnoise(p * 0.13 + seed * 41.0);
+	col *= 1.0 - smoothstep(0.60, 0.25, grime + brush * 0.35) * 0.62 * gGrime;
 	lay(col, soft(d));
+}
+
+// GAIT ODOMETER: leg phase advances with actual TRAVEL, not time·speed — a time·speed
+// phase re-scales its whole history whenever the velocity changes (contact shoves do,
+// every frame), which teleports the legs into a jitter. The horde marches radially
+// (in toward the pit, allies out from it), so distance-to-center IS the path odometer:
+// legs freeze when a bot is blocked, backpedal when it's flung, never jitter. The rate
+// is sized so feet approximately PLANT (sweep-back speed ≈ body speed), capped so the
+// tiny fast classes don't strobe. The player's walkers carry a true CPU-integrated
+// odometer in b.life instead (their motion isn't radial).
+float gait_ph(Body b) {
+	float k = min(5.0 / b.radius, 0.22);
+	float d = distance(b.pos, vec2(WORLD * 0.5));
+	return (v_id >= ALLY_LO || v_id == 0u ? d : -d) * k + hash1(v_id * 7919u) * TAU;
 }
 
 // One mech leg with a real GAIT: the foot sweeps back through stance (planted while
@@ -71,7 +104,8 @@ void mech_leg(vec2 p, float r, float aa, float ph, float wUp, float wLo) {
 	if (cyc < 0.72) { stride = 1.0 - 2.0 * (cyc / 0.72); }            // stance: planted, sweeping back
 	else {
 		float sw = (cyc - 0.72) / 0.28;
-		stride = -1.0 + 2.0 * sw;                                     // swing: quick snap forward
+		float e = sw * sw * (3.0 - 2.0 * sw);                         // eased: kick off hard, set down soft
+		stride = -1.0 + 2.0 * e;                                      // swing: snap forward
 		tuck = sin(sw * 3.14159);                                     // leg pulls in = the lift
 	}
 	vec2 hip  = rot2(aa) * vec2(r * 0.52, 0.0);
@@ -82,62 +116,74 @@ void mech_leg(vec2 p, float r, float aa, float ph, float wUp, float wLo) {
 	// lower leg: short thick strut ending in a boxy foot pad, oriented along the leg
 	vec2 dirLo = normalize(foot - knee + 0.0001);
 	float angLo = atan(dirLo.y, dirLo.x);
-	lay(BOT_LINE * 1.5, soft(sd_seg(p, knee, foot - dirLo * r * 0.12) - wLo * 1.4));
+	lay(gPlateB * 1.45, soft(sd_seg(p, knee, foot - dirLo * r * 0.12) - wLo * 1.4)); // team metal, bright enough to READ
+	// chrome hydraulic piston riding the shin + a round hip bearing — MACHINE, not bug
+	vec2 perpLo = vec2(-dirLo.y, dirLo.x);
+	lay(SHIP_CHROME * 0.85, soft(sd_seg(p, knee + perpLo * wLo * 1.1, mix(knee, foot, 0.62) + perpLo * wLo * 1.1) - wLo * 0.55));
+	lay(BOT_LINE * 2.2, soft(length(p - hip) - wUp * 0.55));
 	vec2 qf = rot2(-angLo) * (p - foot);
-	plate(p, foot, sd_box(qf, vec2(r * 0.13, r * 0.10)) - r * 0.04, BOT_OLIVE, aa + 3.0);
+	plate(p, foot, sd_box(qf, vec2(r * 0.13, r * 0.10)) - r * 0.04, gPlateB, aa + 3.0);
 	// upper-leg armor plate, oriented hip→knee
 	float ang = atan(knee.y - hip.y, knee.x - hip.x);
 	vec2 q = rot2(-ang) * (p - hip);
 	float lenU = length(knee - hip);
 	float dU = sd_box(q - vec2(lenU * 0.5, 0.0), vec2(lenU * 0.55, wUp)) - wUp * 0.4;
-	plate(p, mix(hip, knee, 0.5), dU, BOT_KHAKI, aa);
+	plate(p, mix(hip, knee, 0.5), dU, gPlateA, aa);
 	// knee cap
-	plate(p, knee, length(p - knee) - wUp * 0.75, BOT_OLIVE, aa + 9.0);
+	plate(p, knee, length(p - knee) - wUp * 0.75, gPlateB, aa + 9.0);
 }
 
 void player_mech(vec2 p, Body b) {
-	// ── the player's walkers (rides 7+8): HUGE friendly mechs — the same dusty grey
-	// plate as the world but NO red anywhere (red is the enemy's language); the light
-	// budget is the player's amber. Twin shoulder guns track the mouse and pound out
-	// the shells. Everything parameterizes on radius, so the COLOSSUS (r≈66) is simply
-	// TITANIC — and past r>52 it gains a third leg pair + a burning reactor crown.
+	// ── the player's walkers (rides 7+8): HUGE mechs in the player's unmissable gloss
+	// clean STAINLESS — NO red anywhere (red is the damage language); the light budget is the
+	// player's amber + its own deck lights. Twin shoulder guns track the mouse and pound
+	// out the shells. Everything parameterizes on radius, so the COLOSSUS (r≈66) is
+	// simply TITANIC — and past r>52 it gains a third leg pair + a burning reactor crown.
 	float r = b.radius;
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
 	gCS = 4.5;
 	lay(vec3(0.012, 0.010, 0.010), 0.5 * soft(length(p - vec2(6.0, 10.0)) - r * 1.15)); // ground shadow
-	// heavy legs, striding with speed
-	float gt = pc.time * (1.5 + length(b.vel) * 0.022);
+	// heavy legs on the CPU-integrated gait odometer (b.life): feet PLANT while the hull
+	// advances, freeze at a standstill — a metachronal wave ripples front→back down each
+	// side, the sides half a cycle apart
+	float gt = b.life;
 	float wUp = r * 0.20, wLo = r * 0.075;
-	mech_leg(p, r,  0.80, gt,           wUp, wLo);
-	mech_leg(p, r, -0.80, gt + 3.14159, wUp, wLo);
-	mech_leg(p, r,  2.35, gt + 3.14159, wUp, wLo);
-	mech_leg(p, r, -2.35, gt,           wUp, wLo);
-	if (r > 52.0) { // the COLOSSUS walks on SIX
-		mech_leg(p, r,  1.57, gt + 1.57, wUp, wLo);
-		mech_leg(p, r, -1.57, gt + 4.71, wUp, wLo);
+	mech_leg(p, r,  0.80, gt,                    wUp, wLo);
+	mech_leg(p, r, -0.80, gt + 3.14159,          wUp, wLo);
+	mech_leg(p, r,  2.35, gt + 2.09,             wUp, wLo);
+	mech_leg(p, r, -2.35, gt + 3.14159 + 2.09,   wUp, wLo);
+	if (r > 52.0) { // the COLOSSUS walks on SIX — the mid pair completes the wave
+		mech_leg(p, r,  1.57, gt + 4.19,           wUp, wLo);
+		mech_leg(p, r, -1.57, gt + 3.14159 + 4.19, wUp, wLo);
 	}
-	// torso: broad deck + chest glacis + engine block — player greys, cel-shaded
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.72, r * 0.55)) - r * 0.14, PAL_MID * 1.15, 1.0);
-	plate(p, vec2(r * 0.5, 0.0), sd_box(p - vec2(r * 0.5, 0.0), vec2(r * 0.24, r * 0.40)) - r * 0.08, vec3(0.155, 0.160, 0.170), 2.0);
-	plate(p, vec2(-r * 0.55, 0.0), sd_box(p - vec2(-r * 0.55, 0.0), vec2(r * 0.18, r * 0.34)) - r * 0.06, PAL_MID * 0.8, 3.0);
+	// the hull WALKS: weight rocks onto each planted side and surges with the stride
+	p += vec2(cos(gt * 2.0) * r * 0.020, sin(gt) * r * 0.045);
+	// torso: broad deck + chest glacis + engine block — clean faceted stainless, cel-shaded
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.72, r * 0.55)) - r * 0.14, RIG_STEEL, 1.0);
+	plate(p, vec2(r * 0.5, 0.0), sd_box(p - vec2(r * 0.5, 0.0), vec2(r * 0.24, r * 0.40)) - r * 0.08, RIG_STEEL * 0.55, 2.0);
+	plate(p, vec2(-r * 0.55, 0.0), sd_box(p - vec2(-r * 0.55, 0.0), vec2(r * 0.18, r * 0.34)) - r * 0.06, RIG_STEEL * 0.40, 3.0);
 	// cockpit slit, glowing faint warm — the pilot's window
 	float glass = sd_box(p - vec2(r * 0.62, 0.0), vec2(r * 0.07, r * 0.22)) - r * 0.03;
 	lay(vec3(0.020, 0.021, 0.024), soft(glass));
-	add += vec3(0.35, 0.30, 0.20) * soft(glass) * 0.8;
-	// amber running strips down the flanks + headlamps at the chest (the long beam on
-	// the ground lives in city.frag, same as the truck)
+	add += vec3(0.12, 0.38, 0.14) * soft(glass) * 0.8; // the cabin glows team green
+	// LIGHTS: amber running strips down the flanks, a row of deck marker lamps, big
+	// headlamps at the chest (the long beam on the ground lives in city.frag, same as
+	// the truck) — the rig reads as ITS OWN light source in the dark
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
-		add += PAL_EMBER * 1.2 * soft(sd_box(p - vec2(-r * 0.15, s * r * 0.50), vec2(r * 0.34, 1.4)));
-		add += vec3(1.0, 0.90, 0.70) * 1.2 * soft(length(p - vec2(r * 0.78, s * r * 0.26)) - 2.6);
+		add += RIG_GRN * 1.25 * soft(sd_box(p - vec2(-r * 0.15, s * r * 0.50), vec2(r * 0.34, 1.4)));
+		add += vec3(1.0, 0.90, 0.70) * 1.8 * soft(length(p - vec2(r * 0.78, s * r * 0.26)) - 3.2);
+		for (float i = -1.0; i <= 1.0; i += 1.0) { // steady deck markers along the shoulders
+			add += RIG_GRN * 1.1 * soft(length(p - vec2(i * r * 0.30, s * r * 0.60)) - r * 0.035);
+		}
 	}
 	// engine vents aft, breathing with the throttle
 	float th = pc.throttle * 0.8 + pc.boost * 1.6;
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
-		add += PAL_EMBER * soft(length(p - vec2(-r * 0.70, s * r * 0.20)) - r * 0.07) * (0.35 + th * (1.6 + 0.5 * sin(pc.time * 43.0 + s)));
+		add += PAL_EMBER * soft(length(p - vec2(-r * 0.70, s * r * 0.20)) - r * 0.07) * (0.04 + th * (1.6 + 0.5 * sin(pc.time * 43.0 + s))); // heat only — no idle yellow
 	}
 	if (r > 52.0) { // the reactor crown, burning amber over the deck
-		plate(p, vec2(-r * 0.08, 0.0), length(p - vec2(-r * 0.08, 0.0)) - r * 0.20, PAL_MID * 1.3, 11.0);
-		add += PAL_EMBER * 0.9 * soft(length(p - vec2(-r * 0.08, 0.0)) - r * 0.09) * (0.7 + 0.3 * sin(pc.time * 2.2));
+		plate(p, vec2(-r * 0.08, 0.0), length(p - vec2(-r * 0.08, 0.0)) - r * 0.20, RIG_STEEL * 0.9, 11.0);
+		add += RIG_GRN * 0.8 * soft(length(p - vec2(-r * 0.08, 0.0)) - r * 0.09) * (0.85 + 0.15 * sin(pc.time * 2.2)); // the reactor burns team green
 	}
 	// twin SHOULDER guns tracking the mouse, recoiling with the barrage
 	float ta = atan(pc.aim.y - b.pos.y, pc.aim.x - b.pos.x) - b.angle;
@@ -171,22 +217,27 @@ void sportcar(vec2 p, Body b) {
 			lay(PAL_BASE * 0.7, soft(sd_box(p - vec2(sx * 11.0, sy * 11.5), vec2(6.0, 3.4)) - 1.6));
 		}
 	}
-	float hull = sd_box(p, vec2(19.0, 8.4)) - 4.0; // low wedge body
+	float hull = sd_box(p, vec2(19.0, 8.4)) - 4.0; // low wedge body — clean faceted stainless
 	float rim = clamp(dot(normalize(p + 0.0001), gL), 0.0, 1.0);
-	vec3 mc = PAL_MID * (0.6 + 0.2 * sin(p.x * 0.7));
-	mc = mix(mc, PAL_MID * (0.9 + rim * 1.3), smoothstep(-4.0, 0.0, hull));
+	vec3 mc = RIG_STEEL * (0.6 + 0.2 * sin(p.x * 0.7));
+	mc = mix(mc, RIG_STEEL * (0.9 + rim * 1.3), smoothstep(-4.0, 0.0, hull));
+	float brh = 0.65 * vnoise(vec2(p.x * 0.55, p.y * 3.4) + 3.0)   // brushed steel, deep two-octave
+	          + 0.35 * vnoise(vec2(p.x * 1.10, p.y * 8.0) + 9.0);  //   grinding streaks
+	mc *= 1.0 + (brh - 0.5) * 0.55;
+	mc *= 0.93 + 0.11 * vnoise(p * 0.16 + 7.0);
+	mc *= 1.0 - smoothstep(0.60, 0.25, vnoise(p * 0.13 + 13.0) + brh * 0.35) * 0.50; // oily grunge
 	lay(mc, soft(hull));
-	lay(PAL_MID * 0.75, soft(sd_box(p - vec2(15.5, 0.0), vec2(4.5, 5.0)) - 2.0)); // nose splitter
+	lay(RIG_STEEL * 0.65, soft(sd_box(p - vec2(15.5, 0.0), vec2(4.5, 5.0)) - 2.0)); // nose splitter
 	float glass = sd_box(p - vec2(4.0, 0.0), vec2(6.0, 5.6)) - 2.2; // canopy
 	lay(vec3(0.020, 0.021, 0.024), soft(glass));
 	add += vec3(0.10, 0.105, 0.115) * soft(glass) * pow(clamp(dot(normalize(p - vec2(4.0, 0.0) + 0.0001), gL), 0.0, 1.0), 3.0);
 	lay(PAL_BASE * 0.9, soft(sd_box(p - vec2(-16.0, 0.0), vec2(1.0, 9.5)))); // rear wing
 	for (float s = -1.0; s <= 1.0; s += 2.0) { // lamps + red tails
 		add += vec3(1.0, 0.90, 0.70) * 1.2 * soft(length(p - vec2(19.0, s * 5.0)) - 2.0);
-		add += PAL_ACCENT * 1.4 * soft(sd_box(p - vec2(-18.5, s * 6.0), vec2(0.9, 1.8)));
+		add += RIG_GRN * 1.6 * soft(sd_box(p - vec2(-18.5, s * 6.0), vec2(0.9, 1.8))); // green tails
 	}
 	float th = pc.throttle * 0.8 + pc.boost * 1.6; // diffuser strip breathing with throttle
-	add += PAL_EMBER * (0.3 + th * 1.4) * soft(sd_box(p - vec2(-18.0, 0.0), vec2(1.0, 4.0)));
+	add += PAL_EMBER * (0.04 + th * 1.4) * soft(sd_box(p - vec2(-18.0, 0.0), vec2(1.0, 4.0))); // heat only
 }
 
 // the chassis sprites double as garage rides (defined below, with the horde art)
@@ -219,13 +270,164 @@ void ship(vec2 p, Body b) {
 		float ed = length(p - a0);
 		add += (PAL_EMBER * 1.5 + vec3(0.7)) * exp(-ed * ed / (50.0 * lk * pc.laser + 8.0)) * pc.laser;
 	}
+
+	// ── the MOUNTED weapons (Z..N), held via pc.pfire — each machine draws its own
+	// fire, geometry mirroring physics.comp EXACTLY (pure time+push-constant functions).
+	if (pc.pfire > 0.03) {
+		float f = pc.pfire;
+		float aima = atan(pc.aim.y - b.pos.y, pc.aim.x - b.pos.x) - b.angle;
+		vec2 wad = vec2(cos(aima), sin(aima));
+		vec2 wap = vec2(-wad.y, wad.x);
+		if (pc.pweap == WEAP_SING) {
+			// ── the SINGULARITY: a quiet gravity WELL at the cursor, visibly FED from
+			// your emitter. A charge filament wavers out of the rig with packets flowing
+			// well-ward; at the far end a thin accretion RING tightens and heats as the
+			// charge builds, ember motes spiral down onto it dragging arc tails, and the
+			// space inside goes DARK (the lens). Everything gathers SMOOTHLY toward
+			// top-out — no strobe, just accumulating weight.
+			vec2 vp = rot2(-b.angle) * (pc.aim - b.pos); // the well, body frame
+			vec2 q2 = p - vp;
+			float dv = max(length(q2), 1.0);
+			float ringR = mix(150.0, 46.0, f); // the ring closes its fist as it charges
+			// the FEED: a wavering filament rig → well, pinned at both ends
+			float vl = max(length(vp), 1.0);
+			vec2 vd = vp / vl;
+			float alongF = clamp(dot(p, vd), 0.0, vl - ringR * 0.7);
+			float ends = smoothstep(0.0, vl * 0.35, alongF) * smoothstep(vl, vl * 0.6, alongF);
+			vec2 axisP = vd * alongF + vec2(-vd.y, vd.x) * sin(alongF * 0.030 - pc.time * 7.0) * 7.0 * ends;
+			float fd = length(p - axisP);
+			add += (PAL_EMBER * 0.8 + vec3(0.10)) * exp(-fd * fd / 14.0) * 0.45 * f;
+			float pk = fract(alongF / 90.0 - pc.time * 3.2); // charge packets flowing OUT of you
+			add += (PAL_EMBER * 1.2 + vec3(0.30)) * exp(-pow((pk - 0.5) * 5.0, 2.0)) * exp(-fd * fd / 8.0) * 0.9 * f;
+			// the emitter mouth on the hull — the well clearly drinks from HERE
+			vec2 mzS = vd * (b.radius * 1.05);
+			add += (PAL_EMBER * 1.2 + vec3(0.30)) * exp(-dot(p - mzS, p - mzS) / (60.0 + 50.0 * f)) * 0.7 * f;
+			if (dv < 520.0) {
+				// the LENS: space inside the ring darkens, deeper with charge
+				lay(vec3(0.012, 0.010, 0.012), smoothstep(ringR * 1.15, ringR * 0.4, dv) * 0.8 * f);
+				// the accretion RING: thin, hot, tightening — the one bright line
+				float rr = dv - ringR;
+				add += (PAL_EMBER * 1.4 + vec3(0.35, 0.18, 0.08)) * exp(-rr * rr / (30.0 + 130.0 * (1.0 - f))) * (0.30 + 0.80 * f * f);
+				// infalling MOTES on decaying spirals, arc tails trailing (respawn at the rim)
+				for (float i = 0.0; i < 10.0; i += 1.0) {
+					float rate = 0.55 + 0.30 * fract(i * 0.71);
+					float ph = fract(pc.time * rate + i * 0.317); // this mote's fall, 0 → 1
+					uint sk = uint(floor(pc.time * rate + i * 0.317)) * 47u + uint(i) * 13u;
+					float orad = mix(470.0, ringR, ph * ph);
+					float oang = hash1(sk) * TAU - pc.time * mix(1.2, 7.0, ph); // spinning up as it falls
+					vec2 mp = vec2(cos(oang), sin(oang)) * orad;
+					float dd = dot(q2 - mp, q2 - mp);
+					add += (PAL_EMBER * 0.9 + vec3(0.18)) * exp(-dd / 20.0) * (0.25 + 0.75 * ph) * f;
+					vec2 tang = vec2(-sin(oang), cos(oang)); // its arc tail
+					float tl = sd_seg(q2, mp, mp + tang * (14.0 + 40.0 * ph));
+					add += PAL_EMBER * exp(-tl * tl / 7.0) * 0.30 * ph * f;
+				}
+				// the heart: small and quiet until the charge is nearly full
+				add += (vec3(1.2, 1.0, 0.8) + PAL_EMBER) * exp(-dv * dv / (140.0 + 900.0 * f * f)) * 0.55 * f * f * f;
+			}
+		} else if (pc.pweap == WEAP_BEAMS) { // twin GIANT lasers off the flanks
+			for (float s = -1.0; s <= 1.0; s += 2.0) {
+				vec2 org = wap * (s * (b.radius * 0.9 + 8.0));
+				float bd = sd_seg(p, org, org + wad * 900.0);
+				float flick = 0.9 + 0.2 * sin(pc.time * 71.0 + s * 2.0);
+				add += (vec3(1.3, 1.0, 0.7) + PAL_EMBER * 0.5) * exp(-bd * bd / (14.0 * flick)) * 1.2 * f;
+				add += PAL_ACCENT * exp(-bd * bd / (18.0 * 18.0)) * 0.28 * f;
+				add += PAL_EMBER * exp(-bd * bd / (18.0 * 18.0 * 5.0)) * 0.07 * f; // veil dies inside the quad
+				add += (PAL_EMBER * 1.4 + vec3(0.5)) * exp(-dot(p - org, p - org) / 40.0) * f; // emitter star
+			}
+		} else if (pc.pweap == WEAP_SCYTHE) { // the sweeping laser blade
+			float ang = aima + sin(pc.time * 1.9) * 1.05;
+			vec2 sdir = vec2(cos(ang), sin(ang));
+			float bd = sd_seg(p, sdir * 20.0, sdir * 820.0);
+			float flick = 0.85 + 0.30 * sin(pc.time * 53.0 + dot(p, sdir) * 0.04);
+			add += (vec3(1.3, 1.0, 0.7) + PAL_EMBER * 0.5) * exp(-bd * bd / (20.0 * flick)) * 1.3 * f;
+			add += PAL_ACCENT * exp(-bd * bd / (22.0 * 22.0)) * 0.30 * f;
+			add += PAL_EMBER * exp(-bd * bd / (22.0 * 22.0 * 5.0)) * 0.08 * f;
+			add += (PAL_EMBER * 1.5 + vec3(0.6)) * exp(-dot(p, p) / 60.0) * f;
+		} else if (pc.pweap == WEAP_FLAMER) {
+			// FLAMER: not a sheet — a THROW of discrete fire GLOBS. Each one spits off
+			// the muzzle, rides the cone on its own hashed spread, swells as it slows,
+			// burns white-hot → ember → red, and dies into a curl of dark smoke at the
+			// end of its arc. Purely time-derived (like the drift sparks); the cone
+			// burn physics applies is unchanged.
+			for (float i = 0.0; i < 18.0; i += 1.0) {
+				float rate = 2.1 + 0.8 * fract(i * 0.53);
+				float ph = fract(pc.time * rate + i * 0.617); // this glob's life, 0 → 1
+				uint sk = uint(floor(pc.time * rate + i * 0.617)) * 89u + uint(i) * 31u;
+				vec2 gd = rot2((hash1(sk) - 0.5) * 0.60) * wad;   // its lane in the cone
+				float reach = 200.0 + 230.0 * hash1(sk + 1u);
+				float s2 = 1.0 - (1.0 - ph) * (1.0 - ph);         // decelerating flight
+				vec2 gp = wad * (b.radius * 0.9) + gd * (reach * s2);
+				gp += vec2(-gd.y, gd.x) * sin(ph * 9.0 + i * 1.7) * 10.0 * ph; // tumbling drift
+				float sz = 6.0 + 30.0 * ph;                        // swells as it slows
+				float dd = dot(p - gp, p - gp);
+				float core = exp(-dd / (sz * sz * 0.35));
+				float shell = exp(-dd / (sz * sz));
+				vec3 fc = mix(vec3(1.5, 1.2, 0.7), PAL_ACCENT * 1.2, smoothstep(0.15, 0.75, ph));
+				add += fc * (core * 1.5 + shell * 0.5) * (1.0 - ph * ph) * f;
+				// past mid-life the shell goes DARK: the glob smokes out where it lands
+				lay(vec3(0.05, 0.045, 0.042), shell * smoothstep(0.55, 0.95, ph) * 0.65 * f);
+			}
+			// the spitting tongue at the muzzle, licking with the throttle of fire
+			vec2 mz = wad * (b.radius + 4.0);
+			float md = sd_seg(p, mz, mz + wad * (26.0 + 14.0 * sin(pc.time * 37.0 + 1.7)));
+			add += (vec3(1.4, 1.05, 0.5) + PAL_EMBER) * exp(-md * md / 30.0) * f;
+		} else if (pc.pweap == WEAP_ARC) { // crackling discharge: jagged bolts, re-rolled fast
+			for (float i = 0.0; i < 5.0; i += 1.0) {
+				uint si = uint(pc.time * 14.0) * 13u + uint(i) * 101u;
+				float a2 = hash1(si) * TAU;
+				vec2 tip = vec2(cos(a2), sin(a2)) * (120.0 + hash1(si + 1u) * 240.0);
+				vec2 mid = tip * 0.5 + vec2(hash1(si + 2u) - 0.5, hash1(si + 3u) - 0.5) * 90.0;
+				float bd = min(sd_seg(p, vec2(0.0), mid), sd_seg(p, mid, tip));
+				add += (vec3(1.1) + PAL_EMBER * 0.6) * exp(-bd * bd / 3.0) * f * (0.4 + 0.6 * hash1(si + 4u));
+				add += PAL_EMBER * exp(-dot(p - tip, p - tip) / 30.0) * f * 0.8; // ground strike
+			}
+			add += PAL_EMBER * exp(-dot(p, p) / (140.0 * 140.0)) * 0.10 * f; // charged air
+		} else if (pc.pweap == WEAP_VORTEX) {
+			// VORTEX: a whirlpool of ember MOTES on decaying orbits — each circles the
+			// cursor faster as it falls inward, drags an arc tail, and vanishes down
+			// the throat (a fresh one spawns at the rim); contracting pressure rings
+			// pulse through them, and a dark LENS with a thin lit rim marks the eye.
+			// The drag physics applies to the horde is unchanged.
+			vec2 vp = rot2(-b.angle) * (pc.aim - b.pos); // aim point, body frame
+			vec2 q2 = p - vp;
+			float dv = max(length(q2), 1.0);
+			if (dv < 540.0) {
+				lay(vec3(0.015, 0.014, 0.016), soft(dv - 34.0) * 0.85 * f);          // the lens
+				add += PAL_EMBER * 1.2 * exp(-pow(dv - 38.0, 2.0) / 40.0) * f;       // its lit rim
+				for (float k = 0.0; k < 3.0; k += 1.0) { // pressure rings, contracting
+					float rr = (1.0 - fract(pc.time * 0.9 + k / 3.0)) * 500.0 + 20.0;
+					add += (PAL_EMBER * 0.5 + vec3(0.12)) * exp(-pow(dv - rr, 2.0) / 180.0) * 0.35 * f
+					     * smoothstep(500.0, 120.0, rr);
+				}
+				for (float i = 0.0; i < 14.0; i += 1.0) { // the orbiters
+					float rate = 0.35 + 0.2 * fract(i * 0.71);
+					float ph = fract(pc.time * rate + i * 0.37);          // orbit decay, 0 → 1
+					uint sk = uint(floor(pc.time * rate + i * 0.37)) * 61u + uint(i) * 17u;
+					float orad = mix(500.0, 26.0, ph * ph);               // falling in, accelerating
+					float oang = hash1(sk) * TAU + pc.time * mix(2.0, 11.0, ph); // spinning up
+					vec2 mp = vec2(cos(oang), sin(oang)) * orad;
+					float dd = dot(q2 - mp, q2 - mp);
+					add += (PAL_EMBER * 1.1 + vec3(0.25)) * exp(-dd / 26.0) * (0.35 + 0.65 * ph) * f;
+					vec2 tang = vec2(-sin(oang), cos(oang));              // its arc tail, trailing
+					float tl = sd_seg(q2, mp, mp - tang * (18.0 + 30.0 * ph));
+					add += PAL_EMBER * exp(-tl * tl / 9.0) * 0.4 * ph * f;
+				}
+			}
+		}
+	}
 	if (length(p) > b.radius * 3.2 + 60.0) { return; } // beyond the hull: beam only
 
 	// ── the GARAGE (1-9): every ride reuses a chassis sprite in the player's paint —
-	// amber markings/eyes, never red. Guns track the mouse; LMB fires the REAL shells,
-	// so no tracer stream is drawn (shoot = 0) — just the shared muzzle flash below.
-	gMark = vec3(0.62, 0.50, 0.28);
-	gEye = PAL_EMBER;
+	// bright clean STAINLESS panels, amber markings/eyes/lights, never red: YOUR machine
+	// is the one polished thing on the field. Guns track the mouse; LMB
+	// fires the REAL shells, so
+	// no tracer stream is drawn (shoot = 0) — just the shared muzzle flash below.
+	gMark = vec3(0.20, 0.44, 0.18);
+	gEye = RIG_GRN;
+	gPlateA = RIG_STEEL;
+	gPlateB = RIG_STEEL * 0.48;
+	gBrush = 2.2; // deeply worked steel — the brushing must READ (grime stays HEAVY: no showroom)
 	if (b.variant != RIDE_TRUCK && b.variant != RIDE_SPORT) {
 		vec2 aimd = rot2(-b.angle) * normalize(pc.aim - b.pos + 0.0001);
 		if      (b.variant == RIDE_BUGGY)  { raider(p, b, pc.time, aimd, 0.0); }
@@ -260,24 +462,30 @@ void ship(vec2 p, Body b) {
 			lay(PAL_BASE * 0.7, soft(sd_box(p - vec2(sx * 13.5, sy * 12.5), vec2(6.5, 3.2)) - 2.0));
 		}
 	}
-	// hull: long rounded slab, beveled edges catching the light
+	// hull: long rounded slab, beveled edges catching the light — clean stainless
 	float hull = sd_box(p, vec2(23.0, 11.0)) - 4.0;
 	float rim = clamp(dot(normalize(p + 0.0001), gL), 0.0, 1.0);
-	vec3 mc = PAL_MID * (0.55 + 0.18 * sin(p.x * 0.9));
-	mc = mix(mc, PAL_MID * (0.9 + rim * 1.2), smoothstep(-5.0, 0.0, hull));
+	vec3 mc = RIG_STEEL * (0.55 + 0.18 * sin(p.x * 0.9));
+	mc = mix(mc, RIG_STEEL * (0.9 + rim * 1.2), smoothstep(-5.0, 0.0, hull));
+	float brh = 0.65 * vnoise(vec2(p.x * 0.55, p.y * 3.4) + 3.0)   // brushed steel, deep two-octave
+	          + 0.35 * vnoise(vec2(p.x * 1.10, p.y * 8.0) + 9.0);  //   grinding streaks
+	mc *= 1.0 + (brh - 0.5) * 0.55;
+	mc *= 0.93 + 0.11 * vnoise(p * 0.16 + 7.0);
+	mc *= 1.0 - smoothstep(0.60, 0.25, vnoise(p * 0.13 + 13.0) + brh * 0.35) * 0.50; // oily grunge
 	lay(mc, soft(hull));
 	// panel seams
 	float seamx = min(abs(p.x - 4.0), abs(p.x + 12.0));
 	lay(PAL_BASE * 0.85, soft(hull) * smoothstep(1.2, 0.4, seamx) * 0.6);
 	// cab + windshield up front
-	lay(PAL_MID * 0.8, soft(sd_box(p - vec2(11.0, 0.0), vec2(7.0, 8.6)) - 2.5));
+	lay(RIG_STEEL * 0.7, soft(sd_box(p - vec2(11.0, 0.0), vec2(7.0, 8.6)) - 2.5));
+	add += RIG_GRN * 1.4 * soft(sd_box(p - vec2(8.2, 0.0), vec2(1.1, 6.2))); // green roof light-bar
 	float glass = sd_box(p - vec2(13.5, 0.0), vec2(3.4, 7.2)) - 2.0;
 	lay(vec3(0.020, 0.021, 0.024), soft(glass));
 	add += vec3(0.10, 0.105, 0.115) * soft(glass) * pow(clamp(dot(normalize(p - vec2(13.5, 0.0) + 0.0001), gL), 0.0, 1.0), 3.0);
 	// amber running strips along the bed sides + red tail lights
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
-		add += PAL_EMBER * 1.3 * soft(sd_box(p - vec2(-8.0, s * 10.2), vec2(11.0, 0.9)));
-		add += PAL_ACCENT * 1.6 * soft(sd_box(p - vec2(-25.5, s * 8.0), vec2(1.2, 2.2)));
+		add += RIG_GRN * 1.5 * soft(sd_box(p - vec2(-8.0, s * 10.2), vec2(11.0, 0.9)));
+		add += RIG_GRN * 1.6 * soft(sd_box(p - vec2(-25.5, s * 8.0), vec2(1.2, 2.2))); // green tails — red is the enemy's
 	}
 	// headlight lamps — small hot points; the LONG beam on the ground lives in
 	// city.frag and ramps up down-range, so there's no blinding pool at the car
@@ -288,7 +496,7 @@ void ship(vec2 p, Body b) {
 	float th = pc.throttle * 0.8 + pc.boost * 1.6;
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		vec2 en = vec2(-24.0, s * 6.0);
-		add += PAL_EMBER * soft(length(p - en) - 2.6) * (0.35 + th * (1.8 + 0.5 * sin(pc.time * 43.0 + s)));
+		add += PAL_EMBER * soft(length(p - en) - 2.6) * (0.04 + th * (1.8 + 0.5 * sin(pc.time * 43.0 + s))); // heat only — no idle yellow
 		if (pc.boost > 0.03) {
 			float fl = sd_seg(p, en, en - vec2(12.0 + 10.0 * pc.boost * (0.7 + 0.3 * sin(pc.time * 57.0 + s * 2.0)), 0.0));
 			add += (PAL_EMBER * 1.6 + vec3(0.4)) * exp(-fl * fl / 6.0) * pc.boost;
@@ -379,28 +587,34 @@ void spider(vec2 p, Body b, float t) {
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
 	gCS = max(r * 0.22, 2.8);
 	lay(vec3(0.015), 0.35 * soft(length(p - vec2(4.0, 6.0)) - r * 0.95));
-	float gt = t * (3.2 + length(b.vel) * 0.04);
+	float gt = gait_ph(b); // travel-driven: feet plant, freeze when blocked
 	float wUp = r * 0.22, wLo = r * 0.075;
 	mech_leg(p, r,  0.78, gt,           wUp, wLo); // diagonal gait: FL+RR, FR+RL
 	mech_leg(p, r, -0.78, gt + 3.14159, wUp, wLo);
 	mech_leg(p, r,  2.36, gt + 3.14159, wUp, wLo);
 	mech_leg(p, r, -2.36, gt,           wUp, wLo);
 	// hull: main deck + front glacis + rear engine block
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.72, r * 0.56)) - r * 0.14, BOT_KHAKI, 1.0);
-	plate(p, vec2(r * 0.5, 0.0), sd_box(p - vec2(r * 0.5, 0.0), vec2(r * 0.26, r * 0.42)) - r * 0.08, BOT_OLIVE, 2.0);
-	plate(p, vec2(-r * 0.55, 0.0), sd_box(p - vec2(-r * 0.55, 0.0), vec2(r * 0.20, r * 0.34)) - r * 0.06, BOT_OLIVE * 0.75, 3.0);
-	// orange chevron unit marking on the deck
-	float chv = min(sd_seg(p, vec2(r * 0.15, 0.0), vec2(-r * 0.20,  r * 0.30)),
-	                sd_seg(p, vec2(r * 0.15, 0.0), vec2(-r * 0.20, -r * 0.30))) - r * 0.045;
-	lay(BOT_ORANGE, soft(chv) * 0.75);
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.72, r * 0.56)) - r * 0.14, gPlateA, 1.0);
+	plate(p, vec2(r * 0.5, 0.0), sd_box(p - vec2(r * 0.5, 0.0), vec2(r * 0.26, r * 0.42)) - r * 0.08, gPlateB, 2.0);
+	plate(p, vec2(-r * 0.55, 0.0), sd_box(p - vec2(-r * 0.55, 0.0), vec2(r * 0.20, r * 0.34)) - r * 0.06, gPlateB * 0.75, 3.0);
+	// unit roundel: a painted RING aft on the deck — round, never a glyph
+	lay(gMark, soft(abs(length(p - vec2(-r * 0.18, 0.0)) - r * 0.15) - r * 0.05) * 0.8);
+	// corner deck bolts — visible fasteners say MACHINE
+	for (float sx = -1.0; sx <= 1.0; sx += 2.0) {
+		for (float sy = -1.0; sy <= 1.0; sy += 2.0) {
+			lay(BOT_LINE * 2.6, soft(length(p - vec2(sx * r * 0.48, sy * r * 0.36)) - r * 0.055));
+		}
+	}
 	// rear exhausts, faintly hot
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		add += PAL_EMBER * 0.5 * soft(length(p - vec2(-r * 0.72, s * r * 0.18)) - r * 0.07);
 	}
-	// sensor slit: dark housing, thin red glow PULSING like a heartbeat — alive
-	lay(BOT_LINE, soft(sd_box(p - vec2(r * 0.62, 0.0), vec2(r * 0.07, r * 0.24))));
+	// paired sensor EYES on the front hull corners, PULSING like a heartbeat — alive
 	float beat = 0.7 + 0.5 * sin(pc.time * 2.8 + float(v_id) * 0.7);
-	add += PAL_ACCENT * 1.1 * beat * soft(sd_box(p - vec2(r * 0.62, 0.0), vec2(r * 0.035, r * 0.17)));
+	for (float s = -1.0; s <= 1.0; s += 2.0) {
+		lay(BOT_LINE, soft(length(p - vec2(r * 0.58, s * r * 0.28)) - r * 0.12));
+		add += gEye * 1.1 * beat * soft(length(p - vec2(r * 0.58, s * r * 0.28)) - r * 0.08);
+	}
 	battle_damage(p, b, HP_SPIDER);
 }
 
@@ -411,15 +625,16 @@ void skitter(vec2 p, Body b, float t) {
 	gCS = max(r * 0.30, 2.8);
 	lay(vec3(0.015), 0.30 * soft(length(p - vec2(3.0, 5.0)) - r * 0.9));
 	float wUp = r * 0.16, wLo = r * 0.07;
-	mech_leg(p, r,  0.95, t * 10.0,           wUp, wLo);
-	mech_leg(p, r, -0.95, t * 10.0 + 3.14159, wUp, wLo);
-	mech_leg(p, r,  2.25, t * 10.0 + 3.14159, wUp, wLo);
-	mech_leg(p, r, -2.25, t * 10.0,           wUp, wLo);
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 1.02, r * 0.38)) - r * 0.18, BOT_OLIVE, 1.0);
-	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.58, 0.0), vec2(r * 0.30, r * 0.26)) - r * 0.10, BOT_KHAKI, 2.0);
-	lay(BOT_ORANGE, soft(sd_box(p - vec2(-r * 0.25, 0.0), vec2(r * 0.48, r * 0.055))) * 0.85);
+	float gt = gait_ph(b); // travel-driven scrabble
+	mech_leg(p, r,  0.95, gt,           wUp, wLo);
+	mech_leg(p, r, -0.95, gt + 3.14159, wUp, wLo);
+	mech_leg(p, r,  2.25, gt + 3.14159, wUp, wLo);
+	mech_leg(p, r, -2.25, gt,           wUp, wLo);
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 1.02, r * 0.38)) - r * 0.18, gPlateB, 1.0);
+	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.58, 0.0), vec2(r * 0.30, r * 0.26)) - r * 0.10, gPlateA, 2.0);
+	lay(gMark, soft(sd_box(p - vec2(-r * 0.25, 0.0), vec2(r * 0.48, r * 0.055))) * 0.85);
 	float beat = 0.7 + 0.5 * sin(pc.time * 3.4 + float(v_id) * 0.9); // pulsing eye — alive
-	add += PAL_ACCENT * 1.3 * beat * soft(length(p - vec2(r * 0.95, 0.0)) - r * 0.11);
+	add += gEye * 1.3 * beat * soft(length(p - vec2(r * 0.95, 0.0)) - r * 0.11);
 	battle_damage(p, b, HP_SKITTER);
 }
 
@@ -430,7 +645,7 @@ void brute(vec2 p, Body b, float t) {
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
 	gCS = max(r * 0.18, 2.8);
 	lay(vec3(0.015), 0.38 * soft(length(p - vec2(5.0, 7.0)) - r * 1.05));
-	float gt = t * 2.2;
+	float gt = gait_ph(b); // travel-driven heavy stomp
 	float wUp = r * 0.20, wLo = r * 0.07;
 	for (float i = 0.0; i < 3.0; i += 1.0) {
 		for (float s = -1.0; s <= 1.0; s += 2.0) {
@@ -438,24 +653,22 @@ void brute(vec2 p, Body b, float t) {
 			mech_leg(p, r, aa, gt + i * 2.09 + s * 0.5, wUp, wLo);
 		}
 	}
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.80, r * 0.64)) - r * 0.14, BOT_KHAKI, 1.0);
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.80, r * 0.64)) - r * 0.14, gPlateA, 1.0);
 	// side missile pods with tube holes
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		vec2 pod = vec2(r * 0.08, s * r * 0.52);
-		plate(p, pod, sd_box(p - pod, vec2(r * 0.34, r * 0.16)) - r * 0.05, BOT_OLIVE, s + 4.0);
+		plate(p, pod, sd_box(p - pod, vec2(r * 0.34, r * 0.16)) - r * 0.05, gPlateB, s + 4.0);
 		for (float k = -1.0; k <= 1.0; k += 1.0) {
 			lay(BOT_LINE, soft(length(p - pod - vec2(k * r * 0.2, 0.0)) - r * 0.055));
 		}
 	}
-	// forward glacis + big chevron
-	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.56, 0.0), vec2(r * 0.22, r * 0.34)) - r * 0.06, BOT_OLIVE, 6.0);
-	float chv = min(sd_seg(p, vec2(r * 0.30, 0.0), vec2(-r * 0.10,  r * 0.34)),
-	                sd_seg(p, vec2(r * 0.30, 0.0), vec2(-r * 0.10, -r * 0.34))) - r * 0.06;
-	lay(BOT_ORANGE, soft(chv) * 0.9);
+	// forward glacis + a big unit ROUNDEL on the deck (team paint) — round, never a glyph
+	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.56, 0.0), vec2(r * 0.22, r * 0.34)) - r * 0.06, gPlateB, 6.0);
+	lay(gMark, soft(abs(length(p - vec2(r * 0.05, 0.0)) - r * 0.20) - r * 0.06) * 0.9);
 	// core vents: two hot slits, pulsing
 	float pulse = 0.8 + 0.3 * sin(pc.time * 3.0 + float(v_id));
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
-		add += PAL_ACCENT * pulse * soft(sd_box(p - vec2(-r * 0.30, s * r * 0.14), vec2(r * 0.17, r * 0.028)));
+		add += gEye * pulse * soft(sd_box(p - vec2(-r * 0.30, s * r * 0.14), vec2(r * 0.17, r * 0.028)));
 	}
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		add += PAL_EMBER * 0.6 * soft(length(p - vec2(-r * 0.72, s * r * 0.22)) - r * 0.06); // exhausts
@@ -472,17 +685,21 @@ void tank(vec2 p, Body b, float t, vec2 aimd, float shoot) {
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
 	gCS = max(r * 0.20, 2.8);
 	lay(vec3(0.015), 0.38 * soft(sd_box(p - vec2(3.0, 5.0), vec2(r * 1.05, r * 0.85)) - r * 0.1));
-	float roll = pc.time * length(b.vel) * 0.14;
+	// treads roll with TRAVEL (odometer / k = px covered), never re-scale with speed;
+	// the player's TANK ride carries the true CPU odometer in b.life
+	float kg = min(5.0 / r, 0.22);
+	float odo = (b.kind == KIND_PLAYER && b.variant == RIDE_TANK ? b.life : gait_ph(b)) / kg;
+	float roll = odo * 0.14;
 	for (float s = -1.0; s <= 1.0; s += 2.0) { // treads with running track links
 		vec2 tp = p - vec2(0.0, s * r * 0.68);
 		float tdd = sd_box(tp, vec2(r * 1.0, r * 0.24)) - r * 0.06;
 		lay(BOT_LINE * 1.6, soft(tdd));
 		lay(BOT_LINE * 3.0, soft(tdd + r * 0.12) * (0.45 + 0.55 * step(0.5, fract(tp.x / 9.0 - roll))));
 	}
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.85, r * 0.5)) - r * 0.10, BOT_KHAKI, 1.0); // casemate
-	plate(p, vec2(-r * 0.5, 0.0), sd_box(p - vec2(-r * 0.5, 0.0), vec2(r * 0.22, r * 0.38)) - r * 0.05, BOT_OLIVE * 0.8, 2.0); // engine deck
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.85, r * 0.5)) - r * 0.10, gPlateA, 1.0); // casemate
+	plate(p, vec2(-r * 0.5, 0.0), sd_box(p - vec2(-r * 0.5, 0.0), vec2(r * 0.22, r * 0.38)) - r * 0.05, gPlateB * 0.8, 2.0); // engine deck
 	lay(gMark, soft(sd_box(p - vec2(-r * 0.12, 0.0), vec2(r * 0.045, r * 0.42))) * 0.8); // unit band
-	plate(p, vec2(r * 0.1, 0.0), length(p - vec2(r * 0.1, 0.0)) - r * 0.40, BOT_OLIVE, 3.0);  // turret drum
+	plate(p, vec2(r * 0.1, 0.0), length(p - vec2(r * 0.1, 0.0)) - r * 0.40, gPlateB, 3.0);  // turret drum
 	vec2 sl = fire_slug(v_id, TANK_RATE, TANK_MV);
 	float rec = shoot > 0.0 ? exp(-sl.y * 12.0) * r * 0.14 : 0.0; // recoil right off the shot
 	vec2 hub = vec2(r * 0.1, 0.0);
@@ -520,8 +737,8 @@ void raider(vec2 p, Body b, float t, vec2 aimd, float shoot) {
 			lay(BOT_LINE * 1.8, soft(sd_box(p - vec2(sx * r * 0.62, sy * r * 0.58), vec2(r * 0.26, r * 0.14)) - r * 0.05));
 		}
 	}
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.92, r * 0.44)) - r * 0.14, BOT_OLIVE, 1.0); // hull wedge
-	plate(p, vec2(r * 0.45, 0.0), sd_box(p - vec2(r * 0.48, 0.0), vec2(r * 0.28, r * 0.32)) - r * 0.08, BOT_KHAKI, 2.0); // cab
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.92, r * 0.44)) - r * 0.14, gPlateB, 1.0); // hull wedge
+	plate(p, vec2(r * 0.45, 0.0), sd_box(p - vec2(r * 0.48, 0.0), vec2(r * 0.28, r * 0.32)) - r * 0.08, gPlateA, 2.0); // cab
 	lay(gMark, soft(sd_box(rot2(0.5) * (p - vec2(-r * 0.3, 0.0)), vec2(r * 0.30, r * 0.05))) * 0.85); // slash marking
 	vec2 mnt = vec2(-r * 0.25, 0.0); // the pintle gun on a rear ring
 	lay(BOT_LINE * 2.6, soft(sd_seg(p, mnt, mnt + aimd * r * 0.85) - r * 0.06));
@@ -558,7 +775,7 @@ void suicide(vec2 p, Body b, float t, float arm) {
 		lay(BOT_LINE * 2.0, soft(length(p - rp) - r * 0.34));
 		lay(vec3(0.22, 0.23, 0.25), soft(length(p - rp) - r * 0.30) * (0.30 + 0.25 * sin(pc.time * 53.0 + s + float(v_id))));
 	}
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.62, r * 0.40)) - r * 0.14, BOT_OLIVE * 0.9, 1.0); // shell
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.62, r * 0.40)) - r * 0.14, gPlateB * 0.9, 1.0); // shell
 	plate(p, vec2(r * 0.4, 0.0), length(p - vec2(r * 0.4, 0.0)) - r * 0.26, BOT_LINE * 2.5, 2.0); // nose cap
 	float beat = 0.55 + 0.45 * sin(pc.time * mix(3.0, 18.0, arm) + float(v_id));
 	add += gEye * (0.9 + 1.8 * arm) * beat * soft(length(p) - r * 0.30); // the WARHEAD
@@ -572,13 +789,14 @@ void gunner(vec2 p, Body b, float t, vec2 aimd, float shoot) {
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
 	gCS = max(r * 0.26, 2.8);
 	lay(vec3(0.015), 0.33 * soft(length(p - vec2(3.0, 5.0)) - r * 0.9));
-	float gt2 = t * (3.0 + length(b.vel) * 0.04);
+	// travel-driven stride; the player's GUNMECH ride carries the CPU odometer in b.life
+	float gt2 = b.kind == KIND_PLAYER ? b.life : gait_ph(b);
 	float wUp = r * 0.18, wLo = r * 0.07;
 	mech_leg(p, r,  0.90, gt2,           wUp, wLo);
 	mech_leg(p, r, -0.90, gt2 + 3.14159, wUp, wLo);
 	mech_leg(p, r,  2.30, gt2 + 3.14159, wUp, wLo);
 	mech_leg(p, r, -2.30, gt2,           wUp, wLo);
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.70, r * 0.44)) - r * 0.12, BOT_KHAKI, 1.0);
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.70, r * 0.44)) - r * 0.12, gPlateA, 1.0);
 	lay(gMark, soft(sd_box(p - vec2(-r * 0.2, 0.0), vec2(r * 0.05, r * 0.34))) * 0.8); // unit band
 	lay(BOT_LINE * 2.6, soft(sd_seg(p, vec2(0.0), aimd * r * 1.45) - r * 0.07)); // the autogun
 	float beat = 0.7 + 0.5 * sin(pc.time * 3.1 + float(v_id) * 0.8);
@@ -609,9 +827,9 @@ void bomber(vec2 p, Body b, float t) {
 	// delta wing: two swept panels meeting at the nose + a spine fuselage
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		vec2 q = rot2(s * 0.62) * (p - vec2(-r * 0.15, s * r * 0.42));
-		plate(p, vec2(-r * 0.2, s * r * 0.45), sd_box(q, vec2(r * 0.78, r * 0.16)) - r * 0.05, BOT_OLIVE * 0.85, s + 3.0);
+		plate(p, vec2(-r * 0.2, s * r * 0.45), sd_box(q, vec2(r * 0.78, r * 0.16)) - r * 0.05, gPlateB * 0.85, s + 3.0);
 	}
-	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.85, r * 0.20)) - r * 0.10, BOT_KHAKI * 0.9, 1.0); // fuselage
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.85, r * 0.20)) - r * 0.10, gPlateA * 0.9, 1.0); // fuselage
 	lay(gMark, soft(sd_box(p - vec2(r * 0.3, 0.0), vec2(r * 0.16, r * 0.045))) * 0.85);        // nose marking
 	for (float s = -1.0; s <= 1.0; s += 2.0) { // twin engines, hot
 		add += PAL_EMBER * 0.9 * soft(length(p - vec2(-r * 0.75, s * r * 0.30)) - r * 0.09) * (0.7 + 0.3 * sin(pc.time * 37.0 + s));
@@ -708,21 +926,18 @@ void turret(vec2 p, Body b) {
 	gCS = 4.0;
 	lay(vec3(0.012), 0.45 * soft(length(p - vec2(5.0, 7.0)) - r * 1.6));
 	plate(p, vec2(0.0), length(p) - r * 1.5, BOT_LINE * 3.0, 1.0);  // apron ring
-	plate(p, vec2(0.0), length(p) - r * 1.05, BOT_OLIVE, 2.0);      // armored drum
+	plate(p, vec2(0.0), length(p) - r * 1.05, gPlateB, 2.0);      // armored drum
 	for (float i = 0.0; i < 6.0; i += 1.0) {                        // buttresses
 		vec2 bp = rot2(i * TAU / 6.0 + 0.4) * vec2(r * 1.25, 0.0);
-		plate(p, bp, sd_box(rot2(-i * TAU / 6.0 - 0.4) * (p - bp), vec2(r * 0.28, r * 0.14)), BOT_KHAKI, i + 3.0);
+		plate(p, bp, sd_box(rot2(-i * TAU / 6.0 - 0.4) * (p - bp), vec2(r * 0.28, r * 0.14)), gPlateA, i + 3.0);
 	}
 	// rotating emitter head, aimed along the sweep
 	vec2 hq = rot2(-(angW - b.angle)) * p;
-	plate(p, vec2(0.0), sd_box(hq - vec2(r * 0.20, 0.0), vec2(r * 0.55, r * 0.28)) - r * 0.1, BOT_KHAKI, 9.0);
+	plate(p, vec2(0.0), sd_box(hq - vec2(r * 0.20, 0.0), vec2(r * 0.55, r * 0.28)) - r * 0.1, gPlateA, 9.0);
 	lay(BOT_LINE * 2.0, soft(sd_box(hq - vec2(r * 0.62, 0.0), vec2(r * 0.30, r * 0.10))));
-	// the eye: steady ember + a wide warning pool — the tower itself NEVER flashes;
-	// only its rounds and ricochets move
-	add += PAL_ACCENT * soft(length(p) - r * 0.30);
-	// the warning pool on the ground — cut to zero before the quad edge, or the idle
-	// r*4 quad clips it into a faint red BOX sitting on the street
-	add += PAL_ACCENT * 0.22 * exp(-dot(p, p) / (r * r * 8.0)) * smoothstep(r * 3.6, r * 2.2, length(p));
+	// the eye on top: steady TEAM GREEN (defense is your side — red is the enemy's);
+	// the tower itself NEVER flashes, only its rounds and ricochets move
+	add += RIG_GRN * 0.8 * soft(length(p) - r * 0.30);
 }
 
 void helper(vec2 p, Body b) {
@@ -759,8 +974,8 @@ void helper(vec2 p, Body b) {
 	}
 	plate(p, vec2(0.0), sd_box(p, vec2(11.0, 6.5)) - 3.0, vec3(0.155, 0.160, 0.170), 1.0); // grey shell
 	plate(p, vec2(7.0, 0.0), length(p - vec2(7.0, 0.0)) - 4.0, SHIP_CHROME * 0.7, 2.0);  // sensor dome
-	add += PAL_EMBER * 2.4 * soft(length(p - vec2(-9.5, 0.0)) - 2.0) * (0.6 + 0.4 * sin(pc.time * 4.0 + float(v_id))); // work light
-	add += PAL_ACCENT * 1.2 * soft(length(p - vec2(2.0, 0.0)) - 1.2) * step(0.5, fract(pc.time * 1.6 + hash1(v_id))); // status blinker
+	add += RIG_GRN * 1.6 * soft(length(p - vec2(-9.5, 0.0)) - 2.0) * (0.6 + 0.4 * sin(pc.time * 4.0 + float(v_id))); // work light — team green
+	add += RIG_GRN * 1.0 * soft(length(p - vec2(2.0, 0.0)) - 1.2) * step(0.5, fract(pc.time * 1.6 + hash1(v_id))); // status blinker — team green
 }
 
 void wreck(vec2 p, Body b) {
@@ -793,6 +1008,18 @@ void wreck(vec2 p, Body b) {
 }
 
 void bullet(vec2 p, Body b) {
+	if (b.variant == VAR_MINE) {
+		// ── proximity mine: a squat armored puck. The blinker quickens once armed —
+		// a live warhead everyone should respect (it kicks the car too).
+		float rr = length(p);
+		lay(vec3(0.015), 0.5 * soft(rr - 11.0));               // seat shadow
+		lay(PAL_MID * 0.85, soft(rr - 8.0));                    // the puck
+		lay(BOT_LINE * 2.0, soft(abs(rr - 5.5) - 1.1));         // armor ring
+		float armed = step(0.7, b.hp - b.life);
+		float blink = step(0.5, fract(pc.time * mix(0.8, 2.6, armed) + hash1(v_id)));
+		add += PAL_ACCENT * 1.4 * blink * soft(rr - 2.2);       // the fuse light
+		return;
+	}
 	// JUICY PLASMA ORB: a squishy living ball — the rim wobbles with two rolling
 	// harmonics and the molten core breathes inside it. Behind it, the trail it has
 	// actually LEFT: length = distance flown (hp packs total flight time), a dark
@@ -884,8 +1111,18 @@ void main() {
 	if (b.kind == KIND_DEAD) { discard; }
 	vec2 p = v_local;
 	float t = pc.time + hash1(v_id * 7919u) * TAU;
-	// team paint: YOUR army (and its dying/limping bodies) wears amber, never red
-	if (v_id >= ALLY_LO) { gMark = vec3(0.62, 0.50, 0.28); gEye = PAL_EMBER; }
+	// team paint: YOUR army (and its dying/limping bodies) burns green, never red
+	if (v_id >= ALLY_LO) { gMark = vec3(0.20, 0.44, 0.18); gEye = RIG_GRN * 0.9; }
+	// the HORDE (every enemy slot, dying ones included): dusty RUST-TONED steel — the
+	// same warm desaturated family as the city's roofs and facades, one notch more
+	// saturated so the machines read as machines — wearing RED unit paint and
+	// RED-burning sensor eyes: a field of red eyes on the night ground.
+	else if (v_id >= ENEMY_LO && v_id < BULLET_LO) {
+		gPlateA = vec3(0.120, 0.121, 0.136); // SLIGHTLY cool steel — a faint blue cast lifts the horde off the warm city
+		gPlateB = vec3(0.063, 0.064, 0.075);
+		gBrush  = 2.0; // worked-over, filthy war metal (gGrime already heavy for everyone)
+		gMark   = vec3(0.85, 0.13, 0.04);    // BRIGHT red unit paint — the enemy's language
+	}
 	if      (b.kind == KIND_PLAYER) { ship(p, b); }
 	else if (b.kind == KIND_BULLET) { bullet(p, b); }
 	else if (b.kind == KIND_WRECK)  { wreck(p, b); }
@@ -961,7 +1198,8 @@ void main() {
 			add += PAL_ACCENT * eff * facing * 0.15 * cov;
 		}
 	}
-	// caught in the truck's high-beams: machines SHINE back out of the dark
+	// caught in the truck's high-beams: a gentle pick-out, not a whitewash — the paint
+	// (and the camo) must survive the light
 	if (b.kind != KIND_PLAYER) {
 		vec2 relb = b.pos - pc.player;
 		vec2 fdir = vec2(cos(pc.angle), sin(pc.angle));
@@ -971,8 +1209,8 @@ void main() {
 			float spread = 24.0 + alongb * 0.40; // matches the ground beam in city.frag
 			float beam = exp(-latb * latb / (spread * spread)) * smoothstep(760.0, 30.0, alongb)
 			           * smoothstep(40.0, 260.0, alongb);
-			base += vec3(0.9, 0.85, 0.72) * beam * 0.55 * cov;
-			add += vec3(1.0, 0.92, 0.75) * beam * 0.18 * cov;
+			base += (base * 1.4 + vec3(0.055, 0.050, 0.040)) * beam * cov; // lifts the paint, keeps its hue
+			add += vec3(1.0, 0.92, 0.75) * beam * 0.06 * cov;
 		}
 	}
 	// fake-3D occlusion: bodies live ON THE GROUND — march the same city silhouettes

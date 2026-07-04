@@ -66,6 +66,7 @@ bool in_building(vec2 p) {
 	return bldg_pen(p) > 0.0;
 }
 
+
 // Spawner for the endless assault: variant mix 60/30/10 (walkers only — the armor is
 // YOURS), marching in from a ring just beyond the CURRENT city edge (pc.city_r) — the
 // pressure moves out with the sprawl. Hashed attempts keep spawns off the ship's
@@ -200,9 +201,11 @@ void main() {
 	if (b.kind == KIND_TURRET) { return; } // towers are static; enemies read them from the grid
 
 	if (b.kind == KIND_HELPER) {
-		// ── salvage drone: escort the player → race to a wreck near them (target slot
-		// in gen, +1) → grab it and RUN HOME hauling (gen = HAUL flag), scooping up
-		// every husk the train passes → dump the lot into the pit → rejoin the escort.
+		// ── salvage drone: a FREE-ROAMING scavenger (no player escort) — wander a
+		// hashed patrol, probe the buffer for ANY wreck anywhere (no favorites: first
+		// hit wins, target slot in gen, +1), race out, grab it and RUN HOME hauling
+		// (gen = HAUL flag), scooping up every husk the train passes → dump the lot
+		// into the pit → wander again.
 		const uint HAUL = 0x80000000u;
 		uint tgt = b.gen;
 		vec2 ctr = vec2(WORLD * 0.5);
@@ -210,25 +213,27 @@ void main() {
 			if (distance(b.pos, ctr) < PIT_R * 1.1) { tgt = 0u; } // train delivered
 		} else {
 			if (tgt != 0u && BODIES[tgt - 1u].kind != KIND_WRECK) { tgt = 0u; } // sunk/rotted/gone
-			// only shop for work AT the car, and ONLY for wrecks near the car — the
-			// fleet escorts until the player's kills drop scrap; distant turret-kill
-			// husks are ignored (no flying off to the map edge)
-			if (tgt == 0u && distance(b.pos, pc.player) < 600.0) {
-				for (uint k = 0u; k < 24u; k++) { // probe a hashed stripe
+			if (tgt == 0u) { // shop the wasteland: a hashed stripe of the horde slots…
+				// …but ONLY far-out scrap — the city is off-limits to the fleet for now
+				for (uint k = 0u; k < 24u; k++) {
 					uint slot = ENEMY_LO + (uint(pc.time * 331.0) * 761u + id * 977u + k * 6151u) % MAX_ENEMIES;
-					if (BODIES[slot].kind != KIND_WRECK) { continue; }
-					if (distance(BODIES[slot].pos, pc.player) < 1400.0) { tgt = slot + 1u; break; }
+					if (BODIES[slot].kind == KIND_WRECK && distance(BODIES[slot].pos, ctr) > pc.city_r) { tgt = slot + 1u; break; }
+				}
+				if (tgt == 0u) { // …and one of the ally slots (fallen armor is scrap too)
+					uint slot = ALLY_LO + (uint(pc.time * 173.0) * 37u + id * 53u) % MAX_ALLIES;
+					if (BODIES[slot].kind == KIND_WRECK && distance(BODIES[slot].pos, ctr) > pc.city_r) { tgt = slot + 1u; }
 				}
 			}
 			if (tgt != 0u && distance(b.pos, BODIES[tgt - 1u].pos) < 60.0) { tgt = HAUL; } // grabbed — go
 		}
-		// idle: ESCORT the player — a loose carousel around the car; if the car pulls
-		// away, sprint to keep formation
-		float orb = pc.time * 0.5 + float(id) * 0.26;
-		vec2 goal = pc.player + vec2(cos(orb), sin(orb)) * (130.0 + 70.0 * hash1(id * 13u));
-		float speed = distance(b.pos, pc.player) > 480.0 ? 700.0 : 340.0;
+		// idle: WANDER — a hashed waypoint somewhere over the battlefield, re-rolled
+		// every few seconds, each drone on its own route
+		uint wp = uint(pc.time / 7.0) * 977u + id * 131u;
+		float wa = hash1(wp) * TAU;
+		vec2 goal = ctr + vec2(cos(wa), sin(wa)) * (hash1(wp + 1u) * (pc.city_r + 1500.0));
+		float speed = 320.0;
 		if (tgt == HAUL) { goal = ctr; speed = 430.0; }               // hauling: straight home
-		else if (tgt != 0u) { goal = BODIES[tgt - 1u].pos; speed = 560.0; } // race out to it
+		else if (tgt != 0u) { goal = BODIES[tgt - 1u].pos; speed = 620.0; } // race out to it
 		vec2 to = goal - b.pos;
 		float td = length(to);
 		vec2 dir = td > 0.001 ? to / td : vec2(1.0, 0.0);
@@ -448,13 +453,19 @@ void main() {
 			vec2 awayP = pd > 0.001 ? -toP / pd : vec2(1.0, 0.0);
 			b.vel = awayP * 380.0 + BODIES[0].vel * 0.9;
 		} else {
+			// trains only SCOOP wasteland scrap (the city is off-limits for now) — but a
+			// husk already in the air (variant 1) stays with its train wherever it flies:
+			// a sticky, much wider catch radius, so nothing gets dropped mid-haul
+			bool farOut = distance(b.pos, vec2(WORLD * 0.5)) > pc.city_r;
+			bool aloft = b.variant == 1u;
+			float catchR = aloft ? 240.0 : 110.0;
 			for (uint hi = 0u; hi < MAX_HELPERS; hi++) {
 				Body hd = BODIES[HELPER_LO + hi];
 				if (hd.kind != KIND_HELPER) { continue; }
 				bool mine = hd.gen == id + 1u;     // it came for me
 				bool haul = hd.gen == 0x80000000u; // a passing train scoops me up too
 				float hdd = distance(hd.pos, b.pos);
-				if ((mine && hdd < 90.0) || (haul && hdd < 110.0)) {
+				if ((mine && hdd < max(90.0, catchR)) || (haul && (farOut || aloft) && hdd < catchR)) {
 					b.vel = mix(b.vel, (hd.pos - b.pos) * 7.0, 1.0 - exp(-8.0 * pc.dt));
 					carried = true;
 					break;
@@ -466,13 +477,44 @@ void main() {
 		vec2 lpush; // the laser bulldozes husks too — herd them toward the pit
 		if (laser_hit(b.pos, b.radius, lpush) > 0.0) { b.vel += lpush * pc.dt * 4.0; }
 		b.pos += b.vel * pc.dt;
-		if (!carried) { building_push(b.pos, b.vel, b.radius * 0.8); } // hoisted husks FLY over the houses
-		b.pos = clamp(b.pos, vec2(10.0), vec2(WORLD - 10.0));
+			b.pos = clamp(b.pos, vec2(10.0), vec2(WORLD - 10.0));
 		BODIES[id] = b;
 		return;
 	}
 
 	if (b.kind == KIND_BULLET) {
+		if (b.variant == VAR_MINE) {
+			// ── proximity mine (weapon M): settles where dropped, arms after a beat
+			// (hp - life > 0.7), and BOOMs when the horde steps close — or when its
+			// long fuse finally runs out. The blast is a normal shell detonation.
+			b.vel *= exp(-2.5 * pc.dt);
+			b.pos += b.vel * pc.dt;
+			b.life -= pc.dt;
+			bool trip = b.life <= 0.0;
+			if (!trip && b.hp - b.life > 0.7) {
+				int cx = int(clamp(b.pos.x / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
+				int cy = int(clamp(b.pos.y / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
+				for (int dy = -1; dy <= 1 && !trip; dy++) {
+					int ny = cy + dy;
+					if (ny < 0 || ny >= int(GRID_SIZE)) { continue; }
+					for (int dx = -1; dx <= 1 && !trip; dx++) {
+						int nx = cx + dx;
+						if (nx < 0 || nx >= int(GRID_SIZE)) { continue; }
+						uint cell = uint(ny) * GRID_SIZE + uint(nx);
+						uint cnt = min(GCOUNT[cell], CELL_CAP);
+						for (uint k = 0u; k < cnt; k++) {
+							uint j = GITEM[cell * CELL_CAP + k];
+							if (j < ENEMY_LO || j >= BULLET_LO) { continue; }
+							Body o = BODIES[j];
+							if (o.kind == KIND_ENEMY && distance(o.pos, b.pos) < 60.0 + o.radius) { trip = true; break; }
+						}
+					}
+				}
+			}
+			if (trip) { b.kind = KIND_DYING; b.variant = VAR_BOOM; b.life = BOOM_T; b.vel = vec2(0.0); }
+			BODIES[id] = b;
+			return;
+		}
 		// the shell flies straight at the aim point the CPU measured into its life and
 		// DETONATES there — or on the FIRST building block it crosses: you cannot fire
 		// past a block. (A short muzzle grace keeps a wall-hugging car from eating its
@@ -632,6 +674,71 @@ void main() {
 		b.hp -= LASER_DPS * lk * pc.dt * pc.laser;
 		b.life = max(b.life, 0.35); // simmer, don't strobe — a whole beam of full flashes reads as a white wall
 		b.vel += lpush * pc.dt * 6.0;
+	}
+
+	// ── the rig's MOUNTED weapons (Z..N: pc.pweap held via pc.pfire) — each a different
+	// machine: hitscan MG stream, twin flank beams, the sweeping scythe blade, the
+	// flamer cone, the arc field, the vortex. Geometry mirrors ship() in body.frag
+	// EXACTLY (pure time+push-constant functions, no state).
+	if (pc.pfire > 0.05 && pd < 1500.0) {
+		vec2 offw = pc.aim - pc.player;
+		float owl = max(length(offw), 0.001);
+		vec2 wad = offw / owl;
+		vec2 relp = b.pos - pc.player;
+		float f = pc.pfire;
+		if (pc.pweap == WEAP_SING) {
+			// the SINGULARITY: while charging (f = charge), a collapsing drag well at
+			// the cursor REELS the horde into the exact point the bomb will land on —
+			// the pull and the reach both grow with the charge
+			vec2 tov = pc.aim - b.pos;
+			float dv = length(tov);
+			if (dv < 420.0 + 320.0 * f && dv > 1.0) {
+				vec2 vn = tov / dv;
+				b.vel += (vn * (700.0 + 900.0 * f) + vec2(-vn.y, vn.x) * 420.0) * pc.dt * 2.2;
+			}
+		} else if (pc.pweap == WEAP_BEAMS) { // twin giant lasers off the flanks
+			for (float s = -1.0; s <= 1.0; s += 2.0) {
+				vec2 org = pc.player + vec2(-wad.y, wad.x) * (s * (BODIES[0].radius * 0.9 + 8.0));
+				vec2 rel2 = b.pos - org;
+				float along = clamp(dot(rel2, wad), 0.0, 900.0);
+				if (distance(rel2, wad * along) < 18.0 + b.radius) {
+					b.hp -= 7.0 * pc.dt * f;
+					b.life = max(b.life, 0.35);
+					b.vel += wad * 500.0 * pc.dt * 4.0;
+				}
+			}
+		} else if (pc.pweap == WEAP_SCYTHE) { // the blade arcs around the aim heading
+			float ang = atan(offw.y, offw.x) + sin(pc.time * 1.9) * 1.05;
+			vec2 sdir = vec2(cos(ang), sin(ang));
+			float along = clamp(dot(relp, sdir), 0.0, 820.0);
+			if (along > 20.0 && distance(relp, sdir * along) < 22.0 + b.radius) {
+				b.hp -= 13.0 * pc.dt * f;
+				b.life = max(b.life, 0.4);
+				// flung ALONG the sweep — the blade mows sideways through the crowd
+				b.vel += (sdir * 300.0 + vec2(-sdir.y, sdir.x) * sign(cos(pc.time * 1.9)) * 520.0) * pc.dt * 4.0;
+			}
+		} else if (pc.pweap == WEAP_FLAMER) { // the fire cone: burn hard up close + shove
+			float dp2 = max(length(relp), 1.0);
+			if (dp2 < 430.0 && dot(relp / dp2, wad) > 0.90) {
+				b.hp -= mix(16.0, 5.0, dp2 / 430.0) * pc.dt * f;
+				b.life = max(b.life, 0.6); // burning BRIGHT
+				b.vel += (relp / dp2) * 700.0 * pc.dt * 3.0;
+			}
+		} else if (pc.pweap == WEAP_ARC) { // the discharge field: swarm peel around the rig
+			if (pd < 370.0) {
+				b.hp -= 6.0 * pc.dt * f;
+				b.life = max(b.life, 0.5);
+				float ja = hash1(id * 91u + uint(pc.time * 16.0)) * TAU; // jolted about
+				b.vel += vec2(cos(ja), sin(ja)) * 900.0 * pc.dt * 3.0;
+			}
+		} else if (pc.pweap == WEAP_VORTEX) { // no damage: the horde is DRAGGED to the cursor
+			vec2 tov = pc.aim - b.pos;
+			float dv = length(tov);
+			if (dv < 500.0 && dv > 1.0) {
+				vec2 vn = tov / dv;
+				b.vel += (vn * 900.0 + vec2(-vn.y, vn.x) * 500.0) * pc.dt * 2.0 * f; // sucked in, spiraling
+			}
+		}
 	}
 
 	float vlen = length(b.vel); // cap flings: fast enough to FLY, slow enough to never tunnel

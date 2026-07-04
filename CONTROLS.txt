@@ -1,0 +1,63 @@
+TOOMANYMACHINES — CONTROLS
+==========================
+
+DRIVING
+  W / S            throttle / reverse
+  A / D            steer
+  Left Shift       boost (sprint on the walkers)
+  Space            e-brake (cars only) — grip collapses, handbrake drift
+  Mouse            aim (custom reticle)
+  Left mouse       fire the selected weapon (hold for the mounted hardware)
+  Right mouse      the GIANT LASER (the Colossus burns it far bigger)
+  Backspace        restart
+  Escape           quit
+
+THE GARAGE — 1..9 pick the ride (Tab cycles)
+  1  TRUCK        the classic — quick, drifty, dependable
+  2  BUGGY        light gun-car, snappy handling
+  3  SPORT        drift missile — fastest wheels, loosest tail
+  4  APC          heavy plow — shrugs the crowd off
+  5  TANK         the huge tank — slow, planted, heavy gun cadence
+  6  GUNMECH      nimble walker battery
+  7  MECH         the big walker — twin shoulder guns
+  8  COLOSSUS     absolutely massive six-legged mech — HUGE laser
+  9  WING         you fly: over the buildings, over the horde
+
+BUILD (variant of the current ride) — F G H J K L
+  F  standard
+  G  scout        smaller, faster
+  H  heavy        bigger, slower, harder cadence
+  J  racer        +55% speed
+  K  colossal     1.6x size, slow, big cadence
+  L  prototype    rapid fire
+
+WEAPONS — top row: patterns of the detonating shell
+  Q  CANNON       one shell, detonates exactly at the cursor
+  E  AUTO         rapid shells with spray
+  R  BURST        3-shell fan
+  T  RAIL         near-hitscan slug
+  Y  MORTAR       5 shells scattered on the cursor
+  U  LANCE        LMB holds the giant laser
+  I  NOVA         defensive ring blast around the rig
+  O  WALL         area-denial line at the cursor
+  P  AIRSTRIKE    a stick of shells sweeping in along the aim line
+
+WEAPONS — bottom row: MOUNTED hardware (hold LMB)
+  Z  SINGULARITY  hold: a collapsing well REELS the horde into the cursor,
+                  charging up — release (or top out) and the point ERUPTS
+                  into a massive ring of detonations
+  X  TWIN BEAMS   giant mounted lasers off both flanks — double kill lane
+  C  SCYTHE       a laser blade sweeping an arc around the aim — mows crowds
+  V  FLAMER       rolling fire cone; burns hard up close and shoves back
+  B  ARC FIELD    crackling discharge around the rig — peel off a swarm
+  N  VORTEX       drags the horde into the cursor (no damage — herd them
+                  into your mines/shells/army)
+  M  MINES        drops proximity mines off the tail; they arm after a
+                  beat and BOOM when the horde steps close
+
+YOUR ARMY (autonomous — it re-musters at the center when it falls)
+  Tank / gun-car / gunner-mech columns march out the avenues (the main
+  street east of the pit gets the biggest push) and pour fire on whatever
+  they lock. Suicide drones and bombers stage at the CENTER and sortie to
+  wherever YOU are fighting, coming down on the horde as real blasts.
+  Fallen allies leave wrecks — the salvage fleet feeds them to the pit.

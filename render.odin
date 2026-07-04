@@ -17,7 +17,7 @@ import vk "vendor:vulkan"
 // shader-side, declared in the graphics pipeline's own .vert/.frag.) Keep the block self-contained
 // (builtins only), one struct per line. Scalar layout — Odin default alignment matches GLSL `scalar`.
 // @glsl
-Push :: struct { screen, cam, player, aim: [2]f32, dt, time, muzzle, throttle, boost, laser, city_r, angle: f32, mode: u32 }
+Push :: struct { screen, cam, player, aim: [2]f32, dt, time, muzzle, throttle, boost, laser, pfire, city_r, angle: f32, mode, pweap: u32 }
 Body :: struct { pos, vel: [2]f32, radius, life, hp, angle: f32, kind, variant, gen: u32 }
 // @glsl-end
 
@@ -85,7 +85,8 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	// BEFORE input sampling so the frame is recorded from fresh input (main.odin).
 	w, h := f32(win_w), f32(win_h)
 	shake := [2]f32{math.sin(sim_time * 143), math.cos(sim_time * 119)} * cam_shake
-	pc := Push{screen = {w, h}, cam = cam + shake, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, city_r = city_r, angle = car_angle}
+	// pfire: the mounted weapons' hold envelope — for the SINGULARITY it IS the charge
+	pc := Push{screen = {w, h}, cam = cam + shake, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, pfire = weapon == .Sing ? sing_charge : fire_v, city_r = city_r, angle = car_angle, pweap = u32(weapon)}
 
 	vk.CmdBindPipeline(cmd, .COMPUTE, pipelines[.Physics])
 	groups := (u32(max(GRID_CELLS, BODY_COUNT)) + 63) / 64
@@ -109,7 +110,10 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	vk.CmdDraw(cmd, 3, 1, 0, 0)
 	gpu_stamp(cmd, 2) // city done
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Body])
-	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1) // the horde, bullets, pylons…
+	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1) // layer 0 (mode=0): ground wrecks, under everything
+	pc.mode = 1
+	vk.CmdPushConstants(cmd, vkc.pipe_layout, {.COMPUTE, .VERTEX, .FRAGMENT}, 0, size_of(Push), &pc)
+	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1) // layer 1: the living horde, bullets, pylons…
 	vk.CmdDraw(cmd, 6, 1, 0, 0)                   // …then the ship, always on top of the crowd
 	img_pass_end(cmd, .Scene)
 	gpu_stamp(cmd, 3) // bodies done
