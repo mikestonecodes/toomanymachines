@@ -60,14 +60,42 @@ main :: proc() {
 				resized = true // an image is already acquired — recreate only after it presents
 			case .KEY_DOWN:
 				#partial switch ev.key.scancode {
-				case .ESCAPE: should_quit = true
-				case .R:      game_init()
+				case .ESCAPE:    should_quit = true
+				case .BACKSPACE: game_init() // restart (R is a weapon key now)
+				case .TAB:       ride = (ride + 1) % len(RIDES) // cycle the garage
 				case .W:      input.up = true
 				case .S:      input.down = true
 				case .A:      input.left = true
 				case .D:      input.right = true
 				case .LSHIFT: input.boost = true
 				case .SPACE:  input.ebrake = true
+				// the GARAGE: 1-9 pick the ride
+				case ._1: ride = 0
+				case ._2: ride = 1
+				case ._3: ride = 2
+				case ._4: ride = 3
+				case ._5: ride = 4
+				case ._6: ride = 5
+				case ._7: ride = 6
+				case ._8: ride = 7
+				case ._9: ride = 8
+				// weapons on the QWERTY row (W drives, so it's skipped)
+				case .Q: weapon = .Cannon
+				case .E: weapon = .Auto
+				case .R: weapon = .Burst
+				case .T: weapon = .Rail
+				case .Y: weapon = .Mortar
+				case .U: weapon = .Lance
+				case .I: weapon = .Nova
+				case .O: weapon = .Wall
+				case .P: weapon = .Airstrike
+				// builds on the home row (A/S/D steer, so F..L carry the variants)
+				case .F: style = 0
+				case .G: style = 1
+				case .H: style = 2
+				case .J: style = 3
+				case .K: style = 4
+				case .L: style = 5
 				}
 			case .KEY_UP:
 				#partial switch ev.key.scancode {

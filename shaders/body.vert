@@ -24,8 +24,14 @@ void main() {
 		return;
 	}
 	float ext = b.radius * 2.6; // enemies: room for legs + flash
-	if (b.kind == KIND_PLAYER) { // ship + turret flash + boost flame; the laser needs the whole reach
-		ext = pc.laser > 0.02 ? LASER_LEN + 120.0 : 120.0;
+	if (b.kind == KIND_ALLY && b.gen != 0u
+	    && b.variant != VAR_SUICIDE && b.variant != VAR_BOMBER) {
+		// an ally pouring fire: the quad must reach its locked target so the tracer +
+		// impact can draw (target slot in gen, same state physics chews enemies with)
+		ext = distance(b.pos, BODIES[b.gen - 1u].pos) + 90.0;
+	}
+	if (b.kind == KIND_PLAYER) { // any garage ride + its flash; the laser needs the whole reach
+		ext = pc.laser > 0.02 ? LASER_LEN * laser_k() + 160.0 : max(120.0, b.radius * 3.2);
 	}
 	else if (b.kind == KIND_BULLET) { // the plasma orb + the trail it has LEFT behind so far
 		ext = clamp((b.hp - b.life) * BULLET_SPEED + 24.0, 36.0, 224.0);
@@ -52,7 +58,7 @@ void main() {
 		// dying mechs still draw their whole body + legs (briefly puffed up), + embers;
 		// the pit swallow needs room for its splash arcs + the furnace belch
 		ext = b.variant == VAR_SPARK ? b.radius + 10.0 + 115.0 * prog : b.radius * 3.0 + 60.0 * prog;
-		if (b.variant == VAR_BOOM) { ext = 60.0; } // just the brief impact flash
+		if (b.variant == VAR_BOOM) { ext = 60.0 + b.radius; } // the brief impact flash (bigger for dying towers/bombers)
 		if (b.variant == VAR_BRUTE) { ext *= 1.5; }
 	}
 	vec2 local = CORNERS[gl_VertexIndex] * ext;

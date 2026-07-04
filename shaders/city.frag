@@ -345,13 +345,38 @@ vec3 ground_col(vec2 w, vec2 s) {
 	col = mix(col, road, rmask);
 	col += vec3(0.105, 0.092, 0.079) * (1.0 - smoothstep(1.0, 2.6, abs(sd - (STREET_HW - 4.0)))) * roadMix; // warm stone curb
 	{ // lane paint: EURO single centerline — one continuous worn line down the middle,
-		// broken CLEAN of every crossing (paint never runs through an intersection)
+		// broken CLEAN of every crossing (paint never runs through an intersection).
+		// The MAIN STREET (the j=0 avenue) is a monumental double carriageway: twin
+		// lane lines flanking a lit MEDIAN spine of steady lamps marching to the pit.
 		float ringd = abs(cr - max(round(cr / RING_SP), 1.0) * RING_SP);
-		float spoked = spoke_dist(w);
+		float sa = a - SPIRAL * cr;
+		float stp = TAU / (SPOKES * 0.5);
+		float jn = round(sa / stp);
+		float dm = abs(sa - jn * stp) * cr; // RAW arc distance to the nearest primary spoke
+		bool onMain = jn == 0.0;
+		float rawsp = dm;                                // raw: the centerline paint
+		float spoked = onMain ? dm - MAIN_XW : dm;       // adjusted: crossing-gap logic
+		if (cr > SPOKE2_R) {
+			float sa2 = sa + stp * 0.5;
+			float d2 = abs(sa2 - round(sa2 / stp) * stp) * cr;
+			rawsp = min(rawsp, d2);
+			spoked = min(spoked, d2);
+		}
 		float other = ringd < spoked ? spoked : ringd; // distance to the CROSSING street's centerline
 		float gap = smoothstep(STREET_HW + 14.0, STREET_HW + 58.0, other);
 		float wear = 0.75 + 0.25 * vnoise(w * 0.02 + 7.0); // scuffed, not stenciled
-		col += vec3(0.152, 0.138, 0.106) * (1.0 - smoothstep(0.9, 2.2, sd)) * gap * wear * roadMix;
+		float lane = min(ringd, rawsp);
+		col += vec3(0.152, 0.138, 0.106) * (1.0 - smoothstep(0.9, 2.2, lane)) * gap * wear * roadMix;
+		if (onMain && dm < STREET_HW + MAIN_XW && cr > PIT_R + 130.0) {
+			// twin carriageway lines splitting the huge roadbed into lanes
+			float lane2 = abs(dm - (STREET_HW + MAIN_XW) * 0.5);
+			col += vec3(0.152, 0.138, 0.106) * (1.0 - smoothstep(1.2, 2.8, lane2)) * gap * wear * roadMix;
+			// the median lamps — steady PAL_LAMP practicals (decoration never blinks)
+			vec2 lampL = vec2(dm, fract(cr / 300.0) * 300.0 - 150.0);
+			float ld = dot(lampL, lampL);
+			col += PAL_LAMP * 1.4 * exp(-ld / 40.0) * gap * roadMix;
+			col += PAL_LAMP * 0.14 * exp(-ld / 6000.0) * gap * roadMix; // the lit pool
+		}
 	}
 
 	{ // rubber on the road: the persistent skid decal grid the CPU stamps (Res.Skid)
@@ -447,11 +472,12 @@ void main() {
 		// (no red muzzle strobe on the ground — the car flashing red on every shot read
 		// as the car being HIT; the barrel's own flash is enough)
 		if (pc.laser > 0.05) {
+			float lk = laser_k(); // the COLOSSUS scorches a far bigger line
 			vec2 off = pc.aim - pc.player;
 			float ol = max(length(off), 0.001);
 			vec2 ad = off / ol;
-			float bd = sd_seg(g0, pc.player + ad * 40.0, pc.player + ad * (40.0 + LASER_LEN));
-			col += PAL_EMBER * exp(-bd * bd / 14000.0) * 0.45 * pc.laser * onGround;
+			float bd = sd_seg(g0, pc.player + ad * 40.0, pc.player + ad * (40.0 + LASER_LEN * lk));
+			col += PAL_EMBER * exp(-bd * bd / (14000.0 * lk * lk)) * 0.45 * pc.laser * onGround;
 		}
 	}
 

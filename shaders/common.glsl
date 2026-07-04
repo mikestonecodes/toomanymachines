@@ -74,11 +74,15 @@ float street_d(vec2 p) {
 	vec2 q = p - vec2(WORLD * 0.5);
 	float r = length(q);
 	float d = abs(r - max(round(r / RING_SP), 1.0) * RING_SP);
-	// 5 main avenues reach the core; the staggered 5 only exist beyond SPOKE2_R
+	// 5 main avenues reach the core; the staggered 5 only exist beyond SPOKE2_R.
+	// The j=0 avenue is the MAIN STREET: MAIN_XW wider (its distance reads that much
+	// smaller, going negative inside the extra width — every consumer follows).
 	float sa = atan(q.y, q.x) - SPIRAL * r;
 	float stp = TAU / (SPOKES * 0.5);
-	float da = sa - round(sa / stp) * stp;
-	d = min(d, abs(da) * r);
+	float jn = round(sa / stp);
+	float ds = abs(sa - jn * stp) * r;
+	if (jn == 0.0) { ds -= MAIN_XW; }
+	d = min(d, ds);
 	if (r > SPOKE2_R) {
 		float sa2 = sa + stp * 0.5;
 		float da2 = sa2 - round(sa2 / stp) * stp;
@@ -127,20 +131,39 @@ float bldg_pen(vec2 p) {
 	return pen;
 }
 
-// distance to the nearest spoke centerline only (houses must clear the avenues)
-float spoke_dist(vec2 p) {
-	vec2 q = p - vec2(WORLD * 0.5);
-	float r = length(q);
-	float sa = atan(q.y, q.x) - SPIRAL * r;
-	float stp = TAU / (SPOKES * 0.5);
-	float da = sa - round(sa / stp) * stp;
-	float d = abs(da) * r;
-	if (r > SPOKE2_R) {
-		float sa2 = sa + stp * 0.5;
-		float da2 = sa2 - round(sa2 / stp) * stp;
-		d = min(d, abs(da2) * r);
+// the player's laser scale: the COLOSSUS (ride 8) burns a HUGE beam — every laser
+// consumer (physics damage/push, body.frag beam, city.frag ground burn, body.vert
+// quad) multiplies reach/width by this, so they can never disagree
+float laser_k() { return BODIES[0].variant == RIDE_COLOSSUS ? 2.4 : 1.0; }
+
+// max hp per variant — physics (damage), body.frag (damage glow) share it
+float max_hp(uint v) {
+	if (v == VAR_SKITTER) { return HP_SKITTER; }
+	if (v == VAR_BRUTE)   { return HP_BRUTE; }
+	if (v == VAR_TANK)    { return HP_TANK; }
+	if (v == VAR_RAIDER)  { return HP_RAIDER; }
+	if (v == VAR_SUICIDE) { return HP_SUICIDE; }
+	if (v == VAR_GUNNER)  { return HP_GUNNER; }
+	if (v == VAR_BOMBER)  { return HP_BOMBER; }
+	return HP_SPIDER;
+}
+
+// ── enemy ranged fire ────────────────────────────────────────────────────────
+// One deterministic cadence all three consumers read (physics.comp applies the impact,
+// body.vert sizes the quad, body.frag draws the tracer): cycle phase from time + slot
+// id; the slug covers mv px/s of flight. x = slug distance from the muzzle, y = phase.
+vec2 fire_slug(uint id, float rate, float mv) {
+	float cyc = fract(pc.time * rate + hash1(id * 501u));
+	return vec2(cyc / rate * mv, cyc);
+}
+
+// can a shooter at a hit b, or does a building block interpose? 3 samples of the solid
+// test — deterministic, so physics (impact) and the drawing always agree.
+bool fire_los(vec2 a, vec2 b) {
+	for (float k = 1.0; k < 4.0; k += 1.0) {
+		if (bldg_pen(mix(a, b, k * 0.25)) > 0.0) { return false; }
 	}
-	return d;
+	return true;
 }
 
 // district of a block: 0 residential rows, 1 industrial yards, 2 tower blocks

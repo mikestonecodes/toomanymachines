@@ -32,6 +32,11 @@ float cov  = 0.0;
 vec3  add  = vec3(0.0);
 vec2  gL   = vec2(-0.7, -0.7); // light dir in body frame, set per bot
 float gCS  = 3.0;              // paint-chip cell size, scaled to the bot
+// team paint: the SAME chassis sprites serve the enemy horde, YOUR army and the garage
+// rides — only the marking/eye colors flip. Red is the enemy's language; the player's
+// side wears amber (main() sets these per body before dispatch).
+vec3 gMark = BOT_ORANGE;  // unit markings / bands
+vec3 gEye  = PAL_ACCENT;  // sensor / warhead glow
 
 void lay(vec3 c, float a) {
 	a = clamp(a, 0.0, 1.0);
@@ -90,19 +95,121 @@ void mech_leg(vec2 p, float r, float aa, float ph, float wUp, float wLo) {
 	plate(p, knee, length(p - knee) - wUp * 0.75, BOT_OLIVE, aa + 9.0);
 }
 
+void player_mech(vec2 p, Body b) {
+	// ── the player's walkers (rides 7+8): HUGE friendly mechs — the same dusty grey
+	// plate as the world but NO red anywhere (red is the enemy's language); the light
+	// budget is the player's amber. Twin shoulder guns track the mouse and pound out
+	// the shells. Everything parameterizes on radius, so the COLOSSUS (r≈66) is simply
+	// TITANIC — and past r>52 it gains a third leg pair + a burning reactor crown.
+	float r = b.radius;
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = 4.5;
+	lay(vec3(0.012, 0.010, 0.010), 0.5 * soft(length(p - vec2(6.0, 10.0)) - r * 1.15)); // ground shadow
+	// heavy legs, striding with speed
+	float gt = pc.time * (1.5 + length(b.vel) * 0.022);
+	float wUp = r * 0.20, wLo = r * 0.075;
+	mech_leg(p, r,  0.80, gt,           wUp, wLo);
+	mech_leg(p, r, -0.80, gt + 3.14159, wUp, wLo);
+	mech_leg(p, r,  2.35, gt + 3.14159, wUp, wLo);
+	mech_leg(p, r, -2.35, gt,           wUp, wLo);
+	if (r > 52.0) { // the COLOSSUS walks on SIX
+		mech_leg(p, r,  1.57, gt + 1.57, wUp, wLo);
+		mech_leg(p, r, -1.57, gt + 4.71, wUp, wLo);
+	}
+	// torso: broad deck + chest glacis + engine block — player greys, cel-shaded
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.72, r * 0.55)) - r * 0.14, PAL_MID * 1.15, 1.0);
+	plate(p, vec2(r * 0.5, 0.0), sd_box(p - vec2(r * 0.5, 0.0), vec2(r * 0.24, r * 0.40)) - r * 0.08, vec3(0.155, 0.160, 0.170), 2.0);
+	plate(p, vec2(-r * 0.55, 0.0), sd_box(p - vec2(-r * 0.55, 0.0), vec2(r * 0.18, r * 0.34)) - r * 0.06, PAL_MID * 0.8, 3.0);
+	// cockpit slit, glowing faint warm — the pilot's window
+	float glass = sd_box(p - vec2(r * 0.62, 0.0), vec2(r * 0.07, r * 0.22)) - r * 0.03;
+	lay(vec3(0.020, 0.021, 0.024), soft(glass));
+	add += vec3(0.35, 0.30, 0.20) * soft(glass) * 0.8;
+	// amber running strips down the flanks + headlamps at the chest (the long beam on
+	// the ground lives in city.frag, same as the truck)
+	for (float s = -1.0; s <= 1.0; s += 2.0) {
+		add += PAL_EMBER * 1.2 * soft(sd_box(p - vec2(-r * 0.15, s * r * 0.50), vec2(r * 0.34, 1.4)));
+		add += vec3(1.0, 0.90, 0.70) * 1.2 * soft(length(p - vec2(r * 0.78, s * r * 0.26)) - 2.6);
+	}
+	// engine vents aft, breathing with the throttle
+	float th = pc.throttle * 0.8 + pc.boost * 1.6;
+	for (float s = -1.0; s <= 1.0; s += 2.0) {
+		add += PAL_EMBER * soft(length(p - vec2(-r * 0.70, s * r * 0.20)) - r * 0.07) * (0.35 + th * (1.6 + 0.5 * sin(pc.time * 43.0 + s)));
+	}
+	if (r > 52.0) { // the reactor crown, burning amber over the deck
+		plate(p, vec2(-r * 0.08, 0.0), length(p - vec2(-r * 0.08, 0.0)) - r * 0.20, PAL_MID * 1.3, 11.0);
+		add += PAL_EMBER * 0.9 * soft(length(p - vec2(-r * 0.08, 0.0)) - r * 0.09) * (0.7 + 0.3 * sin(pc.time * 2.2));
+	}
+	// twin SHOULDER guns tracking the mouse, recoiling with the barrage
+	float ta = atan(pc.aim.y - b.pos.y, pc.aim.x - b.pos.x) - b.angle;
+	vec2 td = vec2(cos(ta), sin(ta));
+	vec2 tp2 = vec2(-td.y, td.x);
+	for (float s = -1.0; s <= 1.0; s += 2.0) {
+		vec2 mnt = tp2 * (s * r * 0.44);
+		float blen = r * 0.95 - pc.muzzle * 5.0;
+		lay(BOT_LINE * 2.2, soft(sd_seg(p, mnt, mnt + td * blen) - 2.6));
+		plate(p, mnt, length(p - mnt) - r * 0.18, vec3(0.155, 0.160, 0.170), s + 7.0);
+		if (pc.muzzle > 0.02) {
+			vec2 tip = mnt + td * (blen + 4.0);
+			float md = length(p - tip);
+			add += (PAL_EMBER * 2.2 + vec3(1.2)) * exp(-md * md / (10.0 * pc.muzzle + 3.0)) * pc.muzzle * 1.6;
+		}
+	}
+}
+
+void sportcar(vec2 p, Body b) {
+	// the SPORT: a low drift wedge — wide stance, glass canopy, twin lamps, a hot
+	// diffuser strip that flares with the throttle. Drawn in classic px, scaled by chassis.
+	float r = b.radius;
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = 3.0;
+	p *= 16.0 / r;
+	float lean = clamp(b.life, -1.0, 1.0);
+	lay(vec3(0.012, 0.010, 0.010), 0.5 * soft(sd_box(p - vec2(5.0, 8.0), vec2(20.0, 7.0)) - 4.0)); // shadow
+	p.y += lean * 1.8; // it rolls hard against the slide
+	for (float sx = -1.0; sx <= 1.0; sx += 2.0) { // wide fat tires
+		for (float sy = -1.0; sy <= 1.0; sy += 2.0) {
+			lay(PAL_BASE * 0.7, soft(sd_box(p - vec2(sx * 11.0, sy * 11.5), vec2(6.0, 3.4)) - 1.6));
+		}
+	}
+	float hull = sd_box(p, vec2(19.0, 8.4)) - 4.0; // low wedge body
+	float rim = clamp(dot(normalize(p + 0.0001), gL), 0.0, 1.0);
+	vec3 mc = PAL_MID * (0.6 + 0.2 * sin(p.x * 0.7));
+	mc = mix(mc, PAL_MID * (0.9 + rim * 1.3), smoothstep(-4.0, 0.0, hull));
+	lay(mc, soft(hull));
+	lay(PAL_MID * 0.75, soft(sd_box(p - vec2(15.5, 0.0), vec2(4.5, 5.0)) - 2.0)); // nose splitter
+	float glass = sd_box(p - vec2(4.0, 0.0), vec2(6.0, 5.6)) - 2.2; // canopy
+	lay(vec3(0.020, 0.021, 0.024), soft(glass));
+	add += vec3(0.10, 0.105, 0.115) * soft(glass) * pow(clamp(dot(normalize(p - vec2(4.0, 0.0) + 0.0001), gL), 0.0, 1.0), 3.0);
+	lay(PAL_BASE * 0.9, soft(sd_box(p - vec2(-16.0, 0.0), vec2(1.0, 9.5)))); // rear wing
+	for (float s = -1.0; s <= 1.0; s += 2.0) { // lamps + red tails
+		add += vec3(1.0, 0.90, 0.70) * 1.2 * soft(length(p - vec2(19.0, s * 5.0)) - 2.0);
+		add += PAL_ACCENT * 1.4 * soft(sd_box(p - vec2(-18.5, s * 6.0), vec2(0.9, 1.8)));
+	}
+	float th = pc.throttle * 0.8 + pc.boost * 1.6; // diffuser strip breathing with throttle
+	add += PAL_EMBER * (0.3 + th * 1.4) * soft(sd_box(p - vec2(-18.0, 0.0), vec2(1.0, 4.0)));
+}
+
+// the chassis sprites double as garage rides (defined below, with the horde art)
+void tank(vec2 p, Body b, float t, vec2 aimd, float shoot);
+void raider(vec2 p, Body b, float t, vec2 aimd, float shoot);
+void gunner(vec2 p, Body b, float t, vec2 aimd, float shoot);
+void bomber(vec2 p, Body b, float t);
+
 void ship(vec2 p, Body b) {
 	// ── the giant laser first: it reaches far outside the hull, so the quad is huge
-	// while burning — bail to beam-only past the hull's reach.
+	// while burning — bail to beam-only past the hull's reach. The COLOSSUS (laser_k)
+	// burns a beam scaled up in every dimension.
+	float lk = laser_k();
 	if (pc.laser > 0.02) {
 		float ta = atan(pc.aim.y - b.pos.y, pc.aim.x - b.pos.x) - b.angle;
 		vec2 td = vec2(cos(ta), sin(ta));
-		vec2 a0 = td * 26.0;
-		vec2 a1 = td * (26.0 + LASER_LEN);
+		vec2 a0 = td * (b.radius * 1.2 + 6.0);
+		vec2 a1 = td * (b.radius * 1.2 + 6.0 + LASER_LEN * lk);
 		float bd = sd_seg(p, a0, a1);
 		float flick = 0.85 + 0.30 * sin(pc.time * 61.0 + dot(p, td) * 0.05)
 		            + 0.10 * sin(pc.time * 173.0);
-		float wCore = 3.0 * pc.laser * flick;
-		float wHalo = LASER_W * pc.laser;
+		float wCore = 3.0 * lk * pc.laser * flick;
+		float wHalo = LASER_W * lk * pc.laser;
 		add += (vec3(1.3, 1.0, 0.7) + PAL_EMBER * 0.5) * exp(-bd * bd / (wCore * wCore * 2.0)) * 1.3 * pc.laser;
 		add += PAL_ACCENT * exp(-bd * bd / (wHalo * wHalo)) * 0.30 * pc.laser;
 		// wide veil MUST reach zero inside the quad — an exp(-d/k) tail never does, and
@@ -110,12 +217,38 @@ void ship(vec2 p, Body b) {
 		add += PAL_EMBER * exp(-bd * bd / (wHalo * wHalo * 4.0)) * 0.08 * pc.laser;
 		// hot star at the emitter
 		float ed = length(p - a0);
-		add += (PAL_EMBER * 1.5 + vec3(0.7)) * exp(-ed * ed / (50.0 * pc.laser + 8.0)) * pc.laser;
+		add += (PAL_EMBER * 1.5 + vec3(0.7)) * exp(-ed * ed / (50.0 * lk * pc.laser + 8.0)) * pc.laser;
 	}
-	if (length(p) > 150.0) { return; } // beyond the hull: beam only
+	if (length(p) > b.radius * 3.2 + 60.0) { return; } // beyond the hull: beam only
 
-	// ── the TRUCK: long slab hull on proud wheels, cab + windshield up front, amber
-	// running strips, red tails and BIG headlights throwing real cones down the street.
+	// ── the GARAGE (1-9): every ride reuses a chassis sprite in the player's paint —
+	// amber markings/eyes, never red. Guns track the mouse; LMB fires the REAL shells,
+	// so no tracer stream is drawn (shoot = 0) — just the shared muzzle flash below.
+	gMark = vec3(0.62, 0.50, 0.28);
+	gEye = PAL_EMBER;
+	if (b.variant != RIDE_TRUCK && b.variant != RIDE_SPORT) {
+		vec2 aimd = rot2(-b.angle) * normalize(pc.aim - b.pos + 0.0001);
+		if      (b.variant == RIDE_BUGGY)  { raider(p, b, pc.time, aimd, 0.0); }
+		else if (b.variant == RIDE_APC
+		      || b.variant == RIDE_TANK)   { tank(p, b, pc.time, aimd, 0.0); }
+		else if (b.variant == RIDE_GUNNER) { gunner(p, b, pc.time, aimd, 0.0); }
+		else if (b.variant == RIDE_WING)   { bomber(p, b, pc.time); }
+		else                               { player_mech(p, b); return; } // MECH + COLOSSUS flash their own guns
+		if (pc.muzzle > 0.02) { // the shot flash at the gun tip
+			vec2 tip = aimd * (b.radius * 1.6);
+			float md = length(p - tip);
+			add += (PAL_EMBER * 2.2 + vec3(1.2)) * exp(-md * md / (10.0 * pc.muzzle + 3.0)) * pc.muzzle * 1.6;
+		}
+		return;
+	}
+	if (b.variant == RIDE_SPORT) { // the drift wedge + the truck's shared turret below
+		sportcar(p, b);
+		p *= 16.0 / b.radius;
+	} else {
+		// ── the TRUCK: long slab hull on proud wheels, cab + windshield up front, amber
+		// running strips, red tails and BIG headlights throwing real cones down the
+		// street. Drawn in classic px, scaled by the chassis (styles resize it).
+		p *= CAR_RADIUS / b.radius;
 	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8)); // screen light → body frame
 	gCS = 3.2;
 	float lean = clamp(b.life, -1.0, 1.0); // CPU packs drift slip here
@@ -194,7 +327,8 @@ void ship(vec2 p, Body b) {
 			}
 		}
 	}
-	// turret: mount + barrel toward the mouse, with recoil + muzzle flash
+	}
+	// turret: mount + barrel toward the mouse, with recoil + muzzle flash (TRUCK + SPORT)
 	float ta = atan(pc.aim.y - b.pos.y, pc.aim.x - b.pos.x) - b.angle;
 	vec2 td = vec2(cos(ta), sin(ta));
 	vec2 tm = vec2(-2.0, 0.0);
@@ -327,6 +461,186 @@ void brute(vec2 p, Body b, float t) {
 		add += PAL_EMBER * 0.6 * soft(length(p - vec2(-r * 0.72, s * r * 0.22)) - r * 0.06); // exhausts
 	}
 	battle_damage(p, b, HP_BRUTE);
+}
+
+void tank(vec2 p, Body b, float t, vec2 aimd, float shoot) {
+	// Tracked tank: rolling treads under a heavy casemate, a long cannon down `aimd`
+	// (allies face their locked target so it's +x; the PLAYER's turret tracks the
+	// mouse). `shoot` > 0 = an ally pouring fire: draw the fire_slug shell + impact
+	// out to that reach — the identical slug physics chews enemies with.
+	float r = b.radius;
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = max(r * 0.20, 2.8);
+	lay(vec3(0.015), 0.38 * soft(sd_box(p - vec2(3.0, 5.0), vec2(r * 1.05, r * 0.85)) - r * 0.1));
+	float roll = pc.time * length(b.vel) * 0.14;
+	for (float s = -1.0; s <= 1.0; s += 2.0) { // treads with running track links
+		vec2 tp = p - vec2(0.0, s * r * 0.68);
+		float tdd = sd_box(tp, vec2(r * 1.0, r * 0.24)) - r * 0.06;
+		lay(BOT_LINE * 1.6, soft(tdd));
+		lay(BOT_LINE * 3.0, soft(tdd + r * 0.12) * (0.45 + 0.55 * step(0.5, fract(tp.x / 9.0 - roll))));
+	}
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.85, r * 0.5)) - r * 0.10, BOT_KHAKI, 1.0); // casemate
+	plate(p, vec2(-r * 0.5, 0.0), sd_box(p - vec2(-r * 0.5, 0.0), vec2(r * 0.22, r * 0.38)) - r * 0.05, BOT_OLIVE * 0.8, 2.0); // engine deck
+	lay(gMark, soft(sd_box(p - vec2(-r * 0.12, 0.0), vec2(r * 0.045, r * 0.42))) * 0.8); // unit band
+	plate(p, vec2(r * 0.1, 0.0), length(p - vec2(r * 0.1, 0.0)) - r * 0.40, BOT_OLIVE, 3.0);  // turret drum
+	vec2 sl = fire_slug(v_id, TANK_RATE, TANK_MV);
+	float rec = shoot > 0.0 ? exp(-sl.y * 12.0) * r * 0.14 : 0.0; // recoil right off the shot
+	vec2 hub = vec2(r * 0.1, 0.0);
+	lay(BOT_LINE * 2.4, soft(sd_seg(p, hub, hub + aimd * (r * 1.55 - rec)) - r * 0.085));
+	lay(BOT_LINE * 3.5, soft(sd_seg(p, hub + aimd * (r * 1.25 - rec), hub + aimd * (r * 1.55 - rec)) - r * 0.12)); // muzzle brake
+	float beat = 0.7 + 0.5 * sin(pc.time * 2.4 + float(v_id) * 0.7);
+	add += gEye * 1.1 * beat * soft(length(p - hub - aimd * r * 0.3) - r * 0.09); // gunsight eye
+	if (shoot > 0.0) {
+		float mz = exp(-sl.y * 9.0); // the shot just left: a hard flash off the brake
+		vec2 muz = hub + aimd * r * 1.65;
+		add += (PAL_EMBER * 2.2 + vec3(0.9)) * exp(-dot(p - muz, p - muz) / (60.0 * mz + 4.0)) * mz * 2.0;
+		if (sl.x < shoot) { // the slug in flight down the gun line, dragging a hot wake
+			vec2 sp2 = muz + aimd * sl.x;
+			add += vec3(1.45, 1.1, 0.7) * exp(-dot(p - sp2, p - sp2) / 16.0) * 2.4;
+			float wk = sd_seg(p, sp2 - aimd * min(sl.x, 90.0), sp2);
+			add += PAL_EMBER * exp(-wk * wk / 14.0) * 0.5;
+		} else if (sl.x - shoot < 120.0) { // ARRIVAL: sparks burst off the target
+			vec2 hit = muz + aimd * shoot;
+			add += (PAL_EMBER * 1.6 + vec3(0.5)) * exp(-dot(p - hit, p - hit) / 240.0) * exp(-(sl.x - shoot) * 0.03) * 1.6;
+		}
+	}
+	battle_damage(p, b, HP_TANK);
+}
+
+void raider(vec2 p, Body b, float t, vec2 aimd, float shoot) {
+	// Gun-car: a fast wheeled technical, pintle gun slung down `aimd` — as an ally it
+	// circles its locked prey pouring a stream out to `shoot` reach; as the player's
+	// BUGGY the gun just tracks the mouse (LMB fires the real shells).
+	float r = b.radius;
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = max(r * 0.24, 2.6);
+	lay(vec3(0.015), 0.32 * soft(sd_box(p - vec2(2.0, 4.0), vec2(r * 1.0, r * 0.7)) - r * 0.1));
+	for (float sx = -1.0; sx <= 1.0; sx += 2.0) { // four proud wheels
+		for (float sy = -1.0; sy <= 1.0; sy += 2.0) {
+			lay(BOT_LINE * 1.8, soft(sd_box(p - vec2(sx * r * 0.62, sy * r * 0.58), vec2(r * 0.26, r * 0.14)) - r * 0.05));
+		}
+	}
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.92, r * 0.44)) - r * 0.14, BOT_OLIVE, 1.0); // hull wedge
+	plate(p, vec2(r * 0.45, 0.0), sd_box(p - vec2(r * 0.48, 0.0), vec2(r * 0.28, r * 0.32)) - r * 0.08, BOT_KHAKI, 2.0); // cab
+	lay(gMark, soft(sd_box(rot2(0.5) * (p - vec2(-r * 0.3, 0.0)), vec2(r * 0.30, r * 0.05))) * 0.85); // slash marking
+	vec2 mnt = vec2(-r * 0.25, 0.0); // the pintle gun on a rear ring
+	lay(BOT_LINE * 2.6, soft(sd_seg(p, mnt, mnt + aimd * r * 0.85) - r * 0.06));
+	float beat = 0.7 + 0.5 * sin(pc.time * 3.8 + float(v_id) * 0.9);
+	add += gEye * 1.2 * beat * soft(length(p - vec2(r * 0.72, 0.0)) - r * 0.10); // the eye
+	if (shoot > 0.0) { // the stream: rounds flowing OUT down the gun line
+		float alongp = dot(p - mnt, aimd);
+		float perp = dot(p - mnt, vec2(-aimd.y, aimd.x));
+		if (alongp > r * 0.9 && alongp < shoot) {
+			float cycR = fract(alongp / 38.0 - pc.time * 34.0);
+			float slug2 = exp(-pow((cycR - 0.5) * 6.0, 2.0));
+			add += vec3(1.4, 1.05, 0.65) * slug2 * exp(-perp * perp / 3.0) * 1.8;
+		}
+		vec2 muz = mnt + aimd * r * 0.95;
+		add += (PAL_EMBER * 1.8 + vec3(0.7)) * exp(-dot(p - muz, p - muz) / 9.0) * (0.6 + 0.4 * sin(pc.time * 91.0 + float(v_id)));
+	}
+	battle_damage(p, b, HP_RAIDER);
+}
+
+void suicide(vec2 p, Body b, float t, float arm) {
+	// SUICIDE DRONE: a flying rotor bomb. Its whole light budget is the warhead — the
+	// core pulses harder and FASTER as it closes on its prey (`arm` ramps 0→1): a
+	// live-warhead light, so it's allowed to blink. Airborne: drawn a touch large,
+	// its shadow adrift on the ground below.
+	float r = b.radius;
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = 2.6;
+	lay(vec3(0.012), 0.35 * soft(length(p - vec2(6.0, 14.0)) - r * 0.9)); // shadow far below
+	p *= 0.80; // altitude: nearer the camera
+	p.y -= sin(pc.time * 4.1 + float(v_id)) * 0.5;
+	for (float s = -1.0; s <= 1.0; s += 2.0) { // rotor pods — a dark whisper of shimmer,
+		// NO white glow: a swarm of these in bloom turns the field into milk
+		vec2 rp = vec2(-r * 0.2, s * r * 0.75);
+		lay(BOT_LINE * 2.0, soft(length(p - rp) - r * 0.34));
+		lay(vec3(0.22, 0.23, 0.25), soft(length(p - rp) - r * 0.30) * (0.30 + 0.25 * sin(pc.time * 53.0 + s + float(v_id))));
+	}
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.62, r * 0.40)) - r * 0.14, BOT_OLIVE * 0.9, 1.0); // shell
+	plate(p, vec2(r * 0.4, 0.0), length(p - vec2(r * 0.4, 0.0)) - r * 0.26, BOT_LINE * 2.5, 2.0); // nose cap
+	float beat = 0.55 + 0.45 * sin(pc.time * mix(3.0, 18.0, arm) + float(v_id));
+	add += gEye * (0.9 + 1.8 * arm) * beat * soft(length(p) - r * 0.30); // the WARHEAD
+	battle_damage(p, b, HP_SUICIDE);
+}
+
+void gunner(vec2 p, Body b, float t, vec2 aimd, float shoot) {
+	// Rifle mech: a narrow spider chassis shouldering a LONG autogun down `aimd`; with
+	// a lock (`shoot` > 0, allies) it hoses a stream of rounds out to that reach.
+	float r = b.radius;
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = max(r * 0.26, 2.8);
+	lay(vec3(0.015), 0.33 * soft(length(p - vec2(3.0, 5.0)) - r * 0.9));
+	float gt2 = t * (3.0 + length(b.vel) * 0.04);
+	float wUp = r * 0.18, wLo = r * 0.07;
+	mech_leg(p, r,  0.90, gt2,           wUp, wLo);
+	mech_leg(p, r, -0.90, gt2 + 3.14159, wUp, wLo);
+	mech_leg(p, r,  2.30, gt2 + 3.14159, wUp, wLo);
+	mech_leg(p, r, -2.30, gt2,           wUp, wLo);
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.70, r * 0.44)) - r * 0.12, BOT_KHAKI, 1.0);
+	lay(gMark, soft(sd_box(p - vec2(-r * 0.2, 0.0), vec2(r * 0.05, r * 0.34))) * 0.8); // unit band
+	lay(BOT_LINE * 2.6, soft(sd_seg(p, vec2(0.0), aimd * r * 1.45) - r * 0.07)); // the autogun
+	float beat = 0.7 + 0.5 * sin(pc.time * 3.1 + float(v_id) * 0.8);
+	add += gEye * 1.1 * beat * soft(length(p - vec2(r * 0.55, 0.0)) - r * 0.10); // eye
+	if (shoot > 0.0) { // the stream of rounds flowing OUT down the gun line
+		float alongp = dot(p, aimd);
+		float perp = dot(p, vec2(-aimd.y, aimd.x));
+		if (alongp > r * 1.45 && alongp < shoot) {
+			float cycR = fract(alongp / 42.0 - pc.time * 30.0);
+			float slug2 = exp(-pow((cycR - 0.5) * 6.0, 2.0));
+			add += vec3(1.35, 1.0, 0.6) * slug2 * exp(-perp * perp / 2.5) * 1.8;
+		}
+		vec2 muz = aimd * r * 1.5;
+		add += (PAL_EMBER * 1.6 + vec3(0.6)) * exp(-dot(p - muz, p - muz) / 10.0) * (0.6 + 0.4 * sin(pc.time * 87.0 + float(v_id)));
+	}
+	battle_damage(p, b, HP_GUNNER);
+}
+
+void bomber(vec2 p, Body b, float t) {
+	// BOMBER: a big dark delta flying HIGH over everything (drawn large = near the
+	// camera; its shadow runs the ground far below). Yours patrol from the center and
+	// come down WITH the one heavy bomb — the belly load is the glowing tell.
+	float r = b.radius;
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = max(r * 0.2, 3.0);
+	lay(vec3(0.010), 0.30 * soft(sd_box(p - vec2(8.0, 26.0), vec2(r * 1.0, r * 0.6)) - r * 0.2)); // shadow far adrift
+	p *= 0.62; // altitude: the biggest thing in the sky
+	// delta wing: two swept panels meeting at the nose + a spine fuselage
+	for (float s = -1.0; s <= 1.0; s += 2.0) {
+		vec2 q = rot2(s * 0.62) * (p - vec2(-r * 0.15, s * r * 0.42));
+		plate(p, vec2(-r * 0.2, s * r * 0.45), sd_box(q, vec2(r * 0.78, r * 0.16)) - r * 0.05, BOT_OLIVE * 0.85, s + 3.0);
+	}
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.85, r * 0.20)) - r * 0.10, BOT_KHAKI * 0.9, 1.0); // fuselage
+	lay(gMark, soft(sd_box(p - vec2(r * 0.3, 0.0), vec2(r * 0.16, r * 0.045))) * 0.85);        // nose marking
+	for (float s = -1.0; s <= 1.0; s += 2.0) { // twin engines, hot
+		add += PAL_EMBER * 0.9 * soft(length(p - vec2(-r * 0.75, s * r * 0.30)) - r * 0.09) * (0.7 + 0.3 * sin(pc.time * 37.0 + s));
+	}
+	// the BOMB slung under the belly — the warhead band pulses: it's live
+	lay(BOT_LINE * 3.0, soft(sd_box(p - vec2(-r * 0.05, 0.0), vec2(r * 0.22, r * 0.10)) - r * 0.05));
+	float beat = 0.6 + 0.4 * sin(pc.time * 5.0 + float(v_id));
+	add += gEye * 1.3 * beat * soft(sd_box(p - vec2(-r * 0.05, 0.0), vec2(r * 0.05, r * 0.08)));
+	battle_damage(p, b, HP_BOMBER);
+}
+
+// One dispatch for every live/dying chassis sprite. Allies carry their locked target
+// in gen — that gives the gun sprites their tracer reach (and the drones their arming
+// ramp); the ally BODY faces the target, so the gun line is +x in the body frame.
+void bot_sprite(vec2 p, Body b, float t) {
+	vec2 aimd = vec2(1.0, 0.0);
+	float shoot = 0.0, arm = 0.0;
+	if (b.kind == KIND_ALLY && b.gen != 0u) {
+		shoot = distance(BODIES[b.gen - 1u].pos, b.pos);
+		arm = clamp(1.0 - shoot / 900.0, 0.0, 1.0);
+	}
+	if      (b.variant == VAR_SKITTER) { skitter(p, b, t); }
+	else if (b.variant == VAR_BRUTE)   { brute(p, b, t); }
+	else if (b.variant == VAR_TANK)    { tank(p, b, t, aimd, shoot); }
+	else if (b.variant == VAR_RAIDER)  { raider(p, b, t, aimd, shoot); }
+	else if (b.variant == VAR_SUICIDE) { suicide(p, b, t, arm); }
+	else if (b.variant == VAR_GUNNER)  { gunner(p, b, t, aimd, shoot); }
+	else if (b.variant == VAR_BOMBER)  { bomber(p, b, t); }
+	else                               { spider(p, b, t); }
 }
 
 void turret(vec2 p, Body b) {
@@ -570,11 +884,14 @@ void main() {
 	if (b.kind == KIND_DEAD) { discard; }
 	vec2 p = v_local;
 	float t = pc.time + hash1(v_id * 7919u) * TAU;
+	// team paint: YOUR army (and its dying/limping bodies) wears amber, never red
+	if (v_id >= ALLY_LO) { gMark = vec3(0.62, 0.50, 0.28); gEye = PAL_EMBER; }
 	if      (b.kind == KIND_PLAYER) { ship(p, b); }
 	else if (b.kind == KIND_BULLET) { bullet(p, b); }
 	else if (b.kind == KIND_WRECK)  { wreck(p, b); }
 	else if (b.kind == KIND_TURRET) { turret(p, b); }
 	else if (b.kind == KIND_HELPER) { helper(p, b); }
+	else if (b.kind == KIND_ALLY)   { bot_sprite(p, b, t); }
 	else if (b.kind == KIND_DYING && (b.variant == VAR_BOOM || b.variant == VAR_SPARK)) { burst(p, b); }
 	else if (b.kind == KIND_DYING && b.hp < -50.0) {
 		// blast-stamped (the exact circle): a slow smolder that SNAPS red, then the
@@ -582,9 +899,7 @@ void main() {
 		float lf = clamp(b.life / 0.4, 0.0, 1.0); // 1 → 0 over the stamp death
 		float pr = 1.0 - lf;
 		p *= 1.0 + smoothstep(0.75, 1.0, pr) * 0.30; // it slumps down at the end
-		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
-		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
-		else                               { brute(p, b, t); }
+		bot_sprite(p, b, t);
 		float flash = pr * pr * (1.0 - smoothstep(0.88, 1.0, pr) * 0.8); // ease-in, then it cools
 		base = mix(base, vec3(1.35, 0.40, 0.14), flash * 0.95);          // RED-hot, not white
 		base *= 1.0 - smoothstep(0.8, 1.0, pr) * 0.6;                    // charring toward the husk
@@ -600,9 +915,7 @@ void main() {
 		float pop = exp(-prog * 9.0);
 		p /= 1.0 + 0.25 * pop; // squash-and-stretch: an instant puff, deflating fast
 		p += vec2(sin(pc.time * 47.0 + float(v_id)), cos(pc.time * 53.0 + float(v_id))) * 2.2 * (1.0 - prog);
-		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
-		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
-		else                               { brute(p, b, t); }
+		bot_sprite(p, b, t);
 		base = mix(base, vec3(1.05, 0.85, 0.62), smoothstep(0.16, 0.04, prog) * 0.9); // the hard flash
 		if (prog < 0.30) { // comic burst streaks — crisp lines, expanding then gone
 			float bp = prog / 0.30;
@@ -619,14 +932,11 @@ void main() {
 		burst(p, b);
 	}
 	else {
-		float mh = b.variant == VAR_SPIDER ? HP_SPIDER : (b.variant == VAR_SKITTER ? HP_SKITTER : HP_BRUTE);
-		float dmgJ = 1.0 - clamp(b.hp / mh, 0.0, 1.0);
+		float dmgJ = 1.0 - clamp(b.hp / max_hp(b.variant), 0.0, 1.0);
 		if (dmgJ > 0.3) { // crippled machines LIMP — a slow heavy sway, not a vibration
 			p += vec2(sin(pc.time * 6.0 + float(v_id)), cos(pc.time * 7.0 + float(v_id))) * (dmgJ - 0.3) * 2.2;
 		}
-		if      (b.variant == VAR_SPIDER)  { spider(p, b, t); }
-		else if (b.variant == VAR_SKITTER) { skitter(p, b, t); }
-		else                               { brute(p, b, t); }
+		bot_sprite(p, b, t);
 		if (b.life > 0.0 && b.hp > -50.0) { base = mix(base, vec3(1.5, 0.62, 0.28), min(b.life, 1.0) * 0.85); } // hit flash (never on stamped bots)
 	}
 	// the LIVE shockwaves reach into this shader: physics publishes each blast's center
@@ -669,9 +979,12 @@ void main() {
 	// city.frag draws, and if a building covers this pixel the building is in front (a
 	// bot on the street behind a tower must NOT be painted onto its roof). This also
 	// clips legs/sparks poking into facades at ground level. Salvage drones, artillery
-	// shells and hoisted wrecks (variant flag) fly ABOVE it all and skip the test.
+	// shells, hoisted wrecks (variant flag), the airborne ally classes (suicide drones,
+	// bombers) and the player's WING fly ABOVE it all and skip the test.
 	if (b.kind != KIND_HELPER && b.kind != KIND_BULLET
 	    && !(b.kind == KIND_WRECK && b.variant == 1u)
+	    && !(b.kind == KIND_ALLY && (b.variant == VAR_SUICIDE || b.variant == VAR_BOMBER))
+	    && !(b.kind == KIND_PLAYER && b.variant == RIDE_WING)
 	    && (cov > 0.003 || dot(add, add) > 0.00001)) {
 		vec2 g0 = pc.cam + (gl_FragCoord.xy - pc.screen * 0.5) * ZOOM;
 		// the march column can only intersect buildings if it reaches inside the city —

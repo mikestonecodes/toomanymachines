@@ -27,7 +27,7 @@ GRID_SIZE  :: 192
 GRID_CELLS :: GRID_SIZE * GRID_SIZE
 CELL_CAP   :: 64
 CELL_SIZE  :: WORLD / f32(GRID_SIZE)
-BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS + MAX_TURRETS + MAX_HELPERS
+BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS + MAX_TURRETS + MAX_HELPERS + MAX_ALLIES
 CITY_KMAX  :: u32(16) // block layout table: rings ×
 CITY_JMAX  :: u32(10) //   sectors — the CPU generates it ONCE (game_init), both sides read Res.City
 SKID_RES   :: u32(4700) // rubber decal grid: 1 byte per 4×4 world px — the CPU stamps wheel

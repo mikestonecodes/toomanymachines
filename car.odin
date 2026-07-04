@@ -26,19 +26,39 @@ KIND_DYING  :: u32(4) // death-burst animation, then WRECK (enemies) or DEAD
 KIND_WRECK  :: u32(5) // shot-down mech husk: towable, feed it to the pit
 KIND_TURRET :: u32(6) // static defense tower (perimeter laser / inner machine gun)
 KIND_HELPER :: u32(7) // friendly salvage drone: hauls wrecks to the pit on its own
+KIND_ALLY   :: u32(8) // YOUR army: tanks/gun-cars/gunner mechs pushing out the avenues,
+                      //   suicide drones + bombers staged at the CENTER, sortieing out
 VAR_SPIDER  :: u32(0)
 VAR_SKITTER :: u32(1)
 VAR_BRUTE   :: u32(2)
 VAR_SPARK   :: u32(3) // pit-sink burst (small, fast)
-VAR_BOOM    :: u32(4) // bullet detonation: an expanding shockwave that flings the horde
+VAR_BOOM    :: u32(4) // detonation: an expanding shockwave that flings the horde
+VAR_TANK    :: u32(5) // ally tracked tank: holds the line, shells the horde
+VAR_RAIDER  :: u32(6) // ally gun-car: circles its prey, strafing
+VAR_SUICIDE :: u32(7) // ally flying drone bomb: staged at the center, dives the horde
+VAR_GUNNER  :: u32(8) // ally rifle mech: marches the avenues hosing autofire
+VAR_BOMBER  :: u32(9) // ally high wing: patrols from the center, dive-bombs warbands
+// the GARAGE — 1..9 pick what the PLAYER body is (player.variant = ride index)
+RIDE_TRUCK    :: u32(0)
+RIDE_BUGGY    :: u32(1)
+RIDE_SPORT    :: u32(2)
+RIDE_APC      :: u32(3)
+RIDE_TANK     :: u32(4) // the huge tank
+RIDE_GUNNER   :: u32(5)
+RIDE_MECH     :: u32(6)
+RIDE_COLOSSUS :: u32(7) // ABSOLUTELY MASSIVE mech — its laser scales up (laser_k)
+RIDE_WING     :: u32(8) // you fly: no building collision, no contact
 MAX_ENEMIES :: 80000
 MAX_BULLETS :: 384
 MAX_TURRETS :: 64
 MAX_HELPERS :: 240 // a SWARM of salvage drones — they do all the hauling
+MAX_ALLIES  :: 64  // the army (one shared-cache page: slots 0-17 tanks, 18-31 gun-cars,
+                   //   32-43 gunner mechs, 44-55 suicide drones, 56-63 bombers)
 ENEMY_LO    :: 1
 BULLET_LO   :: 1 + MAX_ENEMIES
 TURRET_LO   :: BULLET_LO + MAX_BULLETS
 HELPER_LO   :: TURRET_LO + MAX_TURRETS
+ALLY_LO     :: HELPER_LO + MAX_HELPERS
 CAR_RADIUS  :: f32(20)
 WORLD       :: f32(18800) // world is [0,WORLD]²; the city grows from the center, wasteland everywhere else
 PIT_R       :: f32(230)          // the corpse pit at the world center
@@ -50,6 +70,7 @@ STREET_HW   :: f32(105)          // street half-width (the paved part) — wide 
 BLDG_EDGE   :: STREET_HW + 14    // building facades rise at this distance from the centerline
 PLAZA_P     :: f32(0.14)         // chance a block hosts a plaza — almost everything is BUILT
 PLAZA_R     :: f32(215)          // the plaza: a CIRCLE carved out of its block, ringed by houses
+MAIN_XW     :: f32(150)  // the MAIN STREET: the j=0 avenue (due east, straight to the pit) gets this much EXTRA half-width — a monumental boulevard
 SPAWN_MIN_D :: f32(680)  // spawns avoid appearing this close to the ship
 WRECK_T     :: f32(90)   // a wreck rots away after this long if not fed to the pit
 LASER_LEN   :: f32(1400) // the ship's giant laser: reach,
@@ -75,25 +96,62 @@ SPD_BRUTE   :: f32(80)
 R_SPIDER    :: f32(15)
 R_SKITTER   :: f32(9)
 R_BRUTE     :: f32(27)
+R_TANK      :: f32(28) // ally chassis sizes
+R_RAIDER    :: f32(14)
+R_SUICIDE   :: f32(12)
+R_GUNNER    :: f32(17)
+R_BOMBER    :: f32(30)
 HP_SPIDER   :: f32(3)
 HP_SKITTER  :: f32(1)
 HP_BRUTE    :: f32(10)
+HP_TANK     :: f32(40) // ally hit points (spawn_ally in physics.comp + battle_damage read these)
+HP_RAIDER   :: f32(12)
+HP_SUICIDE  :: f32(6)
+HP_GUNNER   :: f32(16)
+HP_BOMBER   :: f32(12)
+TANK_RATE   :: f32(0.45) // ally tank cannon: volleys per second,
+TANK_MV     :: f32(2000) //   shell muzzle velocity (px/s),
+TANK_RNG    :: f32(950)  //   engagement range — enemies + body.frag derive the slug from time + slot id
+RAID_RNG    :: f32(520)  // ally gun-car firing range (it orbits its prey at ~320)
+GUN_RNG     :: f32(720)  // ally gunner mech stream range
 KNOCKBACK   :: f32(90)
 ZOOM        :: f32(1.35) // world px per screen px — pulled back so the horde reads
 LEAN        :: f32(95)   // oblique fake-3D: world px of straight up-screen lean per unit height — a pure TRANSLATION, so buildings never shear. Tuned so towers read TALL while the view stays TOP-DOWN
 HMAX        :: f32(3.0)  // height ceiling (march top): ordinary buildings live ≤ 1.0, SKYSCRAPERS/landmarks/giants climb WAY above it
 // @glsl-end
 
-// CPU-only tuning.
-SHIP_ACCEL     :: f32(1600)
-SHIP_REV       :: f32(900)
-SHIP_MAX       :: f32(760)
-SHIP_BOOST_MAX :: f32(1150)
-SHIP_DRAG      :: f32(1.15) // 1/s forward decay — stops when you let off
-SHIP_GRIP      :: f32(9.0)  // 1/s lateral bleed — HIGH: corners on rails, no drift-drag
-SHIP_TURN      :: f32(3.4)  // rad/s max yaw
+// CPU-only tuning — the GARAGE. Keys 1-9 pick the ride, F/G/H/J/K/L pick its build,
+// Q/E/R/T/Y/U/I/O/P pick the weapon (W/A/S/D keep driving; restart moved to BACKSPACE).
+Ride_Def :: struct {
+	r, accel, rev, max, boost, grip, drag, turn, fire: f32, // chassis + drive feel + cadence mult
+	walker, airborne: bool, // walkers never drift; airborne skips buildings + contact
+}
+RIDES := [9]Ride_Def{
+	{20, 1600,  900,  760, 1150,  9.0, 1.15, 3.4, 1.00, false, false}, // 1 TRUCK — the classic
+	{14, 2100, 1100,  980, 1400,  7.0, 1.05, 4.2, 0.80, false, false}, // 2 BUGGY — light gun-car
+	{16, 2400, 1000, 1150, 1550,  5.0, 0.90, 3.8, 0.95, false, false}, // 3 SPORT — loose-tail drift missile
+	{27, 1300,  700,  540,  760, 11.0, 1.60, 2.6, 0.85, false, false}, // 4 APC — heavy plow
+	{40, 1100,  600,  310,  420, 14.0, 2.20, 1.9, 2.30, true,  false}, // 5 TANK — huge, slow, heavy gun
+	{24, 2200,  900,  400,  600, 12.0, 2.80, 3.0, 0.50, true,  false}, // 6 GUNMECH — nimble walker battery
+	{36, 2400,  900,  340,  560, 12.0, 3.00, 2.6, 0.60, true,  false}, // 7 MECH — the big walker
+	{66, 1600,  700,  210,  330, 14.0, 3.20, 1.5, 0.45, true,  false}, // 8 COLOSSUS — massive; HUGE laser
+	{30, 2000, 1000, 1050, 1500,  2.2, 0.55, 3.2, 0.70, false, true},  // 9 WING — you FLY
+}
+STYLES := [6]struct { scale, speed, fire: f32 }{ // F G H J K L — the build of the ride
+	{1.00, 1.00, 1.00}, // F standard
+	{0.80, 1.30, 0.85}, // G scout — smaller, faster
+	{1.30, 0.80, 1.20}, // H heavy — bigger, slower
+	{0.90, 1.55, 1.00}, // J racer
+	{1.60, 0.62, 1.45}, // K colossal
+	{1.10, 1.10, 0.62}, // L prototype — rapid fire
+}
+Weapon :: enum { Cannon, Auto, Burst, Rail, Mortar, Lance, Nova, Wall, Airstrike } // Q E R T Y U I O P
+WEAPON_INT := [Weapon]f32{ // seconds between triggers, × ride.fire × style.fire
+	.Cannon = 0.24, .Auto = 0.07, .Burst = 0.55, .Rail = 0.60, .Mortar = 0.95,
+	.Lance = 0.10, .Nova = 1.60, .Wall = 1.60, .Airstrike = 3.00,
+}
 BULLET_RADIUS  :: f32(11)
-FIRE_INTERVAL  :: f32(0.24) // heavy but generous — a steady thump of shells
+VEL_HARD_CAP   :: f32(1800) // wall bounces must never add net energy, whatever the ride
 CITY_R0        :: f32(5200) // starting city radius — BIG for now, to test the city itself
 CITY_RMAX      :: f32(8200) // sprawl limit (grid edge is at 9400)
 DEPOSIT_GROW   :: f32(60)   // city radius gained per corpse fed to the pit
@@ -112,6 +170,9 @@ fire_timer:  f32
 bullet_head: int
 barrel:      f32 // the two barrels alternate: ±1
 run_seed:      u32 // per-run salt for the warband cluster hash
+ride:          int // 1-9: which garage vehicle the player body is (index into RIDES)
+style:         int // F/G/H/J/K/L: the ride's build (index into STYLES)
+weapon:        Weapon // Q..P: what LMB does
 city_r:        f32 // current city radius — grows as the pit is fed (pushed to the GPU)
 deposits_seen: u32 // last pit-counter value read from the Stats buffer
 input:       struct { up, down, left, right, fire, boost, ebrake, laser: bool, mouse: [2]f32 }
@@ -136,8 +197,10 @@ street_dist :: proc(p: [2]f32) -> f32 {
 	d := abs(r - max(math.round(r / RING_SP), 1) * RING_SP)
 	sa := math.atan2(q.y, q.x) - SPIRAL * r
 	stp := f32(math.TAU) / (SPOKES * 0.5)
-	da := sa - math.round(sa / stp) * stp
-	d = min(d, abs(da) * r)
+	jn := math.round(sa / stp)
+	ds := abs(sa - jn * stp) * r
+	if jn == 0 { ds -= MAIN_XW } // the j=0 avenue is the MAIN STREET — MAIN_XW wider, all the way to the pit
+	d = min(d, ds)
 	if r > SPOKE2_R {
 		sa2 := sa + stp * 0.5
 		da2 := sa2 - math.round(sa2 / stp) * stp
@@ -173,8 +236,10 @@ block_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	di := r - kb * RING_SP        // to the inner ring centerline
 	douter := (kb + 1) * RING_SP - r // to the outer ring centerline
 	stp := f32(math.TAU) / (SPOKES * 0.5)
-	da := sa - math.round(sa / stp) * stp
+	jn := math.round(sa / stp)
+	da := sa - jn * stp
 	ds := abs(da) * r             // arc distance to the nearest spoke
+	if jn == 0 { ds -= MAIN_XW }  // the MAIN STREET's faces sit MAIN_XW further back
 	sgn := -math.sign(da)
 	if r > SPOKE2_R {
 		sa2 := sa + stp * 0.5
@@ -205,6 +270,8 @@ game_init :: proc() {
 	cam_shake, muzzle, throttle_v, boost_v, laser_v, fire_timer = 0, 0, 0, 0, 0, 0
 	bullet_head = 0
 	barrel = 1
+	ride, style = 0, 0
+	weapon = .Cannon
 	input = {}
 	deposits_seen = 0
 	for i in 0 ..< 64 { stats_at(i)^ = 0 }
@@ -265,6 +332,13 @@ game_init :: proc() {
 		a := f32(i) * f32(math.TAU) / MAX_HELPERS
 		body_at(HELPER_LO + i)^ = {pos = CENTER + [2]f32{math.cos(a), math.sin(a)} * (PIT_R + 140), radius = R_HELPER, angle = a, kind = KIND_HELPER}
 	}
+
+	// The ARMY assembles at the CENTER: seed the slots dead with an instant countdown —
+	// physics.comp's spawn_ally (the ONE source of ally stats/roles) births them on the
+	// pit apron the first frame, and the columns march out the avenues from there.
+	for i in 0 ..< MAX_ALLIES {
+		body_at(ALLY_LO + i)^ = {kind = KIND_DEAD, life = 0.01, radius = 1}
+	}
 }
 
 // The same integer hash the shaders use (hash1 in common.glsl) — cluster centers need
@@ -280,12 +354,14 @@ CLUSTER_SIZE :: 40 // bots per warband
 
 // An enemy already mid-march at game start: warbands of CLUSTER_SIZE dotted around the
 // wasteland (a uniform 80k scatter is a wall-to-wall carpet — packs leave readable
-// ground). Variant mix 60/30/10 — matches spawn_enemy in physics.comp.
+// ground). Variant mix 60/30/10 — matches spawn_enemy in physics.comp. The horde is
+// walkers only; the armor classes are YOURS (KIND_ALLY).
 spawn_initial :: proc(i: int) -> (b: Body) {
 	rv := rand.float32()
+	hr := rand.float32_range(0.85, 1.15)
 	switch {
-	case rv < 0.6: b.variant = VAR_SPIDER; b.radius = R_SPIDER * rand.float32_range(0.85, 1.15); b.hp = HP_SPIDER
-	case rv < 0.9: b.variant = VAR_SKITTER; b.radius = R_SKITTER * rand.float32_range(0.85, 1.15); b.hp = HP_SKITTER
+	case rv < 0.6: b.variant = VAR_SPIDER; b.radius = R_SPIDER * hr; b.hp = HP_SPIDER
+	case rv < 0.9: b.variant = VAR_SKITTER; b.radius = R_SKITTER * hr; b.hp = HP_SKITTER
 	case:          b.variant = VAR_BRUTE; b.radius = R_BRUTE * rand.float32_range(0.9, 1.1); b.hp = HP_BRUTE
 	}
 	ci := u32(i / CLUSTER_SIZE) * 7919 + run_seed
@@ -337,48 +413,75 @@ game_update :: proc(dt: f32) {
 	boosting := input.boost && throttle > 0
 
 	sp := linalg.length(car_vel)
-	// e-brake: the rear breaks LOOSE — sharper steering, collapsed lateral grip, hard
-	// speed bleed: yank the wheel + Space = handbrake drift
-	turn := f32(SHIP_TURN) * (input.ebrake ? 1.45 : 1.0)
-	grip := input.ebrake ? f32(1.1) : f32(SHIP_GRIP)
+	// e-brake (cars only): the rear breaks LOOSE — sharper steering, collapsed lateral
+	// grip, hard speed bleed: yank the wheel + Space = handbrake drift. Walkers plant
+	// and pound; the WING just banks through the air (no buildings, no contact).
+	rd := RIDES[ride]
+	st := STYLES[style]
+	pr := rd.r * st.scale
+	drift := !rd.walker && !rd.airborne
+	ebrake := input.ebrake && drift
+	turn := rd.turn * (ebrake ? 1.45 : 1.0)
+	grip := ebrake ? f32(1.1) : rd.grip
 	car_angle += steer * turn * dt * (0.55 + 0.45 * clamp(sp / 420, 0, 1))
 	fwd := [2]f32{math.cos(car_angle), math.sin(car_angle)}
-	accel := throttle > 0 ? f32(SHIP_ACCEL) : f32(SHIP_REV)
+	accel := (throttle > 0 ? rd.accel : rd.rev) * st.speed
 	if boosting { accel *= 1.9 }
 	car_vel += fwd * throttle * accel * dt
-	if input.ebrake { car_vel *= math.exp(-1.9 * dt) }
+	if ebrake { car_vel *= math.exp(-1.9 * dt) }
 	vf := linalg.dot(car_vel, fwd)
 	side := car_vel - fwd * vf
-	vf *= math.exp(-SHIP_DRAG * dt)
+	vf *= math.exp(-rd.drag * dt)
 	side *= math.exp(-grip * dt)
 	car_vel = fwd * vf + side
-	maxsp := boosting ? f32(SHIP_BOOST_MAX) : f32(SHIP_MAX)
+	maxsp := (boosting ? rd.boost : rd.max) * st.speed
 	if sp = linalg.length(car_vel); sp > maxsp {
 		car_vel *= 1 - (1 - maxsp / sp) * (1 - math.exp(-3 * dt)) // soft cap: boost bleeds off, no jerk
 	}
 	car_pos += car_vel * dt
-	collide_city(&car_pos, &car_vel, CAR_RADIUS)
+	if !rd.airborne { collide_city(&car_pos, &car_vel, pr) }
 	for a in 0 ..< 2 {
-		if car_pos[a] < CAR_RADIUS + 4 { car_pos[a] = CAR_RADIUS + 4; car_vel[a] = max(car_vel[a], 0) }
-		if car_pos[a] > WORLD - CAR_RADIUS - 4 { car_pos[a] = WORLD - CAR_RADIUS - 4; car_vel[a] = min(car_vel[a], 0) }
+		if car_pos[a] < pr + 4 { car_pos[a] = pr + 4; car_vel[a] = max(car_vel[a], 0) }
+		if car_pos[a] > WORLD - pr - 4 { car_pos[a] = WORLD - pr - 4; car_vel[a] = min(car_vel[a], 0) }
 	}
-	// the horde is PHYSICAL: bot contacts accumulate a shove on the GPU (STATS[30/31],
-	// summed int px/s²) — apply it to the car and clear for the next frame
+	// the horde is PHYSICAL: bot contacts + incoming tank/raider/gunner fire accumulate
+	// a shove on the GPU (STATS[30/31], summed int px/s²) — apply it to the car (and
+	// rattle the camera in proportion: getting shot at FEELS like something)
 	shx := transmute(i32)stats_at(30)^
 	shy := transmute(i32)stats_at(31)^
 	if shx != 0 || shy != 0 {
 		acc := [2]f32{f32(shx), f32(shy)}
 		if l := linalg.length(acc); l > 2600 { acc *= 2600 / l }
 		car_vel += acc * dt
+		cam_shake = min(cam_shake + linalg.length(acc) * dt * 0.003, 7)
 		stats_at(30)^ = 0
 		stats_at(31)^ = 0
 	}
 	throttle_v += (abs(throttle) - throttle_v) * (1 - math.exp(-8 * dt))
 	boost_v += ((boosting ? f32(1) : 0) - boost_v) * (1 - math.exp(-7 * dt))
-	laser_v += ((input.laser ? f32(1) : 0) - laser_v) * (1 - math.exp(-9 * dt))
+	// the LANCE weapon (U) fires the laser off LMB too — RMB always burns it
+	las := input.laser || (weapon == .Lance && input.fire)
+	laser_v += ((las ? f32(1) : 0) - laser_v) * (1 - math.exp(-9 * dt))
 	perp := [2]f32{-fwd.y, fwd.x}
-	lean := clamp(linalg.dot(car_vel, perp) / 520, -1, 1) // drift slip → banking, read by body.frag
-	body_at(0)^ = {pos = car_pos, vel = car_vel, radius = CAR_RADIUS, life = lean, angle = car_angle, kind = KIND_PLAYER}
+	// drift slip → banking, read by body.frag (walkers never bank — they stride)
+	lean := drift ? clamp(linalg.dot(car_vel, perp) / 520, -1, 1) : 0
+	// hp=999: battle_damage's soot/ember overlay must never touch the player's rig
+	body_at(0)^ = {pos = car_pos, vel = car_vel, radius = pr, life = lean, hp = 999, angle = car_angle, kind = KIND_PLAYER, variant = u32(ride), gen = u32(style)}
+
+	// ── blast pressure: every detonation near the player SHOVES the ride and rattles
+	// the camera — physics publishes the live blast list into STATS[2..] (the same list
+	// the composite warps the screen with). Suicide drones hit HARD through this.
+	nblast := min(int(stats_at(2)^), 8)
+	for i in 0 ..< nblast {
+		bp := [2]f32{transmute(f32)stats_at(3 + i * 3)^, transmute(f32)stats_at(4 + i * 3)^}
+		prog := transmute(f32)stats_at(5 + i * 3)^
+		off := car_pos - bp
+		if l := linalg.length(off); l > 0.001 && l < BOOM_R * 1.4 {
+			k := (1 - prog) * (1 - l / (BOOM_R * 1.4))
+			car_vel += off / l * 2400 * k * dt
+			cam_shake = min(cam_shake + 30 * k * dt, 8)
+		}
+	}
 
 	// ── skid marks: while the tail is loose, stamp rubber into the decal grid — REAL
 	// persistent texture on the ground (city.frag samples it)
@@ -421,30 +524,60 @@ game_update :: proc(dt: f32) {
 		cam_shake = min(cam_shake + laser_v * 7 * dt, 4)
 	}
 
-	// ── fire: dual alternating barrels — the shell flies STRAIGHT to the cursor and
-	// detonates exactly there (life = flight time to the aim point; physics booms on expiry).
+	// ── fire (LMB): every weapon is a PATTERN of the same detonating shell — each one
+	// flies STRAIGHT to its target point and booms exactly there (life = flight time;
+	// physics booms on expiry). Q..P pick the pattern; cadence scales with the ride.
 	fire_timer -= dt
-	if input.fire && fire_timer <= 0 {
+	if input.fire && weapon != .Lance && fire_timer <= 0 {
 		if off := aim_world - car_pos; linalg.length(off) > 0.001 {
 			a := linalg.normalize(off)
 			ap := [2]f32{-a.y, a.x}
-			flight := max(linalg.length(off) - (CAR_RADIUS + 14), 40) / BULLET_SPEED
-			body_at(BULLET_LO + bullet_head)^ = {
-				pos    = car_pos + a * (CAR_RADIUS + 14) + ap * (barrel * 5),
-				vel    = a * BULLET_SPEED,
-				radius = BULLET_RADIUS,
-				hp     = flight, // TOTAL flight time — shaders derive distance-travelled (the trail it leaves)
-				life   = flight, // remaining flight time (physics booms on expiry)
-				angle  = math.atan2(a.y, a.x), kind = KIND_BULLET, variant = VAR_BOOM,
+			muz := car_pos + a * (pr + 14) + ap * (barrel * (rd.walker ? pr * 0.44 : 5))
+			switch weapon {
+			case .Cannon: spawn_shell(muz, aim_world, BULLET_SPEED)
+			case .Auto:   spawn_shell(muz, aim_world + {rand.float32_range(-34, 34), rand.float32_range(-34, 34)}, BULLET_SPEED)
+			case .Burst:  for i in -1 ..= 1 { spawn_shell(muz, aim_world + ap * (f32(i) * 90), BULLET_SPEED) }
+			case .Rail:   spawn_shell(muz, aim_world, 4400) // near-hitscan slug
+			case .Mortar: for _ in 0 ..< 5 { spawn_shell(muz, aim_world + {rand.float32_range(-150, 150), rand.float32_range(-150, 150)}, BULLET_SPEED) }
+			case .Lance:  // handled above: LMB holds the laser
+			case .Nova:   for i in 0 ..< 8 { // defensive ring blast around the rig
+				d := [2]f32{math.cos(f32(i) * f32(math.TAU) / 8), math.sin(f32(i) * f32(math.TAU) / 8)}
+				spawn_shell(car_pos + d * (pr + 12), car_pos + d * 320, BULLET_SPEED)
 			}
-			bullet_head = (bullet_head + 1) % MAX_BULLETS
-			fire_timer = FIRE_INTERVAL
+			case .Wall: for i in -2 ..= 2 { spawn_shell(muz, aim_world + ap * (f32(i) * 130), BULLET_SPEED) } // area-denial line
+			case .Airstrike: for i in 0 ..< 7 { // the strike: a stick of shells sweeping in
+				// along the aim line, detonations marching down-range one after another
+				t := aim_world + a * (f32(i - 3) * 105)
+				fl := 0.22 + f32(i) * 0.055
+				spawn_shell(t - a * (BULLET_SPEED * fl), t, BULLET_SPEED)
+			}
+			}
+			fire_timer = WEAPON_INT[weapon] * rd.fire * st.fire
 			barrel = -barrel
 			muzzle = 1
-			cam_shake = min(cam_shake + 4.2, 8) // artillery, not a rifle
-			car_vel -= a * 58                   // heavy recoil
+			heavy := weapon == .Rail || weapon == .Airstrike || ride == int(RIDE_TANK)
+			cam_shake = min(cam_shake + (heavy ? 6.0 : rd.walker ? 2.6 : 4.2), 8)
+			car_vel -= a * (rd.walker ? 16 : 58) * (weapon == .Auto ? 0.3 : 1) // recoil
 		}
 	}
+}
+
+// One detonating shell, flying straight from → to and booming exactly there.
+spawn_shell :: proc(from, to: [2]f32, speed: f32) {
+	off := to - from
+	l := linalg.length(off)
+	if l < 0.001 { return }
+	a := off / l
+	flight := max(l, 40) / speed
+	body_at(BULLET_LO + bullet_head)^ = {
+		pos    = from,
+		vel    = a * speed,
+		radius = BULLET_RADIUS,
+		hp     = flight, // TOTAL flight time — shaders derive distance-travelled (the trail it leaves)
+		life   = flight, // remaining flight time (physics booms on expiry)
+		angle  = math.atan2(a.y, a.x), kind = KIND_BULLET, variant = VAR_BOOM,
+	}
+	bullet_head = (bullet_head + 1) % MAX_BULLETS
 }
 
 // Push the car out of the solid block under it, kill velocity into the block face.
@@ -456,5 +589,5 @@ collide_city :: proc(pos: ^[2]f32, vel: ^[2]f32, r: f32) {
 	pos^ += n * (r - sd)
 	if vn := linalg.dot(vel^, n); vn < 0 { vel^ -= n * vn * 1.2 } // cancel + a small bounce
 	// never let wall bounces add net energy (a corner wedge would slingshot the ship)
-	if sp := linalg.length(vel^); sp > SHIP_BOOST_MAX { vel^ *= SHIP_BOOST_MAX / sp }
+	if sp := linalg.length(vel^); sp > VEL_HARD_CAP { vel^ *= VEL_HARD_CAP / sp }
 }

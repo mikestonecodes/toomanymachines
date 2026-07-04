@@ -11,7 +11,7 @@ import "core:time"
 //
 // Input injection: the loop (main.odin) calls dbg_drive_frame() every frame, AFTER it
 // has read the live keyboard/mouse, so a drive can override `input` (car.odin) — WASD =
-// input.up/down/left/right, aim = input.mouse, LMB = input.fire. game_init() = the R key.
+// input.up/down/left/right, aim = input.mouse, LMB = input.fire. game_init() = the BACKSPACE key.
 when ODIN_DEBUG {
 
 // Screenshot: queue a capture of the next composited swapchain frame → JPEG at `path`.
@@ -72,7 +72,7 @@ gpuav_drive :: proc(frame_n: int) {
 
 // === INJECT TEST CODE HERE ===  (run: `bash run.sh test`)
 // Drive with input.up/down/left/right/fire + input.mouse, capture with
-// dbg_screenshot("name"), finish with dbg_exit(). game_init() restarts (the R key).
+// dbg_screenshot("name"), finish with dbg_exit(). game_init() restarts (BACKSPACE).
 debug_test_run :: proc() {
 	@(static) step := 0
 	@(static) t0, last: time.Tick
