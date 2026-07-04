@@ -1,5 +1,11 @@
 /toomanymachines
 /toomanymachines-shot
+/toomanymachines_profile
+/citybake
+tools/citybake/gen/
+assets/city.cache
+.ngfx-perf/
+.nsys-reports/
 *.o
 shaders/gen.glsl
 shaders/spv/

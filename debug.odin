@@ -12,7 +12,7 @@ import "core:time"
 // Input injection: the loop (main.odin) calls dbg_drive_frame() every frame, AFTER it
 // has read the live keyboard/mouse, so a drive can override `input` (car.odin) — WASD =
 // input.up/down/left/right, aim = input.mouse, LMB = input.fire. game_init() = the BACKSPACE key.
-when ODIN_DEBUG {
+when DBG_BUILD {
 
 // Screenshot: queue a capture of the next composited swapchain frame → JPEG at `path`.
 // The fence-wait + save lives in vk.odin's frame_end; `shot.want` clears once it lands,
@@ -82,6 +82,18 @@ debug_test_run :: proc() {
 	step += 1
 	now := time.tick_now()
 	if step == 1 { t0 = now; last = now; car_pos = CENTER + {1100, -1100}; cam = car_pos }
+	// profile.sh sets TMM_PROFILE=1: keep driving the same fight forever (aim sweeps + fire)
+	// so an external profiler (ngfx multi-pass GPU Trace / nsys) owns the process lifetime —
+	// no 600-frame report, no self-exit.
+	@(static) profiling := -1
+	if profiling < 0 { profiling = os.get_env("TMM_PROFILE", context.temp_allocator) == "1" ? 1 : 0 }
+	if profiling == 1 {
+		input.up, input.fire = true, true
+		input.laser = sim_time >= 4.0
+		ang := f32(step) * 0.05
+		input.mouse = {f32(win_w) * 0.5 + math.cos(ang) * 240, f32(win_h) * 0.5 + math.sin(ang) * 240}
+		return
+	}
 	ft := time.duration_milliseconds(time.tick_diff(last, now))
 	last = now
 	@(static) usum, rsum, asum, ssum: f64

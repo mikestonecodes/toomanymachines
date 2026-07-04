@@ -35,6 +35,13 @@ SKID_RES   :: u32(4700) // rubber decal grid: 1 byte per 4×4 world px — the C
 IMG_SCENE  :: u32(0)
 IMG_BLOOMA :: u32(1)
 IMG_BLOOMB :: u32(2)
+IMG_CITYC  :: u32(3)  // the CITY CACHE: the whole static building layer pre-marched once
+// (offline `./toomanymachines bake` → assets/city.cache), loaded as a texture the game just
+// SAMPLES instead of ray-marching every pixel. 1 texel = ZOOM world px = 1 screen px, so a
+// texel-snapped camera makes the NEAREST fetch byte-identical to the live march it replaced.
+CACHE_DIM    :: u32(8192)   // covers the city disk (CITY_R0 + LEAN·HMAX projection) at full res
+CACHE_ORIGIN :: 2867 * ZOOM // world px of texel (0,0); 2867 chosen so ORIGIN/ZOOM is integer
+                            // AND ORIGIN + CACHE_DIM·ZOOM/2 ≈ WORLD·0.5 (centered on the city)
 // @glsl-end
 MODE_COUNT :: 3 // CPU-only: number of compute passes per frame
 
@@ -54,11 +61,14 @@ BUF_SPECS := [Res]BufSpec{
 
 // ── offscreen images ── HDR render targets for the post chain, (re)created with the swapchain.
 // Row order is the binding-1 bindless slot (IMG_* constants above index them from shaders).
-Img :: enum { Scene, BloomA, BloomB }
+Img :: enum { Scene, BloomA, BloomB, CityC }
 IMG_SPECS := [Img]ImgSpec{
 	.Scene  = {div = 1}, // full-res HDR scene (city + bodies)
 	.BloomA = {div = 2}, // half-res bloom ping (bright-extract + horizontal blur)
 	.BloomB = {div = 2}, // half-res bloom pong (vertical blur)
+	// the city cache is FIXED-size + world-anchored (not swapchain-relative), so it lives
+	// outside the swapchain create/resize path — city_cache.odin owns its image + memory.
+	.CityC  = {fixed = CACHE_DIM},
 }
 
 // ── pipelines ── add one = one row + its compiled .spv stages. `compute` picks the type;
@@ -85,8 +95,15 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	// BEFORE input sampling so the frame is recorded from fresh input (main.odin).
 	w, h := f32(win_w), f32(win_h)
 	shake := [2]f32{math.sin(sim_time * 143), math.cos(sim_time * 119)} * cam_shake
+	// SNAP the view to whole city-cache texels (1 texel = ZOOM world px). Every layer reads
+	// pc.cam, so this quantizes the whole frame's pan by ≤1 screen px coherently (no inter-
+	// layer shimmer) — and makes each pixel's g0 land on a texel CENTER, so the cache's
+	// NEAREST fetch reproduces the old per-pixel march byte-for-byte. Aim/physics keep the
+	// unsnapped cam (a ≤1px reticle offset, invisible).
+	cs := cam + shake
+	scam := [2]f32{math.round(cs.x / ZOOM), math.round(cs.y / ZOOM)} * ZOOM
 	// pfire: the mounted weapons' hold envelope — for the SINGULARITY it IS the charge
-	pc := Push{screen = {w, h}, cam = cam + shake, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, pfire = weapon == .Sing ? sing_charge : fire_v, city_r = city_r, angle = car_angle, pweap = u32(weapon)}
+	pc := Push{screen = {w, h}, cam = scam, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, pfire = weapon == .Sing ? sing_charge : fire_v, city_r = city_r, angle = car_angle, pweap = u32(weapon)}
 
 	vk.CmdBindPipeline(cmd, .COMPUTE, pipelines[.Physics])
 	groups := (u32(max(GRID_CELLS, BODY_COUNT)) + 63) / 64

@@ -21,6 +21,9 @@
 layout(location = 0) in vec2      v_local;
 layout(location = 1) in flat uint v_id;
 layout(location = 0) out vec4 o_color;
+// the CITY CACHE (Img.CityC) — sampled for building occlusion (see the occlusion test in
+// main), replacing a duplicated 8-step house_at march.
+layout(set = 0, binding = 1) uniform sampler2D TEXS[];
 
 const vec3 BOT_ORANGE = vec3(0.72, 0.14, 0.05);  // red unit marking
 const vec3 BOT_LINE   = vec3(0.045, 0.045, 0.040); // panel lining / lower struts
@@ -1227,19 +1230,14 @@ void main() {
 	    && !(b.kind == KIND_ALLY && (b.variant == VAR_SUICIDE || b.variant == VAR_BOMBER))
 	    && !(b.kind == KIND_PLAYER && b.variant == RIDE_WING)
 	    && (cov > 0.003 || dot(add, add) > 0.00001)) {
+		// building occlusion: a bot behind a building must not paint onto its roof. This
+		// used to re-march house_at 8× here; now it's one fetch of the SAME baked cache
+		// city.frag reads. Alpha > 0.75 = a HOUSE hit (0.5 plinth doesn't occlude — bots
+		// stand on the plinth yard), byte-identical to the old house-only test.
 		vec2 g0 = pc.cam + (gl_FragCoord.xy - pc.screen * 0.5) * ZOOM;
-		// the march column can only intersect buildings if it reaches inside the city —
-		// the wasteland horde (most of the 80k) skips this entirely
-		vec2 ctrw = vec2(WORLD * 0.5);
-		if (min(distance(g0, ctrw), distance(g0 + vec2(0.0, LEAN * HMAX), ctrw)) < pc.city_r) {
-			for (int i = 0; i < 8; i++) {
-				float u = 1.0 - float(i) / 7.0;
-				float tq = HMAX * u * u; // quadratic march: dense near the GROUND, where
-				                         // low roof edges used to leak bots over them
-				House hs = house_at(g0 + vec2(0.0, LEAN) * tq);
-				if (hs.ok && hs.sd <= 0.0 && house_h(hs) >= tq) { discard; }
-			}
-		}
+		ivec2 tx = ivec2(floor((g0 - vec2(CACHE_ORIGIN)) / ZOOM));
+		if (all(greaterThanEqual(tx, ivec2(0))) && all(lessThan(tx, ivec2(int(CACHE_DIM))))
+		    && texelFetch(TEXS[IMG_CITYC], tx, 0).a > 0.75) { discard; }
 	}
 	o_color = vec4(base * cov + add, cov); // premultiplied; `add` is pure emissive
 }

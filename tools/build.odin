@@ -40,6 +40,41 @@ must :: proc(cmd: string) {
 	}
 }
 
+// The offline CITY CACHE (assets/city.cache): the static building layer, pre-marched once
+// by the SEPARATE baker harness (tools/citybake) so the game just samples it. The game tree
+// carries NO bake code — the baker is assembled at build time by copying every game .odin
+// EXCEPT main.odin next to tools/citybake/citybake.odin (which supplies its own main +
+// standalone bake pipeline) and compiling that. Rebake only when missing or older than a
+// source that changes the baked pixels.
+// NOTE: a live `watch` session editing ONLY the shaders (.glsl saves, no game relaunch)
+// won't auto-rebake — rerun ./run.sh to refresh the building look.
+CACHE_SRCS := []string{"tools/citybake/citybuild.frag", "tools/citybake/citybake.odin", "shaders/common.glsl", "shaders/city.frag", "car.odin", "render.odin"}
+BAKE_GEN :: "tools/citybake/gen" // assembled baker package (copied game sources + harness)
+
+ensure_city_cache :: proc() {
+	ct, cerr := os.last_write_time_by_name("assets/city.cache")
+	stale := cerr != os.ERROR_NONE
+	if !stale {
+		cn := time.to_unix_nanoseconds(ct)
+		for s in CACHE_SRCS {
+			st, serr := os.last_write_time_by_name(s)
+			if serr == os.ERROR_NONE && time.to_unix_nanoseconds(st) > cn { stale = true; break }
+		}
+	}
+	if !stale { return }
+	fmt.println(">> baking city cache (a march source changed)…")
+	// assemble the baker package: game sources (minus main.odin) + the harness's own main.
+	must(fmt.tprintf("rm -rf %s && mkdir -p %s", BAKE_GEN, BAKE_GEN))
+	must(fmt.tprintf("bash -c 'for f in *.odin; do [ \"$f\" = main.odin ] || cp \"$f\" %s/; done'", BAKE_GEN))
+	must(fmt.tprintf("cp tools/citybake/citybake.odin %s/", BAKE_GEN))
+	// the baker's OWN shader → shaders/spv (loaded by the harness at runtime), validated.
+	must("glslc -I shaders --target-env=vulkan1.3 -Werror -fshader-stage=fragment tools/citybake/citybuild.frag -o shaders/spv/citybuild.frag.tmp.spv")
+	must("spirv-val shaders/spv/citybuild.frag.tmp.spv")
+	must("mv shaders/spv/citybuild.frag.tmp.spv shaders/spv/citybuild.frag.spv")
+	must(fmt.tprintf("odin build %s -debug -out:citybake", BAKE_GEN)) // -debug → the bake VALIDATES too
+	must("./citybake")
+}
+
 // Regenerate the shared GLSL from the @glsl blocks, then compile every shader to SPIR-V.
 // The whole producer path holds the build lock: a `./run.sh shot` (Claude's verify loop)
 // runs ALONGSIDE a live `watch` session (the human playing), and both regenerate
@@ -175,6 +210,13 @@ main :: proc() {
 		return
 	}
 
+	// `shaders`: regen gen.glsl + compile shaders/spv/*, then exit — no game build/run.
+	// Used by profile.sh to guarantee current SPIR-V before an external profiler launch.
+	if mode == "shaders" {
+		prep()
+		return
+	}
+
 	// `shot` is a headless capture meant to run ALONGSIDE a live `watch` session, so it must not
 	// disturb it: don't pkill the running game, and build to a separate binary (toomanymachines-shot)
 	// so the two never fight over the executable file (building over a running binary → ETXTBSY,
@@ -189,6 +231,10 @@ main :: proc() {
 	build := fmt.tprintf("odin build . -out:%s -debug", bin)
 	if mode == "test" { build = strings.concatenate({build, " -define:DEBUG_TEST=true"}, context.temp_allocator) }
 	must(build)
+
+	// bake the static city cache the game loads (if a march source changed) — before any
+	// pass that runs the game, since city.frag/body.frag now sample it.
+	ensure_city_cache()
 
 	// GPU-Assisted validation pass: run the sim headless under GPU-AV (runtime descriptor/OOB
 	// checks the CPU-side layers can't see). Aborts non-zero on any finding.
@@ -221,6 +267,7 @@ launch :: proc() {
 	fmt.println("Building…")
 	sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1")
 	if sh("odin build . -out:toomanymachines") == 0 {
+		ensure_city_cache() // the game loads assets/city.cache at startup
 		fmt.println("OK — launching (release build: no validation, fast)")
 		sh("nohup ./toomanymachines >/dev/null 2>&1 &")
 	} else {

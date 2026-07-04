@@ -347,16 +347,24 @@ align_up :: proc(v, a: vk.DeviceSize) -> vk.DeviceSize { return (v + a - 1) & ~(
 // color-attachment + sampled, sub-allocated from ONE memory block, and registered into
 // binding 1 at their enum ordinal — shaders address them by the IMG_* constants.
 
-ImgSpec :: struct { div: u32 } // extent = swapchain extent / div
+// div != 0: extent = swapchain extent / div (recreated with the swapchain).
+// fixed != 0: an absolute fixed-size, world-anchored target (the city cache) — owned by
+// city_cache.odin, skipped by the swapchain create/resize path.
+ImgSpec :: struct { div, fixed: u32 }
 
 img_extent :: proc(im: Img) -> vk.Extent2D {
-	d := IMG_SPECS[im].div
-	return {max(vkc.extent.width / d, 1), max(vkc.extent.height / d, 1)}
+	s := IMG_SPECS[im]
+	if s.fixed != 0 { return {s.fixed, s.fixed} }
+	return {max(vkc.extent.width / s.div, 1), max(vkc.extent.height / s.div, 1)}
 }
 
+// Swapchain-relative HDR targets only (div != 0). Fixed world-anchored targets (the city
+// cache) are skipped here — city_cache.odin owns their image/memory/view/descriptor, and
+// they must survive swapchain resize untouched.
 create_images :: proc() {
 	reqs: [Img]vk.MemoryRequirements
 	for im in Img {
+		if IMG_SPECS[im].fixed != 0 { continue }
 		e := img_extent(im)
 		ici := vk.ImageCreateInfo{
 			sType = .IMAGE_CREATE_INFO, imageType = .D2, format = HDR_FORMAT,
@@ -368,16 +376,18 @@ create_images :: proc() {
 	}
 	total: vk.DeviceSize
 	bits: u32 = 0xFFFFFFFF
-	for im in Img { total = align_up(total, reqs[im].alignment) + reqs[im].size; bits &= reqs[im].memoryTypeBits }
+	for im in Img { if IMG_SPECS[im].fixed != 0 { continue }; total = align_up(total, reqs[im].alignment) + reqs[im].size; bits &= reqs[im].memoryTypeBits }
 	mai := vk.MemoryAllocateInfo{sType = .MEMORY_ALLOCATE_INFO, allocationSize = total, memoryTypeIndex = find_mem_type(bits, {.DEVICE_LOCAL})}
 	vkok(vk.AllocateMemory(vkc.device, &mai, nil, &vkc.img_mem), "AllocateMemory(images)")
 	off: vk.DeviceSize
 	for im in Img {
+		if IMG_SPECS[im].fixed != 0 { continue }
 		off = align_up(off, reqs[im].alignment)
 		vk.BindImageMemory(vkc.device, vkc.imgs[im], vkc.img_mem, off)
 		off += reqs[im].size
 	}
 	for im in Img {
+		if IMG_SPECS[im].fixed != 0 { continue }
 		ivci := vk.ImageViewCreateInfo{sType = .IMAGE_VIEW_CREATE_INFO, image = vkc.imgs[im], viewType = .D2, format = HDR_FORMAT, subresourceRange = {aspectMask = {.COLOR}, levelCount = 1, layerCount = 1}}
 		vkok(vk.CreateImageView(vkc.device, &ivci, nil, &vkc.img_views[im]), "CreateImageView(offscreen)")
 		info := vk.DescriptorImageInfo{imageView = vkc.img_views[im], imageLayout = .SHADER_READ_ONLY_OPTIMAL}
@@ -388,6 +398,7 @@ create_images :: proc() {
 
 destroy_images :: proc() {
 	for im in Img {
+		if IMG_SPECS[im].fixed != 0 { continue }
 		vk.DestroyImageView(vkc.device, vkc.img_views[im], nil)
 		vk.DestroyImage(vkc.device, vkc.imgs[im], nil)
 	}

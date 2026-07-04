@@ -1,23 +1,14 @@
 package main
 
-import "base:runtime"
 import "core:fmt"
 import "core:os"
+import "core:strconv"
 import "core:time"
 import SDL "vendor:sdl3"
 
-// Window + loop. Renderer is raw Vulkan (vk.odin); GPU resources are data-driven
-// (pipelines.odin); the game is CPU player + GPU sim (car.odin + shaders/).
-
-window:       ^SDL.Window
-win_w, win_h: u32
-mouse_scale:  f32 = 1
-should_quit:  bool
-sim_time:     f32
-gpuav_mode:   bool // `gpuav` build-step pass: enable GPU-Assisted validation (see vk.odin)
-shot_mode:    bool // `shot` headless pass: drive + screenshot + exit (see debug.odin)
-g_ctx:        runtime.Context // for "system"-convention Vulkan callbacks
-
+// The game loop. Platform globals + update_size live in app.odin (shared with the offline
+// baker); the renderer is raw Vulkan (vk.odin); GPU resources are data-driven (render.odin);
+// the game is CPU player + GPU sim (car.odin + shaders/).
 main :: proc() {
 	g_ctx = context
 	for a in os.args[1:] {
@@ -31,7 +22,15 @@ main :: proc() {
 	// The gpuav + shot passes drive the sim off-screen — hidden window, no flash on the desktop.
 	flags := SDL.WindowFlags{.VULKAN, .RESIZABLE, .HIGH_PIXEL_DENSITY}
 	if gpuav_mode || shot_mode { flags += {.HIDDEN} }
-	window = SDL.CreateWindow("toomanymachines", 960, 600, flags)
+	// TMM_W/TMM_H override the initial framebuffer size — used by profile.sh to render at a
+	// target resolution (the swapchain + all HDR targets track the window framebuffer). A
+	// HIDDEN window renders at exactly this size regardless of panel/compositor; a visible
+	// one on a tiling WM would be resized to fit, so profiling uses TMM_HIDDEN=1 too.
+	w0, h0: i32 = 960, 600
+	if s := os.get_env("TMM_W", context.temp_allocator); s != "" { if v, ok := strconv.parse_int(s); ok { w0 = i32(v) } }
+	if s := os.get_env("TMM_H", context.temp_allocator); s != "" { if v, ok := strconv.parse_int(s); ok { h0 = i32(v) } }
+	if os.get_env("TMM_HIDDEN", context.temp_allocator) == "1" { flags += {.HIDDEN} }
+	window = SDL.CreateWindow("toomanymachines", w0, h0, flags)
 	if window == nil { fmt.panicf("CreateWindow: %s", SDL.GetError()) }
 	_ = SDL.HideCursor() // the game draws its own reticle (composite.frag)
 	update_size()
@@ -39,6 +38,7 @@ main :: proc() {
 	vk_init()
 	render_init()
 	game_init()
+	city_cache_load() // the static building layer, pre-baked → sampled by city.frag/body.frag
 
 	last := time.tick_now()
 	frame_n := 0
@@ -47,9 +47,9 @@ main :: proc() {
 		// Block FIRST: the previous frame's fence + swapchain acquire is where the loop waits
 		// out the display. Sampling input AFTER it means the frame is recorded from input
 		// microseconds old instead of a whole refresh stale.
-		when ODIN_DEBUG { dbg_t2 := time.tick_now() }
+		when DBG_BUILD { dbg_t2 := time.tick_now() }
 		cmd, img, frame_ok := frame_begin()
-		when ODIN_DEBUG { dbg_acq_ms = time.duration_milliseconds(time.tick_diff(dbg_t2, time.tick_now())) }
+		when DBG_BUILD { dbg_acq_ms = time.duration_milliseconds(time.tick_diff(dbg_t2, time.tick_now())) }
 
 		ev: SDL.Event
 		for SDL.PollEvent(&ev) {
@@ -130,13 +130,13 @@ main :: proc() {
 
 		// Headless drive + test injection override the live input (debug.odin). Always
 		// compiled — the game is built -debug, so ODIN_DEBUG holds; a no-op interactively.
-		when ODIN_DEBUG { dbg_drive_frame(frame_n) }
+		when DBG_BUILD { dbg_drive_frame(frame_n) }
 
-		when ODIN_DEBUG { dbg_t := time.tick_now() }
+		when DBG_BUILD { dbg_t := time.tick_now() }
 		game_update(dt)
-		when ODIN_DEBUG { dbg_upd_ms = time.duration_milliseconds(time.tick_diff(dbg_t, time.tick_now())); dbg_t = time.tick_now() }
+		when DBG_BUILD { dbg_upd_ms = time.duration_milliseconds(time.tick_diff(dbg_t, time.tick_now())); dbg_t = time.tick_now() }
 		if frame_ok { render(dt, cmd, img) }
-		when ODIN_DEBUG { dbg_rnd_ms = time.duration_milliseconds(time.tick_diff(dbg_t, time.tick_now())) }
+		when DBG_BUILD { dbg_rnd_ms = time.duration_milliseconds(time.tick_diff(dbg_t, time.tick_now())) }
 
 		if resized { resized = false; update_size(); vk_resize() }
 		frame_n += 1
@@ -158,15 +158,5 @@ main :: proc() {
 	if shot_mode { // exit 0 ONLY with a capture on disk — a quit without one must fail LOUD
 		if shot.path == "" || shot.want { fmt.eprintln("shot: exited without a capture"); os.exit(1) }
 		os.exit(0)
-	}
-}
-
-update_size :: proc() {
-	pw, ph, lw: i32
-	SDL.GetWindowSizeInPixels(window, &pw, &ph)
-	SDL.GetWindowSize(window, &lw, nil)
-	if pw > 0 && ph > 0 {
-		win_w, win_h = u32(pw), u32(ph)
-		if lw > 0 { mouse_scale = f32(pw) / f32(lw) }
 	}
 }
