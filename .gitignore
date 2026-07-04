@@ -14,3 +14,4 @@ odin-launcher.reload.log
 .wgpu-backup/
 tools/gen/types.gen.odin
 .build.lock
+imgui.ini
