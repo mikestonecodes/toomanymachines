@@ -33,25 +33,24 @@ while [ $# -gt 0 ]; do
 	esac
 done
 
-BIN="toomanymachines_profile"
+BIN="devharness"
 NGFX_DIR=".ngfx-perf"; NSYS_DIR=".nsys-reports"; NSYS_REPORT="$NSYS_DIR/tmm"
 need() { command -v "$1" >/dev/null || { echo "missing: $1 ($2)"; exit 1; }; }
 need odin "Odin compiler"; need awk "coreutils"
 
 pkill -f "toomanymachines watch" >/dev/null 2>&1 || true
-pkill -x toomanymachines >/dev/null 2>&1 || true
 
-# RELEASE build (no -debug → validation layers compiled out; ngfx/nsys are incompatible
-# with the KHRONOS validation layer) + DEBUG_TEST → the auto-drive harness + gpu_ms timers.
-echo ">> Building $BIN (${W}x${H}, release + drive harness)..."
-odin run tools/build.odin -file -- shaders
-odin build . -define:DEBUG_TEST=true -out:"$BIN"
+# RELEASE dev harness (no -debug → validation layers compiled out; ngfx/nsys are incompatible
+# with the KHRONOS validation layer). Assembled from the game sources + the drive harness, and
+# the city cache is (re)baked if stale — all via the build step, so it's always current.
+echo ">> Building $BIN (release) + city cache (${W}x${H})..."
+odin run tools/build.odin -file -- devrelease
 
-# ── 1. In-engine per-pass GPU + CPU digest (600-frame report, then self-exits) ──
+# ── 1. In-engine per-pass GPU digest (600-frame report, then self-exits) ──
 echo
-echo "═══ engine profiler — per-pass GPU + CPU spans (${W}x${H}, 600 frames) ═══"
-TMM_W="$W" TMM_H="$H" TMM_HIDDEN=1 ./"$BIN" 2>/dev/null | grep -E "frames:|GPU avg|CPU avg" || {
-	echo "  (no profiler output — the 600-frame report harness didn't run)"; }
+echo "═══ engine profiler — per-pass GPU (${W}x${H}, 600 frames) ═══"
+TMM_W="$W" TMM_H="$H" TMM_HIDDEN=1 ./"$BIN" test 2>/dev/null | grep -E "frames:|GPU avg" || {
+	echo "  (no profiler output — the 600-frame report didn't run)"; }
 
 # ── 2. Optional: Nsight Graphics GPU Trace (raw trace for the UI) ──────────────
 if [ "$RUN_NGFX" = "1" ]; then
@@ -68,8 +67,8 @@ if [ "$RUN_NGFX" = "1" ]; then
 	rm -rf "$NGFX_DIR/BASE_UNLOCKED"
 	ngfx \
 		--activity "GPU Trace Profiler" \
-		--exe "$(pwd)/$BIN" --dir "$(pwd)" \
-		--env "SDL_VIDEO_DRIVER=x11; TMM_W=$W; TMM_H=$H; TMM_HIDDEN=1; TMM_PROFILE=1;" \
+		--exe "$(pwd)/$BIN" --args "test" --dir "$(pwd)" \
+		--env "SDL_VIDEO_DRIVER=x11; TMM_W=$W; TMM_H=$H; TMM_HIDDEN=1; TMM_PROFILE_LOOP=1;" \
 		--start-after-frames "$NGFX_WARMUP" --limit-to-frames "$NGFX_FRAMES" \
 		--max-duration-ms 9000 --set-gpu-clocks unaltered \
 		--per-arch-config-path "$ARCH_CFG" --pc-samples-per-pm-interval-per-sm 64 \
@@ -86,10 +85,10 @@ if [ "$RUN_CPU" = "1" ]; then
 	echo
 	echo ">> nsys (delay=${NSYS_DELAY}s, capture=${NSYS_DURATION}s)..."
 	rm -f "${NSYS_REPORT}.nsys-rep" "${NSYS_REPORT}.sqlite"
-	TMM_W="$W" TMM_H="$H" TMM_HIDDEN=1 TMM_PROFILE=1 nsys profile \
+	TMM_W="$W" TMM_H="$H" TMM_HIDDEN=1 TMM_PROFILE_LOOP=1 nsys profile \
 		--trace=vulkan --sample=none --duration="$NSYS_DURATION" --delay="$NSYS_DELAY" \
 		--output="$NSYS_REPORT" --force-overwrite=true --kill=sigkill \
-		./"$BIN" > "$NSYS_DIR/_nsys.log" 2>&1 || true
+		./"$BIN" test > "$NSYS_DIR/_nsys.log" 2>&1 || true
 	if [ -f "${NSYS_REPORT}.nsys-rep" ]; then
 		echo; echo "═══ CPU-side / Vulkan API (nsys, ${NSYS_DURATION}s) ═══"; echo
 		nsys stats --force-export=true --report vulkan_api_sum --format csv "${NSYS_REPORT}.nsys-rep" 2>/dev/null \

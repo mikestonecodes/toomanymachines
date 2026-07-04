@@ -4,24 +4,28 @@ import "base:runtime"
 import SDL "vendor:sdl3"
 
 // Shared platform state — the window + the globals every subsystem reads. Lives apart from
-// main.odin (the game loop) so the offline city-cache baker (tools/citybake) can reuse all
-// of this while supplying its OWN main: the build copies every game .odin file EXCEPT
-// main.odin into the baker, so exactly one `main` exists there.
-
-// The debug harness (drive/screenshot/per-frame timers, debug.odin) compiles when the
-// build is -debug OR built for profiling (-define:DEBUG_TEST=true). The latter lets
-// profile.sh build a RELEASE binary (validation OFF — ngfx/nsys need it off) that still
-// carries the auto-drive + gpu_ms timers.
-DBG_BUILD :: ODIN_DEBUG || #config(DEBUG_TEST, false)
+// main.odin (which is now just `main -> run_game`) so the offline baker (tools/citybake) and
+// the headless dev harness (tools/devharness) can reuse all of this while supplying their
+// OWN main: the build copies every game .odin file EXCEPT main.odin into each harness.
 
 window:       ^SDL.Window
 win_w, win_h: u32
 mouse_scale:  f32 = 1
 should_quit:  bool
 sim_time:     f32
-gpuav_mode:   bool // `gpuav` build-step pass: enable GPU-Assisted validation (see vk.odin)
-shot_mode:    bool // `shot` headless pass: drive + screenshot + exit (see debug.odin)
 g_ctx:        runtime.Context // for "system"-convention Vulkan callbacks
+
+// The ONE dev seam in the game loop. nil in the shipped game; the headless harness
+// (tools/devharness) sets it to override input (its canned drive), save a requested
+// screenshot, and decide when to quit. Called once per frame, after live input is sampled.
+// Returns true to stop the loop. Everything headless/profiling lives behind this — the game
+// source carries no shot/gpuav/test/timing code.
+dev_tick: proc(frame_n: int) -> bool
+
+// Initial window sizing, overridable by the harness (headless passes render off-screen at a
+// target resolution). The game uses the defaults.
+dev_win:    [2]i32 = {960, 600}
+dev_hidden: bool
 
 update_size :: proc() {
 	pw, ph, lw: i32

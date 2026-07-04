@@ -2,9 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
-import "core:strings"
 import SDL "vendor:sdl3"
-import "vendor:stb/image"
 import vk "vendor:vulkan"
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -19,6 +17,14 @@ FRAMES_IN_FLIGHT :: 2
 BINDLESS_MAX     :: 64
 HDR_FORMAT       :: vk.Format.R16G16B16A16_SFLOAT // offscreen scene/bloom targets
 VALIDATION_LAYER :: "VK_LAYER_KHRONOS_validation"
+
+// Validation config knobs, set (only) by the headless dev harness before vk_init:
+//   vk_gpuav — swap best-practices+sync for GPU-Assisted validation (runtime descriptor/OOB).
+//   dev_present — an optional per-frame present hook (the harness records a screenshot copy
+//     + owns the swapchain's final layout transition). nil in the game → plain present.
+// The shipped game never touches either: it validates normally (debug builds) and presents.
+vk_gpuav:    bool
+dev_present: proc(cmd: vk.CommandBuffer, img: u32)
 
 vkc: struct {
 	instance:  vk.Instance,
@@ -107,7 +113,7 @@ vk_init :: proc() {
 	FD :: vk.ValidationFeatureDisableEXT
 	val_enables: [dynamic]F
 	val_disables: [dynamic]FD
-	if gpuav_mode {
+	if vk_gpuav {
 		append(&val_enables, F.GPU_ASSISTED, F.GPU_ASSISTED_RESERVE_BINDING_SLOT)
 		append(&val_disables, FD.CORE_CHECKS)
 	} else {
@@ -130,7 +136,7 @@ vk_init :: proc() {
 		{pLayerName = ls_layer, pSettingName = "gpuav_mesh_shading", type = .BOOL32, valueCount = 1, pValues = &ls_off},
 	}
 	ls_ci := vk.LayerSettingsCreateInfoEXT{sType = .LAYER_SETTINGS_CREATE_INFO_EXT, settingCount = len(ls_settings), pSettings = raw_data(ls_settings[:])}
-	if gpuav_mode { val_features.pNext = &ls_ci }
+	if vk_gpuav { val_features.pNext = &ls_ci }
 	dbg_ci := debug_messenger_ci()
 	dbg_ci.pNext = &val_features
 	ici := vk.InstanceCreateInfo{
@@ -170,7 +176,7 @@ vk_init :: proc() {
 		// sampled-image dynamic indexing: bloom.frag picks its source texture from a push constant.
 		features = {vertexPipelineStoresAndAtomics = true, fragmentStoresAndAtomics = true, shaderSampledImageArrayDynamicIndexing = true},
 	}
-	if gpuav_mode {
+	if vk_gpuav {
 		// Enable exactly the features GPU-Assisted validation instruments with, so it doesn't
 		// force-adjust the device on create (which the layer warns about). Only for the pass.
 		feat2.features.fragmentStoresAndAtomics = true
@@ -572,21 +578,15 @@ pass_begin :: proc(cmd: vk.CommandBuffer, img: u32) {
 	vk.CmdSetScissor(cmd, 0, 1, &sc)
 }
 
-// Close rendering and transition the image to present (or, for a screenshot, copy it out first).
+// Close rendering and transition the swapchain image to present. The headless harness may
+// override this via dev_present (to also copy the frame out for a screenshot); nil = plain.
 pass_end :: proc(cmd: vk.CommandBuffer, img: u32) {
 	vk.CmdEndRendering(cmd)
-	if shot.want {
-		ensure_shot_buf(vkc.extent.width, vkc.extent.height)
-		image_barrier(cmd, vkc.images[img], .COLOR_ATTACHMENT_OPTIMAL, .TRANSFER_SRC_OPTIMAL, {.COLOR_ATTACHMENT_WRITE}, {.TRANSFER_READ}, {.COLOR_ATTACHMENT_OUTPUT}, {.COPY})
-		region := vk.BufferImageCopy{imageSubresource = {aspectMask = {.COLOR}, layerCount = 1}, imageExtent = {vkc.extent.width, vkc.extent.height, 1}}
-		vk.CmdCopyImageToBuffer(cmd, vkc.images[img], .TRANSFER_SRC_OPTIMAL, shot.buf, 1, &region)
-		image_barrier(cmd, vkc.images[img], .TRANSFER_SRC_OPTIMAL, .PRESENT_SRC_KHR, {.TRANSFER_READ}, {}, {.COPY}, {.BOTTOM_OF_PIPE})
-	} else {
-		image_barrier(cmd, vkc.images[img], .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR, {.COLOR_ATTACHMENT_WRITE}, {}, {.COLOR_ATTACHMENT_OUTPUT}, {.BOTTOM_OF_PIPE})
-	}
+	if dev_present != nil { dev_present(cmd, img); return } // harness owns the final transition
+	image_barrier(cmd, vkc.images[img], .COLOR_ATTACHMENT_OPTIMAL, .PRESENT_SRC_KHR, {.COLOR_ATTACHMENT_WRITE}, {}, {.COLOR_ATTACHMENT_OUTPUT}, {.BOTTOM_OF_PIPE})
 }
 
-// Submit the command buffer, save a pending screenshot, and present.
+// Submit the command buffer and present.
 frame_end :: proc(cmd: vk.CommandBuffer, img: u32) {
 	img := img
 	vk.EndCommandBuffer(cmd)
@@ -597,40 +597,11 @@ frame_end :: proc(cmd: vk.CommandBuffer, img: u32) {
 	submit := vk.SubmitInfo2{sType = .SUBMIT_INFO_2, waitSemaphoreInfoCount = 1, pWaitSemaphoreInfos = &wait, commandBufferInfoCount = 1, pCommandBufferInfos = &ci, signalSemaphoreInfoCount = 1, pSignalSemaphoreInfos = &signal}
 	vkok(vk.QueueSubmit2(vkc.queue, 1, &submit, fence), "QueueSubmit2")
 
-	if shot.want {
-		vk.WaitForFences(vkc.device, 1, &fence, true, max(u64))
-		save_shot()
-		shot.want = false
-	}
 	present := vk.PresentInfoKHR{sType = .PRESENT_INFO_KHR, waitSemaphoreCount = 1, pWaitSemaphores = &vkc.render_done[img], swapchainCount = 1, pSwapchains = &vkc.swapchain, pImageIndices = &img}
 	pres := vk.QueuePresentKHR(vkc.queue, &present)
 	if pres == .ERROR_OUT_OF_DATE_KHR || pres == .SUBOPTIMAL_KHR { recreate_swapchain() }
 
 	vkc.frame = (vkc.frame + 1) % FRAMES_IN_FLIGHT
-}
-
-// ── screenshot (swapchain → host buffer → JPEG) ──────────────────────────────
-
-shot: struct { want: bool, path: string, buf: vk.Buffer, mem: vk.DeviceMemory, mapped: rawptr, w, h: u32 }
-
-vk_request_shot :: proc(path: string) { shot.want = true; shot.path = path }
-
-ensure_shot_buf :: proc(w, h: u32) {
-	if shot.buf != 0 && shot.w == w && shot.h == h { return }
-	if shot.buf != 0 { vk.DestroyBuffer(vkc.device, shot.buf, nil); vk.FreeMemory(vkc.device, shot.mem, nil) }
-	shot.w, shot.h = w, h
-	shot.buf, shot.mem, shot.mapped = create_buffer(vk.DeviceSize(w * h * 4), true)
-}
-
-save_shot :: proc() {
-	w, h := int(shot.w), int(shot.h)
-	rgb := make([]u8, w * h * 3)
-	defer delete(rgb)
-	src := ([^]u8)(shot.mapped)
-	for i in 0 ..< w * h { rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2] = src[i * 4 + 2], src[i * 4 + 1], src[i * 4] } // BGRA→RGB
-	os.make_directory(".debug_screenshots")
-	image.write_jpg(strings.clone_to_cstring(shot.path, context.temp_allocator), i32(w), i32(h), 3, raw_data(rgb), 90)
-	fmt.println("saved", shot.path)
 }
 
 vk_resize :: proc() { recreate_swapchain() }

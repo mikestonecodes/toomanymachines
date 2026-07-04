@@ -2,7 +2,9 @@
 /toomanymachines-shot
 /toomanymachines_profile
 /citybake
+/devharness
 tools/citybake/gen/
+tools/devharness/gen/
 assets/city.cache
 .ngfx-perf/
 .nsys-reports/

@@ -1,7 +1,6 @@
 package main
 
 import "core:math"
-import "core:time"
 import vk "vendor:vulkan"
 
 // The high-level render description — nothing but the buffer/image/pipeline lists, init,
@@ -153,8 +152,5 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	vk.CmdDraw(cmd, 3, 1, 0, 0)
 	pass_end(cmd, img)
 	gpu_stamp(cmd, 5) // composite done — whole GPU frame
-
-	when ODIN_DEBUG { dbg_t3 := time.tick_now() }
 	frame_end(cmd, img)
-	when ODIN_DEBUG { dbg_sub_ms = time.duration_milliseconds(time.tick_diff(dbg_t3, time.tick_now())) }
 }

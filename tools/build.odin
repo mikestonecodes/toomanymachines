@@ -63,16 +63,34 @@ ensure_city_cache :: proc() {
 	}
 	if !stale { return }
 	fmt.println(">> baking city cache (a march source changed)…")
-	// assemble the baker package: game sources (minus main.odin) + the harness's own main.
-	must(fmt.tprintf("rm -rf %s && mkdir -p %s", BAKE_GEN, BAKE_GEN))
-	must(fmt.tprintf("bash -c 'for f in *.odin; do [ \"$f\" = main.odin ] || cp \"$f\" %s/; done'", BAKE_GEN))
-	must(fmt.tprintf("cp tools/citybake/citybake.odin %s/", BAKE_GEN))
+	assemble_harness(BAKE_GEN, "tools/citybake") // game sources (minus main.odin) + the baker's main
 	// the baker's OWN shader → shaders/spv (loaded by the harness at runtime), validated.
 	must("glslc -I shaders --target-env=vulkan1.3 -Werror -fshader-stage=fragment tools/citybake/citybuild.frag -o shaders/spv/citybuild.frag.tmp.spv")
 	must("spirv-val shaders/spv/citybuild.frag.tmp.spv")
 	must("mv shaders/spv/citybuild.frag.tmp.spv shaders/spv/citybuild.frag.spv")
 	must(fmt.tprintf("odin build %s -debug -out:citybake", BAKE_GEN)) // -debug → the bake VALIDATES too
 	must("./citybake")
+}
+
+// Assemble a harness package: a FRESH copy of every game .odin EXCEPT main.odin (the harness
+// supplies its own) into `gendir`, then the harness's own .odin on top. Rebuilt from scratch
+// on EVERY invocation (rm -rf first), and it copies the whole game by glob — so the harness
+// can never drift out of sync: add/rename/remove a game source and the copy tracks it, and any
+// symbol mismatch is a loud compile error, not silent staleness. Shared by the baker
+// (tools/citybake) and the headless dev harness (tools/devharness).
+assemble_harness :: proc(gendir, harness_dir: string) {
+	must(fmt.tprintf("rm -rf '%s' && mkdir -p '%s'", gendir, gendir))
+	must(fmt.tprintf("cp ./*.odin '%s'/", gendir))         // every game source at the repo root…
+	must(fmt.tprintf("rm -f '%s'/main.odin", gendir))      // …minus the game's main (harness has its own)
+	must(fmt.tprintf("cp '%s'/*.odin '%s'/", harness_dir, gendir)) // + the harness's main / code
+}
+
+// Build the headless dev harness (gpuav/shot/test) into ./devharness. -debug → it validates
+// (unless `release`, for profile.sh's ngfx/nsys runs which need the layers off).
+DEV_GEN :: "tools/devharness/gen"
+build_devharness :: proc(release := false) {
+	assemble_harness(DEV_GEN, "tools/devharness")
+	must(fmt.tprintf("odin build %s %s -out:devharness", DEV_GEN, release ? "" : "-debug"))
 }
 
 // Regenerate the shared GLSL from the @glsl blocks, then compile every shader to SPIR-V.
@@ -217,32 +235,40 @@ main :: proc() {
 		return
 	}
 
-	// `shot` is a headless capture meant to run ALONGSIDE a live `watch` session, so it must not
-	// disturb it: don't pkill the running game, and build to a separate binary (toomanymachines-shot)
-	// so the two never fight over the executable file (building over a running binary → ETXTBSY,
-	// which is why every launch-a-game path pkills first). Every other mode replaces the game.
-	shot := mode == "shot"
-	bin := shot ? "toomanymachines-shot" : "toomanymachines"
-	if !shot { sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1") }
+	// `devrelease`: build the dev harness as a RELEASE binary (validation OFF) + ensure the
+	// city cache, then exit. profile.sh uses it so ngfx/nsys profile the shipping-perf path.
+	if mode == "devrelease" {
+		prep()
+		ensure_city_cache()
+		build_devharness(release = true)
+		return
+	}
+
+	// `shot`/`test` run the SEPARATE devharness binary (tools/devharness) — the game binary is
+	// never built or replaced, so a headless capture/profile can run ALONGSIDE a live `watch`
+	// session without fighting over the executable. All headless/drive/profiling code lives in
+	// the harness; the game source is pure.
+	if mode == "shot" || mode == "test" {
+		prep()
+		ensure_city_cache()
+		build_devharness()
+		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./devharness %s", mode)) >> 8 & 0xff)
+		return
+	}
+
+	// default `run`: build + validate + launch the actual game.
+	sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1")
 	prep()
+	must("odin build . -out:toomanymachines -debug")
+	ensure_city_cache() // the static city the game loads (rebakes if a march source changed)
+	build_devharness()
 
-	// `test` compiles the debug_test_run harness in (debug.odin); every other mode leaves
-	// dbg_test_fn nil, so gpuav/shot/normal runs of this same binary are unaffected.
-	build := fmt.tprintf("odin build . -out:%s -debug", bin)
-	if mode == "test" { build = strings.concatenate({build, " -define:DEBUG_TEST=true"}, context.temp_allocator) }
-	must(build)
-
-	// bake the static city cache the game loads (if a march source changed) — before any
-	// pass that runs the game, since city.frag/body.frag now sample it.
-	ensure_city_cache()
-
-	// GPU-Assisted validation pass: run the sim headless under GPU-AV (runtime descriptor/OOB
+	// GPU-Assisted validation pass: drive the sim headless under GPU-AV (runtime descriptor/OOB
 	// checks the CPU-side layers can't see). Aborts non-zero on any finding.
 	fmt.println(">> GPU-Assisted validation pass…")
-	must(fmt.tprintf("./%s gpuav", bin))
+	must("./devharness gpuav")
 
-	arg := mode == "shot" ? " shot" : ""
-	fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./%s%s", bin, arg)) >> 8 & 0xff)
+	fmt.printf("EXIT: %d\n", sh("./toomanymachines") >> 8 & 0xff)
 }
 
 // --- watch: live-reload dev loop -------------------------------------------
