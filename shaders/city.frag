@@ -215,37 +215,92 @@ vec3 ground_col(vec2 w, vec2 s) {
 		vnoise(rot2(0.55) * w * 0.0031 + vec2(pc.time * 0.13, -pc.time * 0.08)) * 0.55
 		+ vnoise(rot2(-1.13) * w * 0.0009 + vec2(-pc.time * 0.06, pc.time * 0.05)) * 0.45);
 
-	if (cr < PIT_R) { // ── the pit: floor below grade (leans the other way), a furnace at the heart
-		vec2 gf = w - vec2(0.0, LEAN) * 0.55;
-		float fr = distance(gf, ctr);
-		if (fr < PIT_R * 0.72) {
-			vec3 col = vec3(0.028, 0.022, 0.020) * (0.5 + 0.5 * hash21(floor(gf / 23.0)));
-			col *= 0.80 + 0.20 * sin(fr * 0.35); // rib rings of sunk plating
-			float core = exp(-fr * fr / (PIT_R * PIT_R * 0.035));
-			col += PAL_ACCENT * core * (0.8 + 3.5 * pulse) * (0.8 + 0.2 * sin(pc.time * 2.6));
-			col += PAL_EMBER * 0.12 * exp(-fr / (PIT_R * 0.35));
-			return col;
+	if (cr < PIT_R) { // ── the PIT: a terraced foundry shaft sunk below grade — the towers'
+		// oblique lean MIRRORED: a surface at depth d draws shifted DOWN-screen by LEAN·d
+		// (a pure translation, same as the roofs, so nothing shears). Concentric ledges
+		// step down to a slag crucible. Ledges are tested shallow → deep; the first whose
+		// annulus holds the unprojected sample is the visible surface. Anything unclaimed
+		// is shaft wall between two ledges — exactly the up-screen crescent a translated
+		// hole leaves showing, so the walls fall out of the same test.
+		const float PDEPTH = 0.85; // total depth, in LEAN units
+		const float NSTEP  = 4.0;  // ledge count, rim → crucible
+		float heatK = 1.0 + 1.1 * pulse; // the melt swells when a corpse drops in — deposits
+		// are near-continuous, so the flare must stay a breath, not a strobe
+		vec3 col = vec3(0.012, 0.010, 0.009); // fallback: unlit depth
+		for (float k = 1.0; k <= NSTEP; k += 1.0) {
+			float f    = k / NSTEP;
+			float dk   = PDEPTH * f;
+			// funnel taper: upper ledges wide, lower ones tight against the crucible
+			float Rout = mix(PIT_R, PIT_R * 0.52, pow((k - 1.0) / NSTEP, 1.35));
+			float Rin  = k > NSTEP - 0.5 ? 0.0 : mix(PIT_R, PIT_R * 0.52, pow(f, 1.35));
+			vec2 pk  = w - vec2(0.0, LEAN * dk); // unproject at this ledge's depth
+			float rk = distance(pk, ctr);
+			if (rk > Rout) {
+				// off this ledge's outer edge — the wall dropping from circle Rout
+				// (spanning the depths above this ledge) may own the pixel instead
+				vec2 q = w - ctr;
+				float s2 = Rout * Rout - q.x * q.x;
+				if (s2 > 0.0) {
+					float t = (q.y + sqrt(s2)) / LEAN; // the up-screen interior face
+					float dk0 = PDEPTH * (k - 1.0) / NSTEP;
+					if (t >= dk0 && t <= dk) { // ── shaft wall between ledges
+						float ff = t / PDEPTH;
+						float within = (t - dk0) / (dk - dk0); // 0 at the lip → 1 at the foot
+						col = vec3(0.026, 0.023, 0.021) * (1.0 - 0.5 * ff);
+						col *= 0.80 + 0.20 * hash21(vec2(floor(asin(clamp(q.x / Rout, -1.0, 1.0)) * 40.0), k * 7.0)); // vertical streaks
+						col += PAL_EMBER * (0.06 + 0.30 * ff) * within * within * heatK; // lit from below
+						return col;
+					}
+				}
+				continue; // a deeper surface will claim it
+			}
+			if (rk >= Rin) {
+				if (k > NSTEP - 0.5) { // ── the crucible floor: slag crust over live melt.
+					// Cracks come off summed ROTATED octaves — a single value-noise
+					// sheet's iso-lines print an axis-aligned circuit-board maze.
+					vec2 fp = pk - ctr;
+					float n1 = 0.60 * vnoise(rot2(0.6) * fp * 0.024 + 3.0)
+					         + 0.40 * vnoise(rot2(2.1) * fp * 0.055 + 11.0);
+					col = vec3(0.020, 0.016, 0.013) * (0.62 + 0.38 * vnoise(rot2(-1.2) * fp * 0.075)); // cooled slag
+					float crack = smoothstep(0.035, 0.006, abs(n1 - 0.5));
+					crack *= 0.35 + 0.65 * vnoise(fp * 0.09 + pc.time * 0.05); // uneven heat along the vein
+					float breathe = 0.82 + 0.18 * sin(pc.time * 0.8 + n1 * 9.0);
+					col += PAL_EMBER * crack * (0.12 + 0.9 * exp(-rk / (Rout * 0.55))) * breathe * heatK; // vein web, dying toward the rim
+					float poolR = Rout * 0.34; // the live pool at the heart
+					float mn = vnoise(rot2(pc.time * 0.06) * fp * 0.05 + vec2(0.0, pc.time * 0.10));
+					vec3 melt = mix(PAL_ACCENT * 0.85, PAL_EMBER * 1.25, smoothstep(0.35, 0.75, mn));
+					col = mix(col, melt * breathe, smoothstep(poolR, poolR * 0.35, rk));
+					col += (PAL_EMBER * 1.1 + vec3(0.16, 0.05, 0.015)) * exp(-rk * rk / (poolR * poolR * 0.30)) * breathe * heatK; // white-hot only at the very eye
+				} else { // ── a machined ledge: dark plating, furnace rim-light on its inner edge
+					float aa = atan(pk.y - ctr.y, pk.x - ctr.x);
+					float seg = min(fract(aa * 20.0 / TAU), 1.0 - fract(aa * 20.0 / TAU)) * TAU / 20.0 * rk;
+					col = vec3(0.044, 0.040, 0.037) * (1.0 - 0.70 * f);
+					col *= 0.90 + 0.10 * hash21(floor(pk / 11.0));
+					col *= 0.72 + 0.28 * smoothstep(0.8, 2.4, seg); // radial plate seams
+					col += PAL_EMBER * (0.02 + 0.16 * f * f) * exp(-(rk - Rin) / 4.0); // a thin hot line where the lip catches the melt
+					col += PAL_EMBER * 0.008 * f * f; // the faintest rising heat wash
+				}
+				return col;
+			}
+			// rk < Rin: the pixel sits over the hole in this ledge — a deeper surface
+			// (or the wall under this ledge's inner lip) claims it next iteration
 		}
-		float ww = smoothstep(PIT_R, PIT_R * 0.4, cr); // shaft wall, darker with depth
-		vec3 col = vec3(0.09, 0.08, 0.07) * (1.0 - 0.8 * ww);
-		col *= 0.85 + 0.15 * sin(cr * 0.9);
-		col += PAL_EMBER * 0.35 * (1.0 - ww) * pulse;
 		return col;
 	}
 
 	vec3 col;
-	if (cr < PIT_R + 130.0) { // ── machined apron: dark plating, breathing vents, beacons
-		float slat = fract(a * 18.0 / TAU);
-		col = vec3(0.048, 0.044, 0.042) * (0.84 + 0.16 * smoothstep(0.0, 0.12, abs(slat - 0.5)));
-		col *= 0.92 + 0.08 * sin(cr * 0.5);
-		col *= 0.90 + 0.10 * hash21(floor(w / 13.0));
-		if (fract(slat * 3.0) < 0.16) {
-			col += PAL_EMBER * (0.06 + 0.04 * sin(pc.time * 1.8 + a * 3.0)) * smoothstep(130.0, 20.0, cr - PIT_R) * (1.0 + 4.0 * pulse);
-		}
-		float bk = fract(a * 4.0 / TAU + 0.125);
-		float blink = smoothstep(0.6, 0.95, sin(pc.time * 3.1) * 0.5 + 0.5);
-		col += PAL_ACCENT * 2.0 * exp(-pow((bk - 0.5) * 500.0, 2.0)) * exp(-pow(cr - PIT_R - 20.0, 2.0) / 200.0) * blink;
-		col += PAL_EMBER * 0.10 * (0.5 + dustM) * exp(-(cr - PIT_R) / 90.0); // furnace light in the dust
+	if (cr < PIT_R + 130.0) { // ── machined apron: calm concentric plate rings, value-stepped,
+		// a pale collar on the mouth, furnace light spilling out through the dust.
+		// Nothing blinks, nothing radiates — the drama stays down the shaft.
+		float ri = floor((cr - PIT_R) / 34.0);
+		float rf = fract((cr - PIT_R) / 34.0);
+		col = vec3(0.046, 0.043, 0.041) * (0.85 + 0.15 * hash1(uint(ri) * 17u + 5u)); // plate value steps
+		col *= 0.92 + 0.08 * hash21(floor(w / 9.0));
+		col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 2.2, min(rf, 1.0 - rf) * 34.0)); // seam groove between rings
+		float aseg = fract(a * 18.0 / TAU + hash1(uint(ri) * 13u + 2u));
+		col *= 1.0 - 0.28 * (1.0 - smoothstep(0.6, 1.8, min(aseg, 1.0 - aseg) * TAU / 18.0 * cr)); // offset radial seams
+		col += PAL_EMBER * (0.06 + 0.18 * pulse) * (0.4 + 0.6 * dustM) * exp(-(cr - PIT_R) / 45.0); // furnace spill in the dust
+		col = mix(col, vec3(0.095, 0.090, 0.084), smoothstep(14.0, 6.0, cr - PIT_R)); // pale machined collar on the lip
 		return col;
 	}
 

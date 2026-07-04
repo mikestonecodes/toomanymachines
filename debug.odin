@@ -49,9 +49,12 @@ dbg_drive_frame :: proc(frame_n: int) {
 @(private="file") shot_requested: bool
 shot_drive :: proc(frame_n: int) {
 	ang := f32(frame_n) * 0.05
-	// PIT REVIEW drive: park at the spawn (pit rim), no fire/laser, watch the pit +
-	// deposits — restore the spin+fire drive when done
-	if frame_n == 0 { car_pos = CENTER + {0, -(PIT_R + 420)}; cam = car_pos }
+	// park in the first block ring NE of the pit (spawn sits in the monumental plaza,
+	// where no buildings are) and spin + fire — the shot should show terraces, streets,
+	// turrets, horde, shells and the laser together
+	if frame_n == 0 { car_pos = CENTER + {1100, -1100}; cam = car_pos }
+	input.fire = true
+	input.laser = sim_time >= 4.0
 	input.mouse = {f32(win_w) * 0.5 + math.cos(ang) * 240, f32(win_h) * 0.5 + math.sin(ang) * 240}
 	if sim_time >= 8.0 && !shot_requested { shot_requested = true; dbg_screenshot(".debug_screenshots/vk.jpg") }
 	if shot_requested && dbg_shot_done() { should_quit = true }

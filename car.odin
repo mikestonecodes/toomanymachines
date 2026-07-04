@@ -98,7 +98,7 @@ BOOM_R      :: f32(170)  // every bullet detonates: shockwave reach
 BOOM_T      :: f32(0.65) //   and expansion time — slow enough to READ the front hit bots one by one
 BULLET_SPEED :: f32(1650) // FAST — a slow shell reads mushy; shaders derive the trail length from it
 DEATH_T     :: f32(0.5)  // pop → collapse → GONE
-SPARK_T     :: f32(0.55) // the pit-swallow show: corkscrew + splash + furnace belch
+SPARK_T     :: f32(0.9)  // the pit sink: the husk rides the shaft down and goes under, quietly
 SPD_SPIDER  :: f32(130)
 SPD_SKITTER :: f32(235)
 SPD_BRUTE   :: f32(80)

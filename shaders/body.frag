@@ -1065,35 +1065,32 @@ void burst(vec2 p, Body b) {
 		add += (PAL_EMBER * 1.3 + vec3(0.4)) * exp(-rr * rr / 700.0) * flash;
 		return;
 	}
-	if (b.variant == VAR_SPARK) { // ── PIT SWALLOW: the furnace takes its due
+	if (b.variant == VAR_SPARK) { // ── PIT SINK: the shaft takes its due, QUIETLY.
+		// No blast, no splash: the husk slides for the throat, then rides the pit's
+		// mirrored fake-3D lean straight DOWN-screen — shrinking, turning slowly, going
+		// to black silhouette against the furnace under-glow — and a few draft embers
+		// ride the heat back up the shaft. The quad is rotated by b.angle, so work in a
+		// screen-aligned frame (+y = down-screen) for the descent.
+		vec2 pw = rot2(b.angle) * p;
 		vec2 toC = normalize(vec2(WORLD * 0.5) - b.pos + vec2(0.0001));
-		float ang0 = atan(toC.y, toC.x);
-		// 1. the husk CORKSCREWS down the throat — spinning, sliding toward the hole,
-		//    shrinking to nothing, rim-lit from the furnace below
-		float sink = smoothstep(0.0, 0.6, prog);
-		float hscale = max(1.0 - 0.9 * sink, 0.12);
-		vec2 hq = rot2(prog * 11.0) * (p - toC * prog * 34.0) / hscale;
-		float husk = soft(sd_box(hq, vec2(b.radius * 0.62, b.radius * 0.45)) * hscale - 2.0);
-		lay(vec3(0.05, 0.045, 0.042), husk * (1.0 - sink));
-		add += PAL_EMBER * husk * sink * (1.0 - sink) * 2.2; // glowing as it goes under
-		// 2. the SPLASH: molten gouts erupt off the impact, arc, and rain back
-		for (float i = 0.0; i < 9.0; i += 1.0) {
-			uint si = s + uint(i) * 23u;
-			float a = ang0 + 3.14159 + (hash1(si) - 0.5) * 2.8; // spraying back out of the hole
-			float v0 = 50.0 + 130.0 * hash1(si + 2u);
-			float dst = v0 * prog * (1.0 - 0.55 * prog);         // decelerating arc
-			float lift = sin(min(prog * 2.6, 3.14159)) * (12.0 + 22.0 * hash1(si + 4u));
-			vec2 c = rot2(a) * vec2(dst, 0.0) - vec2(0.0, lift); // "up" = up-screen
-			float sz = (2.0 + 2.6 * hash1(si + 5u)) * (1.0 - prog * 0.55);
-			float dd = dot(p - c, p - c);
-			add += (PAL_EMBER * 1.6 + vec3(0.25)) * exp(-dd / (sz * sz)) * fade * 1.7; // the gout
-			add += PAL_ACCENT * exp(-dd / (sz * sz * 7.0)) * fade * 0.4;               // its glow
+		float slide = smoothstep(0.0, 0.6, prog);   // drift the last stretch to the hole
+		float drop  = smoothstep(0.2, 0.9, prog);   // then go under
+		vec2 hc = toC * slide * 26.0 + vec2(0.0, LEAN * 0.80 * drop * drop); // down to the crucible floor
+		float hs = max(1.0 - 0.82 * drop, 0.12);
+		vec2 hq = rot2(prog * 2.6) * (pw - hc) / hs;
+		float husk = soft(sd_box(hq, vec2(b.radius * 0.62, b.radius * 0.45)) * hs - 2.0);
+		float dd = dot(pw - hc, pw - hc);
+		add += (PAL_EMBER * 1.2 + vec3(0.10)) * exp(-dd / (b.radius * b.radius * 1.6))
+		     * drop * (1.0 - drop) * 1.1;                    // melt light closing over it — soft, no flare
+		lay(mix(vec3(0.046, 0.041, 0.037), vec3(0.010, 0.007, 0.005), drop), husk * (1.0 - drop * drop * 0.85));
+		add += PAL_EMBER * husk * drop * (1.0 - drop) * 0.8; // heat licking its plates on the way down
+		for (float i = 0.0; i < 4.0; i += 1.0) { // draft embers climbing back out, cooling
+			uint si = s + uint(i) * 29u;
+			float em = fract(prog * 1.4 + hash1(si));
+			vec2 c = hc + vec2((hash1(si + 1u) - 0.5) * b.radius * 1.3, -em * 44.0 - 4.0);
+			float sz = 1.5 + 1.3 * hash1(si + 2u);
+			add += PAL_EMBER * exp(-dot(pw - c, pw - c) / (sz * sz)) * (1.0 - em) * (1.0 - em) * drop * fade * 1.4;
 		}
-		// 3. the furnace BELCHES: a tongue of light licking up out of the hole
-		float belch = exp(-prog * 4.5) * smoothstep(0.0, 0.08, prog);
-		vec2 bq = p - toC * 14.0;
-		add += (PAL_EMBER * 1.8 + vec3(0.45)) * exp(-bq.x * bq.x / 110.0)
-		     * smoothstep(14.0, -52.0, bq.y) * smoothstep(-70.0, -30.0, bq.y) * belch * 1.6;
 		return;
 	}
 	// death: the machine buckles — a brief hot flash, a few embers arcing out, oily
