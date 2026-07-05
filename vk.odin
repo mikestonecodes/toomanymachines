@@ -103,6 +103,13 @@ vk_init :: proc() {
 		}
 	}
 
+	// MoltenVK and other portability ICDs are HIDDEN from vkEnumeratePhysicalDevices unless the
+	// instance opts in with VK_KHR_portability_enumeration + the ENUMERATE_PORTABILITY flag (spec
+	// requirement since the extension shipped). Native Linux/Windows drivers don't advertise it, so
+	// this whole thing no-ops there — but without it the app finds zero GPUs on macOS.
+	portability := has_instance_ext(vk.KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME)
+	if portability { append(&exts, vk.KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME) }
+
 	app := vk.ApplicationInfo{sType = .APPLICATION_INFO, pApplicationName = "toomanymachines", apiVersion = vk.API_VERSION_1_3}
 	// Two distinct validation configs. Normal launch: best-practices + synchronization2 on top
 	// of the core checks. `gpuav` build-step pass: GPU-Assisted (runtime descriptor/OOB) ALONE —
@@ -146,6 +153,7 @@ vk_init :: proc() {
 		ppEnabledExtensionNames = raw_data(exts),
 		enabledLayerCount       = u32(len(layers)),
 		ppEnabledLayerNames     = raw_data(layers),
+		flags                   = portability ? {.ENUMERATE_PORTABILITY_KHR} : {},
 		pNext                   = vkc.validated ? &dbg_ci : nil,
 	}
 	vkok(vk.CreateInstance(&ici, nil, &vkc.instance), "CreateInstance")
@@ -192,14 +200,19 @@ vk_init :: proc() {
 	}
 	prio: f32 = 1
 	qci := vk.DeviceQueueCreateInfo{sType = .DEVICE_QUEUE_CREATE_INFO, queueFamilyIndex = vkc.qfamily, queueCount = 1, pQueuePriorities = &prio}
-	dev_exts := [?]cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME}
+	dev_exts: [dynamic]cstring
+	append(&dev_exts, vk.KHR_SWAPCHAIN_EXTENSION_NAME)
+	// If the device advertises VK_KHR_portability_subset (MoltenVK always does), the spec REQUIRES
+	// enabling it — vkCreateDevice fails otherwise. It carries no features we depend on, so just
+	// enabling it is enough; native drivers never advertise it, so this no-ops off-macOS.
+	if has_device_ext(vkc.phys, vk.KHR_PORTABILITY_SUBSET_EXTENSION_NAME) { append(&dev_exts, vk.KHR_PORTABILITY_SUBSET_EXTENSION_NAME) }
 	dci := vk.DeviceCreateInfo{
 		sType                   = .DEVICE_CREATE_INFO,
 		pNext                   = &feat2,
 		queueCreateInfoCount    = 1,
 		pQueueCreateInfos       = &qci,
-		enabledExtensionCount   = len(dev_exts),
-		ppEnabledExtensionNames = raw_data(dev_exts[:]),
+		enabledExtensionCount   = u32(len(dev_exts)),
+		ppEnabledExtensionNames = raw_data(dev_exts),
 	}
 	vkok(vk.CreateDevice(vkc.phys, &dci, nil, &vkc.device), "CreateDevice")
 	vk.load_proc_addresses_device(vkc.device)
@@ -614,6 +627,24 @@ has_layer :: proc(name: string) -> bool {
 	props := make([]vk.LayerProperties, n, context.temp_allocator)
 	vk.EnumerateInstanceLayerProperties(&n, raw_data(props))
 	for &p in props { if name == string(cstring(&p.layerName[0])) { return true } }
+	return false
+}
+
+has_instance_ext :: proc(name: cstring) -> bool {
+	n: u32
+	vk.EnumerateInstanceExtensionProperties(nil, &n, nil)
+	props := make([]vk.ExtensionProperties, n, context.temp_allocator)
+	vk.EnumerateInstanceExtensionProperties(nil, &n, raw_data(props))
+	for &p in props { if string(name) == string(cstring(&p.extensionName[0])) { return true } }
+	return false
+}
+
+has_device_ext :: proc(dev: vk.PhysicalDevice, name: cstring) -> bool {
+	n: u32
+	vk.EnumerateDeviceExtensionProperties(dev, nil, &n, nil)
+	props := make([]vk.ExtensionProperties, n, context.temp_allocator)
+	vk.EnumerateDeviceExtensionProperties(dev, nil, &n, raw_data(props))
+	for &p in props { if string(name) == string(cstring(&p.extensionName[0])) { return true } }
 	return false
 }
 
