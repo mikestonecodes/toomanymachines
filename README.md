@@ -94,7 +94,9 @@ target only — `llvm-install-name-tool` plus a code signer (`rcodesign`, from
 - **Gatekeeper**: the `.app` is ad-hoc signed (required so Apple Silicon will run it
   at all) but not notarized, so a downloaded copy is quarantined. First launch: right-
   click → **Open**, or clear the flag: `xattr -dr com.apple.quarantine TooManyMachines.app`.
-- **MoltenVK**: Vulkan runs on Metal via the bundled MoltenVK, loaded by SDL through the
-  `SDL_VULKAN_LIBRARY` env in `Info.plist`. The renderer is bindless (unsized runtime
-  descriptor arrays), so the bundle also forces `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1`
-  — Metal tier-2 argument buffers, standard on Apple Silicon.
+- **MoltenVK**: Vulkan runs on Metal via the bundled MoltenVK. The game points SDL at it and
+  forces `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1` in-process on startup (`loop.odin`) — the
+  renderer is bindless (unsized runtime descriptor arrays), which MoltenVK can only honor
+  through Metal tier-2 argument buffers (standard on Apple Silicon). Doing it in code means it
+  holds whether launched from Finder or a terminal; the `.app` `Info.plist` sets the same env
+  as a fallback.

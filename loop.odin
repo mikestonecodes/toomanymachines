@@ -12,6 +12,16 @@ import SDL "vendor:sdl3"
 run_game :: proc() {
 	g_ctx = context
 	if !SDL.Init({.VIDEO}) { fmt.panicf("SDL_Init: %s", SDL.GetError()) }
+	when ODIN_OS == .Darwin {
+		// The mac dist ships MoltenVK (Vulkan-on-Metal) inside the .app: point SDL at it, and force
+		// Metal tier-2 argument buffers — the renderer is bindless (unsized runtime descriptor
+		// arrays + update-after-bind), which MoltenVK can only honor through argument buffers. Set
+		// in-process (not just the .app Info.plist) so it holds whether the app is launched from
+		// Finder or a terminal — LSEnvironment only applies to Finder/`open`. overwrite=false leaves
+		// any value the user set. @executable_path is expanded by dyld when SDL dlopens the driver.
+		_ = SDL.SetHint(SDL.HINT_VULKAN_LIBRARY, "@executable_path/../Frameworks/libMoltenVK.dylib")
+		_ = SDL.setenv_unsafe("MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS", "1", b32(false))
+	}
 	// A dist build ships the binary beside its data (shaders/spv + assets/); a macOS .app keeps
 	// them in Contents/Resources. Run from that dir so the relative asset paths resolve however
 	// the app was launched (Finder starts a .app with cwd = /). SDL_GetBasePath is the executable
