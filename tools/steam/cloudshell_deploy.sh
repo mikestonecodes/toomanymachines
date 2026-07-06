@@ -12,6 +12,7 @@ set -euo pipefail
 SRC="$(cd "$(dirname "$0")/../.." && pwd)"
 TC="$HOME/tmm-tc"; mkdir -p "$TC"
 : "${STEAM_USER:?set STEAM_USER=your_steam_login first}"
+echo "== free space (need ~5 GB; Cloud Shell home is 5 GB — this is tight) =="; df -h "$HOME" | tail -1
 
 echo "== [1/7] system packages =="
 sudo apt-get update -y
@@ -21,7 +22,7 @@ sudo apt-get install -y clang lld llvm-18-dev llvm-18-tools git curl unzip zstd 
 echo "== [2/7] zig =="
 if [ ! -x "$TC/zig/zig" ]; then
 	curl -fsSL https://ziglang.org/download/0.14.1/zig-x86_64-linux-0.14.1.tar.xz -o "$TC/zig.tar.xz"
-	tar xf "$TC/zig.tar.xz" -C "$TC" && mv "$TC/zig-x86_64-linux-0.14.1" "$TC/zig"
+	tar xf "$TC/zig.tar.xz" -C "$TC" && mv "$TC/zig-x86_64-linux-0.14.1" "$TC/zig" && rm -f "$TC/zig.tar.xz"
 fi
 export PATH="$TC/zig:$PATH"
 
@@ -32,12 +33,13 @@ if [ ! -x "$TC/Odin/odin" ]; then
 fi
 export PATH="$TC/Odin:$PATH"
 
-echo "== [4/7] rcodesign (macOS ad-hoc signer) =="
+echo "== [4/7] rcodesign (macOS ad-hoc signer; OPTIONAL — the linker also ad-hoc signs on LLVM 18) =="
 if [ ! -x "$TC/rcodesign" ]; then
-	# prebuilt static binary (a passive download; nothing to sign in to)
-	RC_URL=$(curl -fsSL https://api.github.com/repos/indygreg/apple-platform-rs/releases/latest \
-		| python3 -c "import json,sys;[print(a['browser_download_url']) for a in json.load(sys.stdin)['assets'] if 'x86_64-unknown-linux-musl' in a['name'] and a['name'].endswith('.tar.gz')]" | head -1)
-	curl -fsSL "$RC_URL" -o "$TC/rc.tgz" && tar xzf "$TC/rc.tgz" -C "$TC" --wildcards --strip-components=1 '*/rcodesign'
+	{ RC_URL=$(curl -fsSL https://api.github.com/repos/indygreg/apple-platform-rs/releases/latest \
+		| python3 -c "import json,sys;[print(a['browser_download_url']) for a in json.load(sys.stdin)['assets'] if 'x86_64-unknown-linux-musl' in a['name'] and a['name'].endswith('.tar.gz')]" | head -1) \
+		&& curl -fsSL "$RC_URL" -o "$TC/rc.tgz" \
+		&& tar xzf "$TC/rc.tgz" -C "$TC" --wildcards --strip-components=1 '*/rcodesign' \
+		&& rm -f "$TC/rc.tgz"; } || echo "   (rcodesign unavailable — mac app falls back to the linker ad-hoc signature)"
 fi
 export PATH="$TC:$PATH"
 
@@ -54,6 +56,10 @@ export LIBRARY_PATH="$SRC/libs/linux/lib" LD_LIBRARY_PATH="$SRC/libs/linux/lib" 
 
 echo "== [6/7] build all three + assemble Steam content =="
 ./run.sh dist steam
+# Free space: dist_steam copies each build into content/, so the per-OS folders + zips are now
+# redundant (each holds a 512 MB city cache). Drop them so the upload has room on Cloud Shell.
+rm -rf dist/toomanymachines-* dist/*.zip dist/*.tar.gz
+df -h "$HOME" | tail -1
 
 echo "== [7/7] upload to Steam (log in when prompted; approve 2FA on your phone) =="
 if [ ! -x "$TC/steamcmd/steamcmd.sh" ]; then
