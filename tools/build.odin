@@ -427,8 +427,9 @@ dist :: proc(target: string) {
 	case "windows": dist_windows()
 	case "mac":     dist_mac()
 	case "all":     dist_linux(); dist_windows(); dist_mac()
+	case "steam":   dist_steam()
 	case:
-		fmt.eprintln("dist: unknown target", target, "— use linux | windows | mac | all")
+		fmt.eprintln("dist: unknown target", target, "— use linux | windows | mac | all | steam")
 		os.exit(1)
 	}
 	fmt.println(">> dist bundles in dist/")
@@ -524,4 +525,18 @@ dist_mac :: proc() {
 		`'; else echo "dist mac: no rcodesign/codesign found — relying on the linker ad-hoc signature (valid on LLVM >= 16; otherwise codesign on a Mac)"; fi`))
 	must("cd dist/toomanymachines-macos-arm64 && rm -f ../toomanymachines-macos-arm64.zip && zip -qry ../toomanymachines-macos-arm64.zip TooManyMachines.app")
 	fmt.println("   → dist/toomanymachines-macos-arm64.zip")
+}
+
+// Steam: build all three and lay them out as SteamPipe depot content under dist/steam/content/.
+// Upload with `steamcmd +run_app_build $(pwd)/tools/steam/app_build.vdf` (fill in the IDs there).
+// Steam-delivered builds aren't quarantined and launch the binary directly, so the mac build runs
+// without notarization or Gatekeeper prompts — the in-process MoltenVK setup (loop.odin) covers the
+// direct launch. Set per-OS launch executables in the Steamworks dashboard (see tools/steam/README).
+dist_steam :: proc() {
+	dist_linux(); dist_windows(); dist_mac()
+	must("rm -rf dist/steam/content && mkdir -p dist/steam/content/windows dist/steam/content/linux dist/steam/content/macos")
+	must("cp -a dist/toomanymachines-windows-x86_64/. dist/steam/content/windows/")
+	must("cp -a dist/toomanymachines-linux-x86_64/.   dist/steam/content/linux/")
+	must("cp -a dist/toomanymachines-macos-arm64/TooManyMachines.app dist/steam/content/macos/")
+	fmt.println("   → dist/steam/content/{windows,linux,macos} — upload via tools/steam/app_build.vdf")
 }

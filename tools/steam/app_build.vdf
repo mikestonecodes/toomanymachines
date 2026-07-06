@@ -1,0 +1,19 @@
+// SteamPipe app build script — uploads the Windows/macOS/Linux depots for a build.
+// Fill in the four IDs below (from your Steamworks app), then from tools/steam run:
+//   steamcmd +login <user> +run_app_build "$(pwd)/app_build.vdf" +quit
+// The content it uploads is produced by `./run.sh dist steam` (dist/steam/content/*).
+"appbuild"
+{
+	"appid"	"YOUR_APP_ID"
+	"desc"	"toomanymachines playtest"              // label shown in the Steamworks build list
+	"buildoutput"	"../../dist/steam/output/"       // upload logs + chunk cache (gitignored)
+	"contentroot"	"../../dist/steam/content/"      // built by `./run.sh dist steam`
+	"setlive"	""                                  // branch to auto-set live (e.g. "playtest"); empty = set it in the web UI
+
+	"depots"
+	{
+		"YOUR_WINDOWS_DEPOT_ID"	"depot_windows.vdf"
+		"YOUR_MACOS_DEPOT_ID"	"depot_macos.vdf"
+		"YOUR_LINUX_DEPOT_ID"	"depot_linux.vdf"
+	}
+}
