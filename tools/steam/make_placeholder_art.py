@@ -50,7 +50,7 @@ titled(231,  87, "small_capsule_231x87", scale=0.22)
 titled(616, 353, "main_capsule_616x353")
 titled(374, 448, "vertical_capsule_374x448")
 titled(600, 900, "library_capsule_600x900", scale=0.10)
-titled(1920, 620, "library_hero_1920x620", scale=0.13)
+titled(3840, 1240, "library_hero_3840x1240", scale=0.13)
 titled(1438, 810, "page_background_1438x810", scale=0.10)
 # Playtest is a separate app — needs its own header
 titled(460, 215, "playtest_header_460x215", tag="PLAYTEST")
