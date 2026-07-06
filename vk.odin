@@ -192,18 +192,13 @@ vk_init :: proc() {
 	}
 	prio: f32 = 1
 	qci := vk.DeviceQueueCreateInfo{sType = .DEVICE_QUEUE_CREATE_INFO, queueFamilyIndex = vkc.qfamily, queueCount = 1, pQueuePriorities = &prio}
-	// macOS/MoltenVK is a portability driver: the Vulkan spec requires enabling VK_KHR_portability_subset
-	// whenever the device advertises it. Vulkan is loaded at runtime (MoltenVK on mac), so on every
-	// other target this extension never exists and the slot stays unused.
-	dev_exts := [2]cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME, nil}
-	n_dev_exts: u32 = 1
-	when ODIN_OS == .Darwin { dev_exts[1] = vk.KHR_PORTABILITY_SUBSET_EXTENSION_NAME; n_dev_exts = 2 }
+	dev_exts := [?]cstring{vk.KHR_SWAPCHAIN_EXTENSION_NAME}
 	dci := vk.DeviceCreateInfo{
 		sType                   = .DEVICE_CREATE_INFO,
 		pNext                   = &feat2,
 		queueCreateInfoCount    = 1,
 		pQueueCreateInfos       = &qci,
-		enabledExtensionCount   = n_dev_exts,
+		enabledExtensionCount   = len(dev_exts),
 		ppEnabledExtensionNames = raw_data(dev_exts[:]),
 	}
 	vkok(vk.CreateDevice(vkc.phys, &dci, nil, &vkc.device), "CreateDevice")
