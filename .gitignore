@@ -17,3 +17,5 @@ odin-launcher.reload.log
 tools/gen/types.gen.odin
 .build.lock
 imgui.ini
+/libs/
+/dist/

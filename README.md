@@ -62,3 +62,28 @@ Modern, bindless Vulkan — deliberately small:
 Requires Odin, the Vulkan SDK / `libvulkan`, `glslc` + `spirv-tools`, and
 `vendor:sdl3` / `vendor:vulkan` / `vendor:stb`. Run from the project root (shaders are
 read from `shaders/`). For runtime validation: `sudo pacman -S vulkan-validation-layers`.
+
+## Dist (cross-compile Windows / macOS / Linux, all from Linux)
+
+```
+./run.sh dist            # all three targets
+./run.sh dist linux      # (or windows | mac)
+```
+
+Godot-style: one Linux host builds every native bundle. Odin emits the game as an
+object per target and `zig cc` links it — zig carries the glibc / mingw-w64 / macOS
+sysroots, so there's no MSVC, no osxcross, no second machine. Only SDL3 is linked;
+Vulkan is loaded at runtime, and on macOS that driver is **MoltenVK** (Vulkan-on-Metal),
+bundled into the `.app` and selected via `SDL_VULKAN_LIBRARY`. Linux targets an old
+glibc (2.17) so the binary runs on ancient distros; the Mac build is arm64 (Apple
+Silicon). Prebuilt SDL3 + MoltenVK are fetched from conda-forge into a gitignored
+`libs/` cache. Outputs land in `dist/` as ready-to-ship archives:
+
+| target  | artifact                                    |
+|---------|---------------------------------------------|
+| Linux   | `toomanymachines-linux-x86_64.tar.gz`       |
+| Windows | `toomanymachines-windows-x86_64.zip` (GUI)  |
+| macOS   | `toomanymachines-macos-arm64.zip` (`.app`)  |
+
+Extra host tools: `zig`, `curl`, `unzip`, `zstd`, `tar`, `zip`, and (mac only)
+`llvm-install-name-tool`.

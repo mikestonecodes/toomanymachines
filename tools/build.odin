@@ -256,6 +256,14 @@ main :: proc() {
 		return
 	}
 
+	// `dist [linux|windows|mac|all]`: cross-compile shippable native builds FROM LINUX (default all).
+	// Godot-style — one Linux host produces Windows/macOS/Linux bundles. See the dist section below.
+	if mode == "dist" {
+		target := len(os.args) > 2 ? os.args[2] : "all"
+		dist(target)
+		return
+	}
+
 	// default `run`: build + validate + launch the actual game.
 	sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1")
 	prep()
@@ -344,4 +352,163 @@ watch :: proc() {
 has_shader_ext :: proc(name: string) -> bool {
 	for ext in ([]string{".vert", ".frag", ".comp", ".glsl"}) { if strings.has_suffix(name, ext) { return true } }
 	return false
+}
+
+// ══ dist: cross-compile shippable Windows / macOS / Linux bundles FROM LINUX ═══════════════════
+//   ./run.sh dist            all three targets
+//   ./run.sh dist linux|windows|mac
+//
+// Godot-style: one Linux host builds every native target. Odin emits the game as an OBJECT for the
+// target (`-build-mode:obj -target:...`); `zig cc` links it — zig carries the glibc / mingw-w64 /
+// macOS sysroots, so no MSVC, no osxcross, no Windows/Mac machine. The ONLY library ever linked is
+// SDL3 (window + input); Vulkan is loaded at runtime, so it is never linked — on macOS that runtime
+// driver is MoltenVK (Vulkan-on-Metal), bundled into the .app and pointed at via SDL_VULKAN_LIBRARY.
+// Linux targets an OLD glibc (below) so the binary runs on ancient distros. The game finds its data
+// through SDL_GetBasePath at startup (see loop.odin), so shaders/spv + assets ship beside the binary
+// (in Contents/Resources for the .app).
+//
+// Prebuilt SDL3 + MoltenVK come from conda-forge (pinned below) into a gitignored libs/ cache — the
+// same trusted source across all targets. Host tools needed: zig, curl, unzip, zstd, tar, zip, and
+// (mac only) llvm-install-name-tool from LLVM. Bump a lib by picking a new build string from
+// https://anaconda.org/conda-forge/<pkg>/files.
+CONDA           :: "https://conda.anaconda.org/conda-forge/"
+PKG_SDL3_LINUX  :: "linux-64/sdl3-3.4.12-hdeec2a5_0.conda"
+PKG_ICONV_LINUX :: "linux-64/libiconv-1.18-h3b78370_2.conda" // conda's SDL3 hard-links libiconv.so.2 — bundle it
+PKG_SDL3_WIN    :: "win-64/sdl3-3.4.12-h5112557_0.conda"
+PKG_SDL3_MAC    :: "osx-arm64/sdl3-3.4.12-h6fa9c73_0.conda"
+PKG_MVK_MAC     :: "osx-arm64/moltenvk-1.4.1-h407b865_0.conda"
+DIST_GLIBC      :: "2.17" // oldest glibc the linux binary targets — matches the conda SDL3 floor
+
+// The macOS .app property list. LSEnvironment sets SDL_VULKAN_LIBRARY so SDL.Vulkan_LoadLibrary(nil)
+// (loop.odin) loads the bundled MoltenVK; @executable_path is expanded by dyld at load time.
+INFO_PLIST :: `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key><string>TooManyMachines</string>
+	<key>CFBundleDisplayName</key><string>TooManyMachines</string>
+	<key>CFBundleIdentifier</key><string>com.mikestone.toomanymachines</string>
+	<key>CFBundleExecutable</key><string>toomanymachines</string>
+	<key>CFBundlePackageType</key><string>APPL</string>
+	<key>CFBundleVersion</key><string>1.0</string>
+	<key>CFBundleShortVersionString</key><string>1.0</string>
+	<key>LSMinimumSystemVersion</key><string>11.0</string>
+	<key>NSHighResolutionCapable</key><true/>
+	<key>LSEnvironment</key>
+	<dict>
+		<key>SDL_VULKAN_LIBRARY</key><string>@executable_path/../Frameworks/libMoltenVK.dylib</string>
+	</dict>
+</dict>
+</plist>
+`
+
+// Windows glue compiled alongside the game object: _fltused is the MSVC float marker Odin's codegen
+// references, and WinMain→main lets -mwindows build a GUI-subsystem exe (no console) while keeping
+// Odin's C `main` as the real entry.
+WINSHIM :: `int _fltused = 1;
+int main(int, char **);
+__stdcall int WinMain(void *a, void *b, char *c, int d) { (void)a; (void)b; (void)c; (void)d; return main(0, 0); }
+`
+
+cat :: proc(parts: ..string) -> string { return strings.concatenate(parts, context.temp_allocator) }
+
+dist :: proc(target: string) {
+	prep()              // regen gen.glsl + compile shaders/spv (bundled)
+	ensure_city_cache() // bake assets/city.cache if a march source changed (bundled)
+	os.make_directory("dist")
+	os.make_directory("dist/.obj")
+	switch target {
+	case "linux":   dist_linux()
+	case "windows": dist_windows()
+	case "mac":     dist_mac()
+	case "all":     dist_linux(); dist_windows(); dist_mac()
+	case:
+		fmt.eprintln("dist: unknown target", target, "— use linux | windows | mac | all")
+		os.exit(1)
+	}
+	fmt.println(">> dist bundles in dist/")
+}
+
+// Download + extract a conda-forge package into libs/<dest>/ unless <sentinel> is already there.
+// A .conda is a zip wrapping pkg-*.tar.zst (the file payload); crack it with unzip + zstd + tar.
+dist_fetch :: proc(pkg, dest, sentinel: string) {
+	if os.exists(sentinel) { return }
+	fmt.println(">> fetch", pkg)
+	must(cat("mkdir -p libs/", dest))
+	must(cat(`root="$PWD"; t=$(mktemp -d) && curl -fsSL -o "$t/p.conda" '`, CONDA, pkg,
+		`' && unzip -qo "$t/p.conda" -d "$t" && zstd -dc "$t"/pkg-*.tar.zst | tar -x -C "$root/libs/`, dest,
+		`" && rm -rf "$t"`))
+}
+
+// Compile the game to a release object for `otarget`; returns "<outbase>.obj" (Odin's obj name).
+dist_obj :: proc(otarget, outbase: string) -> string {
+	must(cat("odin build . -build-mode:obj -target:", otarget,
+		" -use-single-module -o:speed -no-bounds-check -disable-assert -out:", outbase))
+	return cat(outbase, ".obj")
+}
+
+// Stage the runtime data (compiled shaders + baked city) under <dir> where the game reads it,
+// relative to SDL_GetBasePath at startup.
+dist_data :: proc(dir: string) {
+	must(cat("mkdir -p '", dir, "/shaders/spv' '", dir, "/assets'"))
+	must(cat("cp shaders/spv/*.spv '", dir, "/shaders/spv/'"))
+	must(cat("cp assets/city.cache '", dir, "/assets/'"))
+}
+
+// Linux: old-glibc x86_64 tarball. rpath $ORIGIN/lib finds the bundled SDL3 + libiconv.
+dist_linux :: proc() {
+	dist_fetch(PKG_SDL3_LINUX,  "linux", "libs/linux/lib/libSDL3.so")
+	dist_fetch(PKG_ICONV_LINUX, "linux", "libs/linux/lib/libiconv.so.2")
+	obj := dist_obj("linux_amd64", "dist/.obj/tmm_linux")
+	D := "dist/toomanymachines-linux-x86_64"
+	must(cat("rm -rf '", D, "' && mkdir -p '", D, "/lib'"))
+	must(cat("zig cc -target x86_64-linux-gnu.", DIST_GLIBC, " '", obj,
+		"' -o '", D, "/toomanymachines' -Llibs/linux/lib -lSDL3 -lm -ldl -lpthread -Wl,-rpath,'$ORIGIN/lib' -s"))
+	must(cat("cp -L libs/linux/lib/libSDL3.so.0 '", D, "/lib/libSDL3.so.0'"))
+	must(cat("cp -L libs/linux/lib/libiconv.so.2 '", D, "/lib/libiconv.so.2'"))
+	dist_data(D)
+	must(cat("tar czf '", D, ".tar.gz' -C dist toomanymachines-linux-x86_64"))
+	fmt.println("   →", cat(D, ".tar.gz"))
+}
+
+// Windows: GUI-subsystem x86_64 .exe + SDL3.dll, zipped. mingw link via zig; the shim supplies
+// WinMain/_fltused, -lbcrypt satisfies the runtime RNG.
+dist_windows :: proc() {
+	dist_fetch(PKG_SDL3_WIN, "windows", "libs/windows/Library/bin/SDL3.dll")
+	obj := dist_obj("windows_amd64", "dist/.obj/tmm_win")
+	D := "dist/toomanymachines-windows-x86_64"
+	_ = os.write_entire_file("dist/.obj/winshim.c", string(WINSHIM))
+	must("zig cc -target x86_64-windows-gnu -c dist/.obj/winshim.c -o dist/.obj/winshim.obj")
+	must(cat("rm -rf '", D, "' && mkdir -p '", D, "'"))
+	must(cat("zig cc -target x86_64-windows-gnu -mwindows -Wl,--subsystem,windows '", obj,
+		"' dist/.obj/winshim.obj -lbcrypt libs/windows/Library/bin/SDL3.dll -o '", D, "/toomanymachines.exe' -s"))
+	must(cat("cp libs/windows/Library/bin/SDL3.dll '", D, "/'"))
+	dist_data(D)
+	must("cd dist && rm -f toomanymachines-windows-x86_64.zip && zip -qry toomanymachines-windows-x86_64.zip toomanymachines-windows-x86_64")
+	fmt.println("   →", cat(D, ".zip"))
+}
+
+// macOS (arm64 / Apple Silicon): a .app bundle. MoltenVK is the Vulkan driver; SDL loads it via the
+// Info.plist SDL_VULKAN_LIBRARY env. Its @rpath/libc++ dep is repointed at the OS copy.
+dist_mac :: proc() {
+	dist_fetch(PKG_SDL3_MAC, "mac-arm64", "libs/mac-arm64/lib/libSDL3.0.dylib")
+	dist_fetch(PKG_MVK_MAC,  "mvk-arm64", "libs/mvk-arm64/lib/libMoltenVK.dylib")
+	obj := dist_obj("darwin_arm64", "dist/.obj/tmm_mac")
+	APP := "dist/toomanymachines-macos-arm64/TooManyMachines.app"
+	must("rm -rf 'dist/toomanymachines-macos-arm64'")
+	must(cat("mkdir -p '", APP, "/Contents/MacOS' '", APP, "/Contents/Frameworks' '", APP, "/Contents/Resources'"))
+	must(cat("zig cc -target aarch64-macos -mmacos-version-min=11.0 '", obj,
+		"' -o '", APP, "/Contents/MacOS/toomanymachines' -Llibs/mac-arm64/lib -lSDL3 -Wl,-rpath,@executable_path/../Frameworks"))
+	// llvm binutils, whatever they're named on this host (unsuffixed or -NN).
+	STRIP :: `S=""; for c in llvm-strip llvm-strip-20 llvm-strip-19 llvm-strip-18; do S=$(command -v "$c") && break; done`
+	INT :: `I=""; for c in llvm-install-name-tool llvm-install-name-tool-20 llvm-install-name-tool-19 llvm-install-name-tool-18; do I=$(command -v "$c") && break; done`
+	sh(cat(STRIP, `; [ -n "$S" ] && "$S" -x '`, APP, "/Contents/MacOS/toomanymachines'")) // best-effort size trim
+	must(cat("cp -L libs/mac-arm64/lib/libSDL3.0.dylib '", APP, "/Contents/Frameworks/libSDL3.0.dylib'"))
+	must(cat("cp -L libs/mvk-arm64/lib/libMoltenVK.dylib '", APP, "/Contents/Frameworks/libMoltenVK.dylib'"))
+	// MoltenVK's rpath is @loader_path/ but libc++ lives in the OS — point straight at the system copy.
+	must(cat(INT, `; [ -n "$I" ] || { echo "dist mac: need llvm-install-name-tool (install llvm)"; exit 1; }; "$I" -change @rpath/libc++.1.dylib /usr/lib/libc++.1.dylib '`, APP, "/Contents/Frameworks/libMoltenVK.dylib'"))
+	_ = os.write_entire_file(cat(APP, "/Contents/Info.plist"), string(INFO_PLIST))
+	dist_data(cat(APP, "/Contents/Resources"))
+	must("cd dist/toomanymachines-macos-arm64 && rm -f ../toomanymachines-macos-arm64.zip && zip -qry ../toomanymachines-macos-arm64.zip TooManyMachines.app")
+	fmt.println("   → dist/toomanymachines-macos-arm64.zip")
 }

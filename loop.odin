@@ -1,6 +1,7 @@
 package main
 
 import "core:fmt"
+import "core:os"
 import "core:time"
 import SDL "vendor:sdl3"
 
@@ -11,7 +12,13 @@ import SDL "vendor:sdl3"
 run_game :: proc() {
 	g_ctx = context
 	if !SDL.Init({.VIDEO}) { fmt.panicf("SDL_Init: %s", SDL.GetError()) }
-	if !SDL.Vulkan_LoadLibrary(nil) { fmt.panicf("Vulkan_LoadLibrary: %s", SDL.GetError()) }
+	// A dist build ships the binary beside its data (shaders/spv + assets/); a macOS .app keeps
+	// them in Contents/Resources. Run from that dir so the relative asset paths resolve however
+	// the app was launched (Finder starts a .app with cwd = /). SDL_GetBasePath is the executable
+	// dir on Windows/Linux and the .app Resources dir on macOS; in a dev build the binary sits at
+	// the repo root, so this is a no-op.
+	if base := SDL.GetBasePath(); base != nil { _ = os.change_directory(string(base)) }
+	if !SDL.Vulkan_LoadLibrary(nil) { fmt.panicf("Vulkan_LoadLibrary: %s", SDL.GetError()) } // reads SDL_VULKAN_LIBRARY (mac dist: bundled MoltenVK)
 	flags := SDL.WindowFlags{.VULKAN, .RESIZABLE, .HIGH_PIXEL_DENSITY}
 	if dev_hidden { flags += {.HIDDEN} } // headless harness renders off-screen
 	window = SDL.CreateWindow("toomanymachines", dev_win.x, dev_win.y, flags)
