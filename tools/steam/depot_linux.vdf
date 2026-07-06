@@ -1,6 +1,0 @@
-"DepotBuildConfig"
-{
-	"DepotID"	"YOUR_LINUX_DEPOT_ID"
-	"contentroot"	"../../dist/steam/content/linux"
-	"FileMapping" { "LocalPath" "*" "DepotPath" "." "recursive" "1" }
-}

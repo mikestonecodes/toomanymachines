@@ -1,6 +1,0 @@
-"DepotBuildConfig"
-{
-	"DepotID"	"YOUR_MACOS_DEPOT_ID"
-	"contentroot"	"../../dist/steam/content/macos"
-	"FileMapping" { "LocalPath" "*" "DepotPath" "." "recursive" "1" }
-}

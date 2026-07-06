@@ -1,0 +1,8 @@
+// One depot holding all three OS builds (windows/ macos/ linux/ subfolders).
+// Launch Options in the dashboard pick the right executable per OS.
+"DepotBuildConfig"
+{
+	"DepotID"	"4933641"
+	"contentroot"	"../../dist/steam/content"
+	"FileMapping" { "LocalPath" "*" "DepotPath" "." "recursive" "1" }
+}
