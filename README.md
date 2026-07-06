@@ -85,5 +85,16 @@ Silicon). Prebuilt SDL3 + MoltenVK are fetched from conda-forge into a gitignore
 | Windows | `toomanymachines-windows-x86_64.zip` (GUI)  |
 | macOS   | `toomanymachines-macos-arm64.zip` (`.app`)  |
 
-Extra host tools: `zig`, `curl`, `unzip`, `zstd`, `tar`, `zip`, and (mac only)
-`llvm-install-name-tool`.
+Extra host tools: `zig`, `curl`, `unzip`, `zstd`, `tar`, `zip`, and — for the mac
+target only — `llvm-install-name-tool` plus a code signer (`rcodesign`, from
+`cargo install apple-codesign`).
+
+### macOS notes
+
+- **Gatekeeper**: the `.app` is ad-hoc signed (required so Apple Silicon will run it
+  at all) but not notarized, so a downloaded copy is quarantined. First launch: right-
+  click → **Open**, or clear the flag: `xattr -dr com.apple.quarantine TooManyMachines.app`.
+- **MoltenVK**: Vulkan runs on Metal via the bundled MoltenVK, loaded by SDL through the
+  `SDL_VULKAN_LIBRARY` env in `Info.plist`. The renderer is bindless (unsized runtime
+  descriptor arrays), so the bundle also forces `MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1`
+  — Metal tier-2 argument buffers, standard on Apple Silicon.

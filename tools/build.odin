@@ -369,8 +369,8 @@ has_shader_ext :: proc(name: string) -> bool {
 //
 // Prebuilt SDL3 + MoltenVK come from conda-forge (pinned below) into a gitignored libs/ cache — the
 // same trusted source across all targets. Host tools needed: zig, curl, unzip, zstd, tar, zip, and
-// (mac only) llvm-install-name-tool from LLVM. Bump a lib by picking a new build string from
-// https://anaconda.org/conda-forge/<pkg>/files.
+// (mac only) llvm-install-name-tool + a code signer (rcodesign — `cargo install apple-codesign`).
+// Bump a lib by picking a new build string from https://anaconda.org/conda-forge/<pkg>/files.
 CONDA           :: "https://conda.anaconda.org/conda-forge/"
 PKG_SDL3_LINUX  :: "linux-64/sdl3-3.4.12-hdeec2a5_0.conda"
 PKG_ICONV_LINUX :: "linux-64/libiconv-1.18-h3b78370_2.conda" // conda's SDL3 hard-links libiconv.so.2 — bundle it
@@ -379,8 +379,12 @@ PKG_SDL3_MAC    :: "osx-arm64/sdl3-3.4.12-h6fa9c73_0.conda"
 PKG_MVK_MAC     :: "osx-arm64/moltenvk-1.4.1-h407b865_0.conda"
 DIST_GLIBC      :: "2.17" // oldest glibc the linux binary targets — matches the conda SDL3 floor
 
-// The macOS .app property list. LSEnvironment sets SDL_VULKAN_LIBRARY so SDL.Vulkan_LoadLibrary(nil)
-// (loop.odin) loads the bundled MoltenVK; @executable_path is expanded by dyld at load time.
+// The macOS .app property list. LSEnvironment sets the process env for a Finder launch:
+//  - SDL_VULKAN_LIBRARY → SDL.Vulkan_LoadLibrary(nil) (loop.odin) loads the bundled MoltenVK;
+//    @executable_path is expanded by dyld at load time.
+//  - MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS=1 → the renderer is bindless (unsized runtime descriptor
+//    arrays + update-after-bind), which MoltenVK can only honor through Metal tier-2 argument
+//    buffers; force them on so device/descriptor-set creation succeeds on Apple Silicon.
 INFO_PLIST :: `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -397,6 +401,7 @@ INFO_PLIST :: `<?xml version="1.0" encoding="UTF-8"?>
 	<key>LSEnvironment</key>
 	<dict>
 		<key>SDL_VULKAN_LIBRARY</key><string>@executable_path/../Frameworks/libMoltenVK.dylib</string>
+		<key>MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS</key><string>1</string>
 	</dict>
 </dict>
 </plist>
@@ -509,6 +514,14 @@ dist_mac :: proc() {
 	must(cat(INT, `; [ -n "$I" ] || { echo "dist mac: need llvm-install-name-tool (install llvm)"; exit 1; }; "$I" -change @rpath/libc++.1.dylib /usr/lib/libc++.1.dylib '`, APP, "/Contents/Frameworks/libMoltenVK.dylib'"))
 	_ = os.write_entire_file(cat(APP, "/Contents/Info.plist"), string(INFO_PLIST))
 	dist_data(cat(APP, "/Contents/Resources"))
+	// Ad-hoc sign the FINISHED bundle (last — the signature seals the whole tree). Apple Silicon
+	// refuses to run unsigned or stale-signed code, and strip/install_name_tool above only re-sign
+	// on LLVM ≥ 16 — so sign authoritatively here. rcodesign (Linux) or codesign (if building on a
+	// Mac) both deep-sign in place; with neither, the bundle still carries the linker's ad-hoc
+	// signature, which is valid on LLVM ≥ 16.
+	must(cat(`if command -v rcodesign >/dev/null 2>&1; then rcodesign sign '`, APP,
+		`'; elif command -v codesign >/dev/null 2>&1; then codesign --force --deep --sign - '`, APP,
+		`'; else echo "dist mac: no rcodesign/codesign found — relying on the linker ad-hoc signature (valid on LLVM >= 16; otherwise codesign on a Mac)"; fi`))
 	must("cd dist/toomanymachines-macos-arm64 && rm -f ../toomanymachines-macos-arm64.zip && zip -qry ../toomanymachines-macos-arm64.zip TooManyMachines.app")
 	fmt.println("   → dist/toomanymachines-macos-arm64.zip")
 }
