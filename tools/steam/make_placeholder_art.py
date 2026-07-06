@@ -70,4 +70,23 @@ logo.save(f"{OUT}/library_logo_1280x720.png"); print("   library_logo_1280x720 1
 # The real screenshot, kept as a store screenshot
 base.save(f"{OUT}/screenshot_01_1280x720.jpg", quality=92)
 print("   screenshot_01_1280x720 (real gameplay)")
+
+# App / shortcut icon: the game's red targeting reticle on near-black — reads at small sizes.
+def icon(sz):
+    im = Image.new("RGBA", (sz, sz), (14, 12, 12, 255))
+    d = ImageDraw.Draw(im)
+    c = sz / 2; red = (232, 72, 40, 255)
+    lw = max(2, sz // 40)
+    d.ellipse([sz*0.20, sz*0.20, sz*0.80, sz*0.80], outline=red, width=lw)      # outer ring
+    d.ellipse([sz*0.40, sz*0.40, sz*0.60, sz*0.60], outline=red, width=lw)      # inner ring
+    for a, b in [((c, sz*0.10), (c, sz*0.30)), ((c, sz*0.70), (c, sz*0.90)),    # ticks
+                 ((sz*0.10, c), (sz*0.30, c)), ((sz*0.70, c), (sz*0.90, c))]:
+        d.line([a, b], fill=red, width=lw)
+    d.ellipse([c-lw, c-lw, c+lw, c+lw], fill=red)                                # center dot
+    return im
+ic = icon(512)
+ic.resize((184, 184), Image.LANCZOS).save(f"{OUT}/app_icon_184x184.png")
+ic.resize((256, 256), Image.LANCZOS).save(f"{OUT}/shortcut_icon_256x256.png")
+ic.save(f"{OUT}/shortcut_icon.ico", sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+print("   app_icon_184x184 / shortcut_icon_256x256 / shortcut_icon.ico")
 print("done ->", OUT)
