@@ -521,11 +521,10 @@ main :: proc() {
 		return
 	}
 
-	// `deploy steam [user]`: build the steam bundles, upload to the Playtest depot via steamcmd,
-	// and — with STEAM_WEBAPI_KEY exported (a Steamworks PUBLISHER key) — set the new build LIVE
-	// on the default branch via the Web API, fully hands-off. Without the key it stops at upload
-	// (steamcmd itself can't flip the default branch; Valve blocks it). The steam login must be
-	// cached (run `steamcmd +login <user>` once); STEAM_USER (or the 3rd arg) is the login.
+	// `deploy steam [user]`: build the steam bundles + upload to the Playtest depot via steamcmd.
+	// The login must already be cached (run `steamcmd +login <user>` once). STEAM_USER (or the 3rd
+	// arg) is the login. The build is uploaded but NOT set live — flip it live on the default branch
+	// yourself in Steamworks -> SteamPipe -> Builds (steamcmd can't set the default branch live).
 	if mode == "deploy" {
 		if len(os.args) < 3 || os.args[2] != "steam" {
 			fmt.eprintln("deploy: only 'steam' is supported — use ./run.sh deploy steam [user]")
@@ -538,39 +537,8 @@ main :: proc() {
 			os.exit(1)
 		}
 		// $(pwd) → the project root (run.sh cd's here); steamcmd wants an absolute app_build.vdf path.
-		// Output tees into a log so the BuildID can be parsed for the set-live step below.
-		must(cat("set -o pipefail; steamcmd +login ", user, ` +run_app_build "$(pwd)/tools/steam/app_build.vdf" +quit 2>&1 | tee dist/steam/output/steamcmd.log`))
-
-		// SET LIVE, automated: steamcmd can't flip the DEFAULT branch (Valve blocks it), but the
-		// Steamworks Web API SetAppBuildLive with a PUBLISHER key can. Create the key once in
-		// Steamworks -> Users & Permissions -> Manage Groups -> (group with Publish access) ->
-		// Create Publisher Key, then export STEAM_WEBAPI_KEY. Without the key: manual click.
-		log, _ := os.read_entire_file("dist/steam/output/steamcmd.log", context.temp_allocator)
-		build_id := ""
-		if i := strings.index(string(log), "(BuildID "); i >= 0 {
-			rest := string(log)[i + len("(BuildID "):]
-			build_id = rest[:strings.index_byte(rest, ')')]
-		}
-		vdf, _ := os.read_entire_file("tools/steam/app_build.vdf", context.temp_allocator)
-		appid := ""
-		if i := strings.index(string(vdf), "\"appid\""); i >= 0 {
-			rest := string(vdf)[i + len("\"appid\""):]
-			q := strings.index_byte(rest, '"')
-			rest = rest[q + 1:]
-			appid = rest[:strings.index_byte(rest, '"')]
-		}
-		key := os.get_env("STEAM_WEBAPI_KEY", context.temp_allocator)
-		if key == "" || build_id == "" || appid == "" {
-			fmt.printfln(">> uploaded BuildID %s — no STEAM_WEBAPI_KEY set, so flip it live yourself: Steamworks -> SteamPipe -> Builds.", build_id)
-			return
-		}
-		fmt.printfln(">> uploaded BuildID %s — setting it live on the default branch via the Web API…", build_id)
-		if sh(cat(`curl -sS --fail-with-body -X POST 'https://partner.steam-api.com/ISteamApps/SetAppBuildLive/v1/' `,
-			`-d 'key=`, key, `&appid=`, appid, `&buildid=`, build_id, `&betakey=public&description=autodeploy'; echo`)) == 0 {
-			fmt.println(">> build set LIVE on the default branch.")
-		} else {
-			fmt.println(">> Web API set-live FAILED (response above) — flip it manually: Steamworks -> SteamPipe -> Builds.")
-		}
+		must(cat("steamcmd +login ", user, ` +run_app_build "$(pwd)/tools/steam/app_build.vdf" +quit`))
+		fmt.println(">> uploaded — now set the build live on the DEFAULT branch in Steamworks -> SteamPipe -> Builds.")
 		return
 	}
 
