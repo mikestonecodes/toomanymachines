@@ -3,6 +3,7 @@
 "DepotBuildConfig"
 {
 	"DepotID"	"4933641"
-	"contentroot"	"../../dist/steam/content"
+	// no contentroot here — it inherits the appbuild's contentroot (../../dist/steam/content).
+	// A contentroot in the depot file is resolved RELATIVE to the app's, which would double the path.
 	"FileMapping" { "LocalPath" "*" "DepotPath" "." "recursive" "1" }
 }

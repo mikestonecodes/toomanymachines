@@ -40,36 +40,54 @@ must :: proc(cmd: string) {
 	}
 }
 
-// The offline CITY CACHE (assets/city.cache): the static building layer, pre-marched once
-// by the SEPARATE baker harness (tools/citybake) so the game just samples it. The game tree
-// carries NO bake code — the baker is assembled at build time by copying every game .odin
-// EXCEPT main.odin next to tools/citybake/citybake.odin (which supplies its own main +
-// standalone bake pipeline) and compiling that. Rebake only when missing or older than a
-// source that changes the baked pixels.
-// NOTE: a live `watch` session editing ONLY the shaders (.glsl saves, no game relaunch)
-// won't auto-rebake — rerun ./run.sh to refresh the building look.
-CACHE_SRCS := []string{"tools/citybake/citybuild.frag", "tools/citybake/citybake.odin", "shaders/common.glsl", "shaders/city.frag", "car.odin", "render.odin"}
-BAKE_GEN :: "tools/citybake/gen" // assembled baker package (copied game sources + harness)
+// The offline BAKE CACHES (assets/*.cache): static, view-independent layers pre-rendered once
+// by the SEPARATE baker harness (tools/bake) so the game just samples them — the city building
+// layer AND the enemy-chassis sprite atlas (bake_cache.odin: BAKE_SPECS). The game tree carries
+// NO bake code — the baker is assembled at build time by copying every game .odin EXCEPT
+// main.odin next to tools/bake/bake.odin (which supplies its own main + the standalone bake
+// pipeline) and compiling that. Rebake when any cache is missing or older than a source that
+// changes the baked pixels.
+// NOTE: a live `watch` session editing ONLY the shaders (.glsl saves, no game relaunch) won't
+// auto-rebake — rerun ./run.sh to refresh the baked layers.
+BAKE_CACHES := []string{"assets/city.cache", "assets/body.cache"}
+BAKE_SRCS := []string{"shaders/common.glsl", "shaders/city.frag", "shaders/body.frag", "car.odin", "render.odin", "bake_cache.odin", "tools/bake/bake.odin"}
+BAKE_GEN :: "tools/bake/gen" // assembled baker package (copied game sources + harness)
 
-ensure_city_cache :: proc() {
-	ct, cerr := os.last_write_time_by_name("assets/city.cache")
-	stale := cerr != os.ERROR_NONE
+ensure_bakes :: proc() {
+	// the baker frags (one per job) are also sources — glob them in.
+	frags, _ := filepath.glob("tools/bake/*.frag")
+	stale := false
+	oldest := i64(max(i64))
+	for c in BAKE_CACHES {
+		ct, cerr := os.last_write_time_by_name(c)
+		if cerr != os.ERROR_NONE { stale = true; break }
+		oldest = min(oldest, time.to_unix_nanoseconds(ct))
+	}
 	if !stale {
-		cn := time.to_unix_nanoseconds(ct)
-		for s in CACHE_SRCS {
+		for s in slice_concat(BAKE_SRCS, frags) {
 			st, serr := os.last_write_time_by_name(s)
-			if serr == os.ERROR_NONE && time.to_unix_nanoseconds(st) > cn { stale = true; break }
+			if serr == os.ERROR_NONE && time.to_unix_nanoseconds(st) > oldest { stale = true; break }
 		}
 	}
 	if !stale { return }
-	fmt.println(">> baking city cache (a march source changed)…")
-	assemble_harness(BAKE_GEN, "tools/citybake") // game sources (minus main.odin) + the baker's main
-	// the baker's OWN shader → shaders/spv (loaded by the harness at runtime), validated.
-	must("glslc -I shaders --target-env=vulkan1.3 -Werror -fshader-stage=fragment tools/citybake/citybuild.frag -o shaders/spv/citybuild.frag.tmp.spv")
-	must("spirv-val shaders/spv/citybuild.frag.tmp.spv")
-	must("mv shaders/spv/citybuild.frag.tmp.spv shaders/spv/citybuild.frag.spv")
-	must(fmt.tprintf("odin build %s -debug -out:citybake", BAKE_GEN)) // -debug → the bake VALIDATES too
-	must("./citybake")
+	fmt.println(">> baking static caches (a bake source changed)…")
+	assemble_harness(BAKE_GEN, "tools/bake") // game sources (minus main.odin) + the baker's main
+	// each baker frag → shaders/spv (loaded by the harness at runtime), validated.
+	for f in frags {
+		name := filepath.base(f) // e.g. bake_city.frag
+		must(fmt.tprintf("glslc -I shaders --target-env=vulkan1.3 -Werror -fshader-stage=fragment %s -o shaders/spv/%s.tmp.spv", f, name))
+		must(fmt.tprintf("spirv-val shaders/spv/%s.tmp.spv", name))
+		must(fmt.tprintf("mv shaders/spv/%s.tmp.spv shaders/spv/%s.spv", name, name))
+	}
+	must(fmt.tprintf("odin build %s -debug -out:bake.tmp", BAKE_GEN)) // -debug → the bake VALIDATES too
+	must("mv -f bake.tmp bake")                                       // atomic: never write a possibly-busy inode
+	must("./bake")
+}
+
+slice_concat :: proc(a, b: []string) -> []string {
+	out := make([]string, len(a) + len(b), context.temp_allocator)
+	copy(out[:], a); copy(out[len(a):], b)
+	return out
 }
 
 // Assemble a harness package: a FRESH copy of every game .odin EXCEPT main.odin (the harness
@@ -90,7 +108,11 @@ assemble_harness :: proc(gendir, harness_dir: string) {
 DEV_GEN :: "tools/devharness/gen"
 build_devharness :: proc(release := false) {
 	assemble_harness(DEV_GEN, "tools/devharness")
-	must(fmt.tprintf("odin build %s %s -out:devharness", DEV_GEN, release ? "" : "-debug"))
+	// Build to a .tmp then rename: a devharness still draining from a prior shot/test/profile run
+	// holds the executable open (ETXTBSY), so `-out:devharness` would intermittently fail. The
+	// rename is atomic and never touches the busy inode — reliable every time.
+	must(fmt.tprintf("odin build %s %s -out:devharness.tmp", DEV_GEN, release ? "" : "-debug"))
+	must("mv -f devharness.tmp devharness")
 }
 
 // Regenerate the shared GLSL from the @glsl blocks, then compile every shader to SPIR-V.
@@ -239,8 +261,18 @@ main :: proc() {
 	// city cache, then exit. profile.sh uses it so ngfx/nsys profile the shipping-perf path.
 	if mode == "devrelease" {
 		prep()
-		ensure_city_cache()
+		ensure_bakes()
 		build_devharness(release = true)
+		return
+	}
+
+	// `harness`: build the VALIDATED (debug) dev harness + ensure the baked caches, then exit —
+	// no run. shot.sh builds with this once, then runs `./devharness shot` with its own env knobs
+	// (camera/fire/res/output) for a reliable capture of ANY vantage without touching game code.
+	if mode == "harness" {
+		prep()
+		ensure_bakes()
+		build_devharness()
 		return
 	}
 
@@ -250,7 +282,7 @@ main :: proc() {
 	// the harness; the game source is pure.
 	if mode == "shot" || mode == "test" {
 		prep()
-		ensure_city_cache()
+		ensure_bakes()
 		build_devharness()
 		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./devharness %s", mode)) >> 8 & 0xff)
 		return
@@ -268,7 +300,7 @@ main :: proc() {
 	sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1")
 	prep()
 	must("odin build . -out:toomanymachines -debug")
-	ensure_city_cache() // the static city the game loads (rebakes if a march source changed)
+	ensure_bakes() // the static city the game loads (rebakes if a bake source changed)
 	build_devharness()
 
 	// GPU-Assisted validation pass: drive the sim headless under GPU-AV (runtime descriptor/OOB
@@ -301,7 +333,7 @@ launch :: proc() {
 	fmt.println("Building…")
 	sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1")
 	if sh("odin build . -out:toomanymachines") == 0 {
-		ensure_city_cache() // the game loads assets/city.cache at startup
+		ensure_bakes() // the game loads the baked caches at startup
 		fmt.println("OK — launching (release build: no validation, fast)")
 		sh("nohup ./toomanymachines >/dev/null 2>&1 &")
 	} else {
@@ -419,7 +451,7 @@ cat :: proc(parts: ..string) -> string { return strings.concatenate(parts, conte
 
 dist :: proc(target: string) {
 	prep()              // regen gen.glsl + compile shaders/spv (bundled)
-	ensure_city_cache() // bake assets/city.cache if a march source changed (bundled)
+	ensure_bakes() // bake the city + body caches if a march source changed (bundled)
 	os.make_directory("dist")
 	os.make_directory("dist/.obj")
 	switch target {
@@ -448,9 +480,11 @@ dist_fetch :: proc(pkg, dest, sentinel: string) {
 
 // Compile the game to a release object for `otarget`; returns "<outbase>.obj" (Odin's obj name).
 dist_obj :: proc(otarget, outbase: string) -> string {
+	// odin needs the object extension spelled out in -out: (.obj for windows, .o elsewhere).
+	out := cat(outbase, strings.contains(otarget, "windows") ? ".obj" : ".o")
 	must(cat("odin build . -build-mode:obj -target:", otarget,
-		" -use-single-module -o:speed -no-bounds-check -disable-assert -out:", outbase))
-	return cat(outbase, ".obj")
+		" -use-single-module -o:speed -no-bounds-check -disable-assert -out:", out))
+	return out
 }
 
 // Stage the runtime data (compiled shaders + baked city) under <dir> where the game reads it,
@@ -458,7 +492,7 @@ dist_obj :: proc(otarget, outbase: string) -> string {
 dist_data :: proc(dir: string) {
 	must(cat("mkdir -p '", dir, "/shaders/spv' '", dir, "/assets'"))
 	must(cat("cp shaders/spv/*.spv '", dir, "/shaders/spv/'"))
-	must(cat("cp assets/city.cache '", dir, "/assets/'"))
+	must(cat("cp assets/*.cache '", dir, "/assets/'")) // city.cache + body.cache (see BAKE_CACHES)
 }
 
 // Linux: old-glibc x86_64 tarball. rpath $ORIGIN/lib finds the bundled SDL3 + libiconv.
