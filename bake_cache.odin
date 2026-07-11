@@ -97,22 +97,27 @@ oneshot_end :: proc(cmd: vk.CommandBuffer) {
 bake_load_all :: proc() { for job in Bake { bake_load(job) } }
 
 bake_load :: proc(job: Bake) {
+	// STREAM the file straight into the mapped staging buffer — the city cache is 512MB,
+	// and reading it through the heap would be the game's biggest allocation by far.
 	s := BAKE_SPECS[job]
-	data, rerr := os.read_entire_file(s.cache, context.allocator)
-	if rerr != nil || len(data) < size_of(Bake_Hdr) {
-		fmt.panicf("bake cache missing/short (%s) — run ./run.sh (it bakes): %v", s.cache, rerr)
+	fd, oerr := os.open(s.cache)
+	if oerr != nil { fmt.panicf("bake cache missing (%s) — run ./run.sh (it bakes): %v", s.cache, oerr) }
+	defer os.close(fd)
+	hdr: Bake_Hdr
+	if n, herr := os.read_full(fd, mem.ptr_to_bytes(&hdr)); herr != nil || n != size_of(Bake_Hdr) {
+		fmt.panicf("bake cache short (%s) — run ./run.sh (it bakes)", s.cache)
 	}
-	hdr := (^Bake_Hdr)(raw_data(data))^
 	if hdr.magic != BAKE_MAGIC || hdr.version != BAKE_VER || hdr.job != u32(job) || hdr.dim != bake_dim(job) || hdr.params != s.params {
 		fmt.panicf("bake cache %s: baked against different constants — run ./run.sh (rebakes)", s.cache)
 	}
 	payload := bake_payload(job)
-	if len(data) != size_of(Bake_Hdr) + payload { fmt.panicf("bake cache %s: truncated payload — run ./run.sh", s.cache) }
+	if fsize, _ := os.file_size(fd); fsize != i64(size_of(Bake_Hdr) + payload) { fmt.panicf("bake cache %s: truncated payload — run ./run.sh", s.cache) }
 
 	bake_setup_image(job)
 	stage, stage_mem, stage_ptr := create_buffer(vk.DeviceSize(payload), true)
-	mem.copy(stage_ptr, rawptr(uintptr(raw_data(data)) + size_of(Bake_Hdr)), payload)
-	delete(data)
+	if n, perr := os.read_full(fd, mem.byte_slice(stage_ptr, payload)); perr != nil || n != payload {
+		fmt.panicf("bake cache %s: read failed — run ./run.sh", s.cache)
+	}
 
 	dim := bake_dim(job)
 	cmd := oneshot_begin()

@@ -12,9 +12,9 @@
 - Error handling: `vkok(result, "what")` for Vulkan calls; `check(ok, err)` / `fmt.panicf` for setup
 
 ## Memory Rules
-- Keep the per-frame path allocation-free (input → `game_update` → `vk_render`). No `make`/`append` in the loop.
-- Init-time allocation is fine: buffers, swapchain `[dynamic]` arrays, bindless set.
-- Transient init queries (device/layer enumeration, shader command strings) use `context.temp_allocator`; the loop `free_all`s it each frame.
+- **The game heap-allocates NOTHING — ever.** No `make`/`new`/`append`-to-heap/`aprintf`/`read_entire_file` anywhere in game code, init included. Fixed storage everywhere: `[dynamic; N]T` for lists, `[N]T` locals for enumerations, static `[N]u8` scratch for file IO (`read_into`, vk.odin), and huge payloads stream straight into mapped GPU staging memory (`bake_load`). BSS is free until touched — when sizing N, don't ask "what's the max?", just make it HUGE (32MB scratch for a 1MB blob is correct).
+- Vulkan enumerations: two-call pattern (count, then fetch with that exact count — best-practices validation demands it) into a fixed local, count clamped to the array.
+- The loop still `free_all`s `context.temp_allocator` each frame as a backstop for vendor code.
 
 ## State Rules
 - No monolithic state struct. Game state is small globals in `car.odin` (`car_pos`/`car_vel`/`car_angle`, `input`, `cam`/`cam_shake`, `muzzle`, `fire_timer`, `bullet_head`, `city_r`/`deposits_seen`) plus the GPU body buffer (`buf_map[.Body]`) and pit counters (`buf_map[.Stats]`).
@@ -36,7 +36,7 @@
 
 ## Code Style
 - **NAME STATED ONCE — no duplicated registration, ever.** Adding a thing is ONE enum member, ONE table row, or ONE file. Everything derivable is derived by convention: shader paths from enum names, shader stages from file extensions, bindless slots from row order, entry points from globs. If two declarations must agree, derive one from the other (or #assert it) — never maintain parallel lists by hand.
-- **Generic container pattern: `[dynamic; N]T`** (fixed-capacity dynamic array — deprecates `Small_Array`). Whenever a list's maximum count is known, default to it: stack-backed, allocation-free, same `append`/`len` API; slice with `[:]` for `raw_data`/procs. Heap `[dynamic]T` is only for genuinely unbounded, init-time collections (e.g. swapchain-sized arrays).
+- **Generic container pattern: `[dynamic; N]T`** (fixed-capacity dynamic array — deprecates `Small_Array`). ALWAYS default to it — don't wait for a "known" bound, just pick a hugely generous N (memory is cheap, BSS is free until touched); same `append`/`len`/`resize` API, slice with `[:]` for `raw_data`/procs. Heap `[dynamic]T` is banned in game code (see Memory Rules).
 - Only break out a function if used 2+ times — inline single-use functions
 - Write concrete code first, extract shared parts only after 2+ instances
 - Never create abstractions preemptively

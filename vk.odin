@@ -2,7 +2,6 @@ package main
 
 import "core:fmt"
 import "core:os"
-import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
@@ -44,8 +43,8 @@ vkc: struct {
 	swapchain: vk.SwapchainKHR,
 	format:    vk.Format,
 	extent:    vk.Extent2D,
-	images:    [dynamic]vk.Image,
-	views:     [dynamic]vk.ImageView,
+	images:    [dynamic; 8]vk.Image, // swapchain images (drivers give 2-4; 8 is generous)
+	views:     [dynamic; 8]vk.ImageView,
 
 	// bindless
 	set_layout:  vk.DescriptorSetLayout,
@@ -66,7 +65,7 @@ vkc: struct {
 	cmds:        [FRAMES_IN_FLIGHT]vk.CommandBuffer,
 	img_avail:   [FRAMES_IN_FLIGHT]vk.Semaphore,
 	in_flight:   [FRAMES_IN_FLIGHT]vk.Fence,
-	render_done: [dynamic]vk.Semaphore, // one per swapchain image
+	render_done: [dynamic; 8]vk.Semaphore, // one per swapchain image
 	frame:       u32,
 
 	// GPU profiler: per-pass timestamps (one pool per in-flight slot)
@@ -288,17 +287,33 @@ bindless_init :: proc() {
 pipe_cache_path:   string // <SDL pref dir>/pipeline.cache — per-user writable on every OS, unlike the install dir
 pipe_cache_seeded: bool   // a cache file existed and seeded the VkPipelineCache → the build will be
                           // near-instant, so the loading screen never shows (loader.odin)
+@(private = "file") pipe_cache_pathbuf: [512]u8
+@(private = "file") pipe_cache_buf: [32 * 1024 * 1024]u8 // BSS scratch for the ISA blob (~1-2MB real; zero-cost until touched)
+
+// Read a whole file into a fixed buffer — the game's ONLY file reader, so the game never
+// heap-allocates for IO. ok=false if missing or larger than the buffer.
+read_into :: proc(path: string, buf: []u8) -> (data: []u8, ok: bool) {
+	fd, oerr := os.open(path)
+	if oerr != nil { return }
+	defer os.close(fd)
+	size, serr := os.file_size(fd)
+	if serr != nil || int(size) > len(buf) { return }
+	n, rerr := os.read_full(fd, buf[:size])
+	return buf[:n], rerr == nil && i64(n) == size
+}
 
 pipeline_cache_load :: proc() {
 	if pref := SDL.GetPrefPath("", "toomanymachines"); pref != nil {
-		pipe_cache_path = fmt.aprintf("%spipeline.cache", cstring(pref)) // pref dir ends in the separator
+		pipe_cache_path = fmt.bprintf(pipe_cache_pathbuf[:], "%spipeline.cache", cstring(pref)) // pref dir ends in the separator
 		SDL.free(rawptr(pref))
 	}
 	ci := vk.PipelineCacheCreateInfo{sType = .PIPELINE_CACHE_CREATE_INFO}
-	data, rerr := os.read_entire_file(pipe_cache_path, context.allocator)
-	if rerr == nil { ci.initialDataSize = len(data); ci.pInitialData = raw_data(data); pipe_cache_seeded = true }
+	if data, ok := read_into(pipe_cache_path, pipe_cache_buf[:]); ok {
+		ci.initialDataSize = len(data)
+		ci.pInitialData = raw_data(data)
+		pipe_cache_seeded = true
+	}
 	vkok(vk.CreatePipelineCache(vkc.device, &ci, nil, &vkc.pipe_cache), "CreatePipelineCache")
-	if rerr == nil { delete(data) }
 }
 
 // Persist the driver-populated ISA cache after a successful build — the loading screen, hot
@@ -307,11 +322,9 @@ pipeline_cache_load :: proc() {
 pipeline_cache_save :: proc() {
 	size: int
 	if pipe_cache_path == "" { return }
-	if vk.GetPipelineCacheData(vkc.device, vkc.pipe_cache, &size, nil) != .SUCCESS || size == 0 { return }
-	buf := make([]byte, size, context.allocator)
-	defer delete(buf)
-	if vk.GetPipelineCacheData(vkc.device, vkc.pipe_cache, &size, raw_data(buf)) != .SUCCESS { return }
-	if werr := os.write_entire_file(pipe_cache_path, buf[:size]); werr != nil { fmt.eprintln("pipeline cache: failed to write", pipe_cache_path, werr) }
+	if vk.GetPipelineCacheData(vkc.device, vkc.pipe_cache, &size, nil) != .SUCCESS || size == 0 || size > len(pipe_cache_buf) { return }
+	if vk.GetPipelineCacheData(vkc.device, vkc.pipe_cache, &size, raw_data(pipe_cache_buf[:])) != .SUCCESS { return }
+	if werr := os.write_entire_file(pipe_cache_path, pipe_cache_buf[:size]); werr != nil { fmt.eprintln("pipeline cache: failed to write", pipe_cache_path, werr) }
 }
 
 // ── buffers ──────────────────────────────────────────────────────────────────
@@ -554,14 +567,26 @@ PipeSpec :: struct { compute: bool, vert: string, blend: Blend, hdr: bool }
 pipelines: [Pipe]vk.Pipeline
 
 // NAME STATED ONCE: a pipeline's shader paths derive from its enum member — lowercased name
-// = the fragment (or compute) shader stem; `vert` overrides the fs_tri default. Returns the
-// stage .spv paths, temp-allocated (compute: frag == "").
-pipe_paths :: proc(p: Pipe) -> (vert, frag: string) {
-	spec := PIPE_SPECS[p]
-	name := strings.to_lower(fmt.tprintf("%v", p), context.temp_allocator)
-	if spec.compute { return fmt.tprintf("shaders/spv/%s.comp.spv", name), "" }
-	vstem := spec.vert != "" ? spec.vert : "fs_tri"
-	return fmt.tprintf("shaders/spv/%s.vert.spv", vstem), fmt.tprintf("shaders/spv/%s.frag.spv", name)
+// = the fragment (or compute) shader stem; `vert` overrides the fs_tri default. Built once
+// into static storage (hot_reload_poll reads these every 30 frames — the loop stays
+// allocation-free). [0] = vert (or the compute stage), [1] = frag ("" for compute).
+pipe_spv: [Pipe][2]string
+@(private = "file") pipe_spv_buf: [Pipe][2][64]u8
+
+pipe_paths_init :: proc() {
+	if pipe_spv[Pipe(0)][0] != "" { return }
+	for spec, p in PIPE_SPECS {
+		name: [32]u8 // the enum member, lowercased
+		n := len(fmt.bprintf(name[:], "%v", p))
+		for i in 0 ..< n { if name[i] >= 'A' && name[i] <= 'Z' { name[i] += 32 } }
+		if spec.compute {
+			pipe_spv[p][0] = fmt.bprintf(pipe_spv_buf[p][0][:], "shaders/spv/%s.comp.spv", string(name[:n]))
+			continue
+		}
+		vstem := spec.vert != "" ? spec.vert : "fs_tri"
+		pipe_spv[p][0] = fmt.bprintf(pipe_spv_buf[p][0][:], "shaders/spv/%s.vert.spv", vstem)
+		pipe_spv[p][1] = fmt.bprintf(pipe_spv_buf[p][1][:], "shaders/spv/%s.frag.spv", string(name[:n]))
+	}
 }
 
 // Build every PIPE_SPECS pipeline into `out`, one thread per pipeline — the driver compiles
@@ -571,13 +596,13 @@ pipe_paths :: proc(p: Pipe) -> (vert, frag: string) {
 pipes_built: u32
 
 build_pipelines :: proc(out: ^[Pipe]vk.Pipeline) -> (ok: bool) {
+	pipe_paths_init()
 	sync.atomic_store(&pipes_built, 0)
 	threads: [len(Pipe)]^thread.Thread
 	for _, p in PIPE_SPECS {
 		threads[p] = thread.create_and_start_with_poly_data2(out, p, proc(out: ^[Pipe]vk.Pipeline, p: Pipe) {
 			spec := PIPE_SPECS[p]
-			vert, frag := pipe_paths(p)
-			out[p] = spec.compute ? make_compute_pipeline(vert) : make_graphics_pipeline(vert, frag, spec.blend, spec.hdr)
+			out[p] = spec.compute ? make_compute_pipeline(pipe_spv[p][0]) : make_graphics_pipeline(pipe_spv[p][0], pipe_spv[p][1], spec.blend, spec.hdr)
 			sync.atomic_add(&pipes_built, 1)
 		})
 	}
@@ -605,11 +630,17 @@ rebuild_pipelines :: proc() {
 // compilation lives here. Hot reload watches the compiled .spv files (the ones listed in
 // PIPE_SPECS) and rebuilds the pipelines when the watcher recompiles them — see build.odin `watch`.
 
-// Load a precompiled SPIR-V file → VkShaderModule (0 on failure).
+// Load a precompiled SPIR-V file → VkShaderModule (0 on failure). A static scratch behind
+// a mutex (the parallel pipeline builders call this concurrently) — the µs of file read +
+// module creation serialize; the expensive driver ISA compile stays outside, parallel.
+@(private = "file") spv_buf: [8 * 1024 * 1024]u8
+@(private = "file") spv_mutex: sync.Mutex
+
 load_spv :: proc(path: string) -> vk.ShaderModule {
-	data, err := os.read_entire_file(path, context.allocator)
-	if err != nil { fmt.eprintln("missing compiled shader:", path, "— run ./run.sh"); return 0 }
-	defer delete(data)
+	sync.mutex_lock(&spv_mutex)
+	defer sync.mutex_unlock(&spv_mutex)
+	data, ok := read_into(path, spv_buf[:])
+	if !ok { fmt.eprintln("missing compiled shader:", path, "— run ./run.sh"); return 0 }
 	ci := vk.ShaderModuleCreateInfo{sType = .SHADER_MODULE_CREATE_INFO, codeSize = len(data), pCode = cast(^u32)raw_data(data)}
 	m: vk.ShaderModule
 	vkok(vk.CreateShaderModule(vkc.device, &ci, nil, &m), "CreateShaderModule")
@@ -623,10 +654,9 @@ load_spv :: proc(path: string) -> vk.ShaderModule {
 hot_reload_poll :: proc() {
 	sum: i64
 	for _, p in PIPE_SPECS {
-		vert, frag := pipe_paths(p)
-		t, _ := os.last_write_time_by_name(vert)
+		t, _ := os.last_write_time_by_name(pipe_spv[p][0])
 		sum += time.to_unix_nanoseconds(t)
-		if frag != "" { t2, _ := os.last_write_time_by_name(frag); sum += time.to_unix_nanoseconds(t2) }
+		if pipe_spv[p][1] != "" { t2, _ := os.last_write_time_by_name(pipe_spv[p][1]); sum += time.to_unix_nanoseconds(t2) }
 	}
 	if hot_stamp == 0 { hot_stamp = sum; return }
 	if sum != hot_stamp {
@@ -729,22 +759,24 @@ vk_resize :: proc() { recreate_swapchain() }
 // ── device / swapchain / helpers ─────────────────────────────────────────────
 
 has_layer :: proc(name: string) -> bool {
+	props: [64]vk.LayerProperties
 	n: u32
 	vk.EnumerateInstanceLayerProperties(&n, nil)
-	props := make([]vk.LayerProperties, n, context.temp_allocator)
-	vk.EnumerateInstanceLayerProperties(&n, raw_data(props))
-	for &p in props { if name == string(cstring(&p.layerName[0])) { return true } }
+	n = min(n, len(props))
+	vk.EnumerateInstanceLayerProperties(&n, raw_data(props[:]))
+	for &p in props[:n] { if name == string(cstring(&p.layerName[0])) { return true } }
 	return false
 }
 
 pick_physical_device :: proc() {
+	devs: [16]vk.PhysicalDevice
 	n: u32
 	vk.EnumeratePhysicalDevices(vkc.instance, &n, nil)
-	devs := make([]vk.PhysicalDevice, n, context.temp_allocator)
-	vk.EnumeratePhysicalDevices(vkc.instance, &n, raw_data(devs))
+	n = min(n, len(devs))
+	vk.EnumeratePhysicalDevices(vkc.instance, &n, raw_data(devs[:]))
 	best: vk.PhysicalDevice
 	best_discrete := false
-	for d in devs {
+	for d in devs[:n] {
 		qf := find_queue_family(d) or_continue
 		props: vk.PhysicalDeviceProperties
 		vk.GetPhysicalDeviceProperties(d, &props)
@@ -760,11 +792,12 @@ pick_physical_device :: proc() {
 }
 
 find_queue_family :: proc(d: vk.PhysicalDevice) -> (u32, bool) {
+	qfs: [32]vk.QueueFamilyProperties
 	n: u32
 	vk.GetPhysicalDeviceQueueFamilyProperties(d, &n, nil)
-	qfs := make([]vk.QueueFamilyProperties, n, context.temp_allocator)
-	vk.GetPhysicalDeviceQueueFamilyProperties(d, &n, raw_data(qfs))
-	for qf, i in qfs {
+	n = min(n, len(qfs))
+	vk.GetPhysicalDeviceQueueFamilyProperties(d, &n, raw_data(qfs[:]))
+	for qf, i in qfs[:n] {
 		present: b32
 		vk.GetPhysicalDeviceSurfaceSupportKHR(d, u32(i), vkc.surface, &present)
 		if .GRAPHICS in qf.queueFlags && .COMPUTE in qf.queueFlags && present { return u32(i), true }
@@ -777,12 +810,13 @@ create_swapchain :: proc() {
 	vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vkc.phys, vkc.surface, &caps)
 
 	// Query supported surface formats (best practice) and pick BGRA8-UNORM, else the first.
+	formats: [128]vk.SurfaceFormatKHR
 	fn: u32
 	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.phys, vkc.surface, &fn, nil)
-	formats := make([]vk.SurfaceFormatKHR, fn, context.temp_allocator)
-	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.phys, vkc.surface, &fn, raw_data(formats))
+	fn = min(fn, len(formats))
+	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.phys, vkc.surface, &fn, raw_data(formats[:]))
 	chosen := formats[0]
-	for f in formats { if f.format == .B8G8R8A8_UNORM && f.colorSpace == .COLORSPACE_SRGB_NONLINEAR { chosen = f; break } }
+	for f in formats[:fn] { if f.format == .B8G8R8A8_UNORM && f.colorSpace == .COLORSPACE_SRGB_NONLINEAR { chosen = f; break } }
 	vkc.format = chosen.format
 
 	vkc.extent = caps.currentExtent
@@ -797,14 +831,15 @@ create_swapchain :: proc() {
 	//                  waiting a whole refresh. Kills the 33ms quantization on Wayland/X where
 	//                  MAILBOX often isn't offered.
 	//   FIFO         — hard vsync fallback (the only universally-guaranteed mode).
+	pmodes: [16]vk.PresentModeKHR
 	pmn: u32
 	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.phys, vkc.surface, &pmn, nil)
-	pmodes := make([]vk.PresentModeKHR, pmn, context.temp_allocator)
-	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.phys, vkc.surface, &pmn, raw_data(pmodes))
+	pmn = min(pmn, len(pmodes))
+	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.phys, vkc.surface, &pmn, raw_data(pmodes[:]))
 	has :: proc(ms: []vk.PresentModeKHR, want: vk.PresentModeKHR) -> bool { for m in ms { if m == want { return true } }; return false }
 	pmode := vk.PresentModeKHR.FIFO
-	if has(pmodes, .FIFO_RELAXED) { pmode = .FIFO_RELAXED }
-	if has(pmodes, .MAILBOX)      { pmode = .MAILBOX }
+	if has(pmodes[:pmn], .FIFO_RELAXED) { pmode = .FIFO_RELAXED }
+	if has(pmodes[:pmn], .MAILBOX)      { pmode = .MAILBOX }
 	fmt.println("vulkan: present mode", pmode)
 
 	sci := vk.SwapchainCreateInfoKHR{
@@ -826,8 +861,9 @@ create_swapchain :: proc() {
 
 	n: u32
 	vk.GetSwapchainImagesKHR(vkc.device, vkc.swapchain, &n, nil)
+	if int(n) > cap(vkc.images) { fmt.panicf("vulkan: %d swapchain images > fixed cap %d", n, cap(vkc.images)) }
 	resize(&vkc.images, int(n))
-	vk.GetSwapchainImagesKHR(vkc.device, vkc.swapchain, &n, raw_data(vkc.images))
+	vk.GetSwapchainImagesKHR(vkc.device, vkc.swapchain, &n, raw_data(vkc.images[:]))
 	resize(&vkc.views, int(n))
 	resize(&vkc.render_done, int(n))
 	sem := vk.SemaphoreCreateInfo{sType = .SEMAPHORE_CREATE_INFO}
