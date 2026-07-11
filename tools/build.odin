@@ -26,7 +26,14 @@ SHADERS := [][2]string{
 	{"fs_tri.vert", "vertex"},
 	{"city.frag", "fragment"},
 	{"body.vert", "vertex"},
-	{"body.frag", "fragment"},
+	// the body pass, split per kind-group (each a tiny main over the shared bodylib.glsl —
+	// glslc dead-strips the unreachable sprites, so the driver compiles five small shaders
+	// in parallel instead of one ~7s ubershader)
+	{"body_wreck.frag", "fragment"},
+	{"body_horde.frag", "fragment"},
+	{"body_shot.frag", "fragment"},
+	{"body_crew.frag", "fragment"},
+	{"body_ship.frag", "fragment"},
 	{"bloom.frag", "fragment"},
 	{"composite.frag", "fragment"},
 	{"loader.frag", "fragment"},
@@ -165,7 +172,7 @@ gpuprof :: proc() {
 // NOTE: a live `watch` session editing ONLY the shaders (.glsl saves, no game relaunch) won't
 // auto-rebake — rerun ./run.sh to refresh the baked layers.
 BAKE_CACHES := []string{"assets/city.cache", "assets/body.cache"}
-BAKE_SRCS := []string{"shaders/common.glsl", "shaders/city.frag", "shaders/body.frag", "car.odin", "render.odin", "bake_cache.odin", "tools/bake/bake.odin"}
+BAKE_SRCS := []string{"shaders/common.glsl", "shaders/city.frag", "shaders/bodykit.glsl", "car.odin", "render.odin", "bake_cache.odin", "tools/bake/bake.odin"}
 BAKE_GEN :: "tools/bake/gen" // assembled baker package (copied game sources + harness)
 
 ensure_bakes :: proc() {

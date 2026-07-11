@@ -120,7 +120,7 @@ HP_GUNNER   :: f32(16)
 HP_BOMBER   :: f32(12)
 TANK_RATE   :: f32(0.45) // ally tank cannon: volleys per second,
 TANK_MV     :: f32(2000) //   shell muzzle velocity (px/s),
-TANK_RNG    :: f32(950)  //   engagement range — enemies + body.frag derive the slug from time + slot id
+TANK_RNG    :: f32(950)  //   engagement range — enemies + the body sprites (bodylib.glsl) derive the slug from time + slot id
 RAID_RNG    :: f32(520)  // ally gun-car firing range (it orbits its prey at ~320)
 GUN_RNG     :: f32(720)  // ally gunner mech stream range
 KNOCKBACK   :: f32(90)
@@ -189,7 +189,7 @@ fire_timer:  f32
 bullet_head: int
 barrel:      f32 // the two barrels alternate: ±1
 gait_odo:    f32 // walker rides: integrated gait phase (rad) — packed into the player
-                 //   body's `life` so body.frag plants the feet against real travel
+                 //   body's `life` so the body sprites plant the feet against real travel
 run_seed:      u32 // per-run salt for the warband cluster hash
 ride:          int // 1-9: which garage vehicle the player body is (index into RIDES)
 style:         int // F/G/H/J/K/L: the ride's build (index into STYLES)
@@ -468,7 +468,7 @@ game_update :: proc(dt: f32) {
 	if rd.walker {
 		// gait odometer: phase advances with real travel (signed — reversing steps back)
 		// plus turning in place (the legs must step through a pivot). Rate mirrors
-		// gait_ph in body.frag: feet plant when it holds, freeze at a standstill.
+		// gait_ph in bodylib.glsl: feet plant when it holds, freeze at a standstill.
 		kg := min(5.0 / pr, 0.22)
 		gait_odo += (linalg.dot(car_vel, fwd) + abs(steer) * turn * pr * 0.6) * dt * kg
 		// wrap in exact TAU multiples — invisible to the legs, keeps f32 precision
@@ -499,7 +499,7 @@ game_update :: proc(dt: f32) {
 	las := input.laser || (weapon == .Lance && input.fire)
 	laser_v += ((las ? f32(1) : 0) - laser_v) * (1 - math.exp(-9 * dt))
 	// the MOUNTED weapons (Z..N) are HELD, not triggered: LMB hoses them via pc.pfire —
-	// physics.comp applies the burn and body.frag draws it, all off this one envelope
+	// physics.comp applies the burn and ship() (bodylib.glsl) draws it, all off this one envelope
 	held := false
 	#partial switch weapon {
 	case .Sing, .Beams, .Scythe, .Flamer, .Arc, .Vortex: held = true
@@ -539,7 +539,7 @@ game_update :: proc(dt: f32) {
 		sing_charge = 0
 	}
 	perp := [2]f32{-fwd.y, fwd.x}
-	// drift slip → banking, read by body.frag; walkers never bank — their `life` slot
+	// drift slip → banking, read by the body sprites; walkers never bank — their `life` slot
 	// carries the gait odometer instead (the legs stride against real travel)
 	lean := drift ? clamp(linalg.dot(car_vel, perp) / 520, -1, 1) : 0
 	// hp=999: battle_damage's soot/ember overlay must never touch the player's rig

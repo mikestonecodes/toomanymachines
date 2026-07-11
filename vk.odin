@@ -2,6 +2,8 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:sync"
+import "core:thread"
 import "core:time"
 import SDL "vendor:sdl3"
 import vk "vendor:vulkan"
@@ -275,7 +277,7 @@ bindless_init :: proc() {
 }
 
 // SPIR-V is NOT native GPU code — the driver recompiles it to device ISA on every
-// CreateXxxPipelines call. That compile is the whole first-launch cost (body.frag's ubershader
+// CreateXxxPipelines call. That compile is the whole first-launch cost (the old monolithic body ubershader
 // alone is ~7s) and it's unavoidable on a fresh machine: the ISA is device+driver specific, so
 // nothing baked on the build box helps foreign hardware. Instead the game keeps a RUNTIME
 // VkPipelineCache per machine: loaded from the user's pref dir at init, saved back after every
@@ -548,13 +550,25 @@ Blend :: enum { None, Alpha, Premul, Add }
 PipeSpec :: struct { compute: bool, shaders: []string, blend: Blend, hdr: bool }
 pipelines: [Pipe]vk.Pipeline
 
-// Build every PIPE_SPECS pipeline into `out`; ok=false if any shader failed to compile.
+// Build every PIPE_SPECS pipeline into `out`, one thread per pipeline — the driver compiles
+// them concurrently (CreateXxxPipelines and the pipeline cache are thread-safe), so a cold
+// first launch costs the SLOWEST shader, not the sum. pipes_built counts completions for the
+// loading bar (loop reads it from the main thread). ok=false if any shader failed to compile.
+pipes_built: u32
+
 build_pipelines :: proc(out: ^[Pipe]vk.Pipeline) -> (ok: bool) {
-	ok = true
-	for spec, p in PIPE_SPECS {
-		out[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend, spec.hdr)
-		if out[p] == 0 { ok = false }
+	sync.atomic_store(&pipes_built, 0)
+	threads: [len(Pipe)]^thread.Thread
+	for _, p in PIPE_SPECS {
+		threads[p] = thread.create_and_start_with_poly_data2(out, p, proc(out: ^[Pipe]vk.Pipeline, p: Pipe) {
+			spec := PIPE_SPECS[p]
+			out[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend, spec.hdr)
+			sync.atomic_add(&pipes_built, 1)
+		})
 	}
+	for t in threads { thread.join(t); thread.destroy(t) }
+	ok = true
+	for p in Pipe { if out[p] == 0 { ok = false } }
 	if ok { pipeline_cache_save() } // every build warms the per-machine ISA cache (first launch, hot reloads, the baker)
 	return
 }

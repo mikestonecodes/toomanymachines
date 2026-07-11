@@ -135,11 +135,11 @@ float bldg_pen(vec2 p) {
 }
 
 // the player's laser scale: the COLOSSUS (ride 8) burns a HUGE beam — every laser
-// consumer (physics damage/push, body.frag beam, city.frag ground burn, body.vert
+// consumer (physics damage/push, the ship sprite beam, city.frag ground burn, body.vert
 // quad) multiplies reach/width by this, so they can never disagree
 float laser_k() { return BODIES[0].variant == RIDE_COLOSSUS ? 2.4 : 1.0; }
 
-// max hp per variant — physics (damage), body.frag (damage glow) share it
+// max hp per variant — physics (damage), the body sprites (damage glow) share it
 float max_hp(uint v) {
 	if (v == VAR_SKITTER) { return HP_SKITTER; }
 	if (v == VAR_BRUTE)   { return HP_BRUTE; }
@@ -153,7 +153,7 @@ float max_hp(uint v) {
 
 // ── enemy ranged fire ────────────────────────────────────────────────────────
 // One deterministic cadence all three consumers read (physics.comp applies the impact,
-// body.vert sizes the quad, body.frag draws the tracer): cycle phase from time + slot
+// body.vert sizes the quad, the body sprites draw the tracer): cycle phase from time + slot
 // id; the slug covers mv px/s of flight. x = slug distance from the muzzle, y = phase.
 vec2 fire_slug(uint id, float rate, float mv) {
 	float cyc = fract(pc.time * rate + hash1(id * 501u));
@@ -250,7 +250,7 @@ House house_at(vec2 p) {
 // Per-pixel height ACROSS a house footprint — the silhouettes differ for real under the
 // fake 3D: pitched ridges + chimney stacks, sawtooth shed roofs, water tanks, domed
 // caps, wedding-cake tower setbacks and spire masts. Purely visual (city.frag geometry
-// + body.frag occlusion); collision keeps the flat rect. Branch order mirrors roof_col.
+// + body_finish occlusion); collision keeps the flat rect. Branch order mirrors roof_col.
 float house_h(House hs) {
 	float h = hs.h;
 	bool solid = hs.ext.x > 70.0; // a full-plot giant: ONE building, ONE roof

@@ -2,6 +2,8 @@ package main
 
 import "core:fmt"
 import "core:math"
+import "core:sync"
+import "core:thread"
 import SDL "vendor:sdl3"
 import vk "vendor:vulkan"
 
@@ -42,7 +44,7 @@ IMG_CITYC  :: u32(3)  // the CITY CACHE: the whole static building layer pre-mar
 // makes the NEAREST (texelFetch) fetch byte-identical to the live march it replaced.
 IMG_BODYA  :: u32(4)  // the BODY ATLAS: the enemy chassis sprites (spider/skitter/brute) baked
 // once (→ assets/body.cache) into a grid of [kind × gait-frame] tiles, so the horde's fragment
-// shader (body.frag) samples a tile instead of running ~45 vnoise across 6 procedural legs.
+// shader (bodylib.glsl: enemy_atlas) samples a tile instead of running ~45 vnoise across 6 procedural legs.
 CACHE_DIM    :: u32(8192)   // covers the city disk (CITY_R0 + LEAN·HMAX projection) at full res
 CACHE_ORIGIN :: 2867 * ZOOM // world px of texel (0,0); 2867 chosen so ORIGIN/ZOOM is integer
                             // AND ORIGIN + CACHE_DIM·ZOOM/2 ≈ WORLD·0.5 (centered on the city)
@@ -88,11 +90,19 @@ IMG_SPECS := [Img]ImgSpec{
 // ── pipelines ── add one = one row + its compiled .spv stages. `compute` picks the type;
 // graphics pipelines pick a `blend` mode and render into the HDR scene format (`hdr`) or the
 // swapchain. Every pipeline shares the one bindless descriptor set + push-constant layout.
-Pipe :: enum { Physics, City, Body, Bloom, Composite }
+// The body pass is FIVE pipelines over the same body.vert — one small fragment shader per
+// kind-group (shared sprite code in bodylib.glsl), each drawn over just its slot range, in
+// the same ascending-slot order the old single draw blended in. Five small driver compiles
+// (parallel, behind the loading bar) instead of one ~7s ubershader.
+Pipe :: enum { Physics, City, BodyWreck, BodyHorde, BodyShot, BodyCrew, BodyShip, Bloom, Composite }
 PIPE_SPECS := [Pipe]PipeSpec{
 	.Physics   = {compute = true, shaders = {"shaders/spv/physics.comp.spv"}},
 	.City      = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/city.frag.spv"}, hdr = true},
-	.Body      = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body.frag.spv"}, blend = .Premul, hdr = true},
+	.BodyWreck = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_wreck.frag.spv"}, blend = .Premul, hdr = true},
+	.BodyHorde = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_horde.frag.spv"}, blend = .Premul, hdr = true},
+	.BodyShot  = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_shot.frag.spv"}, blend = .Premul, hdr = true},
+	.BodyCrew  = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_crew.frag.spv"}, blend = .Premul, hdr = true},
+	.BodyShip  = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_ship.frag.spv"}, blend = .Premul, hdr = true},
 	.Bloom     = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/bloom.frag.spv"}, hdr = true},
 	.Composite = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/composite.frag.spv"}},
 }
@@ -103,20 +113,26 @@ render_init :: proc() {
 	if !build_pipelines(&pipelines) { panic("shader compilation failed at startup — run ./run.sh") }
 }
 
-// The LOADING SCREEN — fishlab's loader pattern, no threads: draw the bar, compile one
-// pipeline, repeat. The first launch on a machine pays the driver's SPIR-V→ISA compile
-// (~7s, nearly all in body.frag's ubershader — per-device, so it can't ship pre-built);
-// pipeline_cache_save at the end warms the runtime cache (vk.odin), so every later launch
-// is instant and the bar just flashes. Progress is real (pipelines built / total); the bar
-// sits still through the Body step — accepted, dumb beats smooth here. The profiler drive
-// (dev_dt_override >= 0, gpuprof's frozen sim) builds without presents instead: Nsight
-// counts PRESENTED frames for its capture window, and loader frames would shift it.
+// The LOADING SCREEN (bar ported from ../fishlab loader.odin). The first launch on a
+// machine pays the driver's SPIR-V→ISA compile — per-device, so it can't ship pre-built.
+// build_pipelines fans the five body-group shaders (+ the rest) out across threads, so
+// the wall cost is the slowest compile, not the sum; it runs on a worker while this
+// thread pumps events and animates the bar (progress = pipelines built / total). The
+// saved runtime cache (vk.odin) makes every later launch instant — the bar just flashes.
+// The profiler drive (dev_dt_override >= 0, gpuprof's frozen sim) builds without
+// presents instead: Nsight counts PRESENTED frames for its capture window, and loader
+// frames would shift it onto the loading screen.
 loading_screen :: proc() {
 	if dev_dt_override >= 0 { render_init(); return }
 	alloc_buffers()
 	loader_pipe := make_graphics_pipeline("shaders/spv/fs_tri.vert.spv", "shaders/spv/loader.frag.spv", .None, false)
 	if loader_pipe == 0 { fmt.panicf("loader shader missing — run ./run.sh") }
-	for spec, p in PIPE_SPECS {
+	build_ok, build_done: bool
+	worker := thread.create_and_start_with_poly_data2(&build_ok, &build_done, proc(okp, done: ^bool) {
+		okp^ = build_pipelines(&pipelines)
+		sync.atomic_store(done, true)
+	})
+	for !sync.atomic_load(&build_done) {
 		// drain events: quit is honored right after the load (the compile can't be cancelled),
 		// and a resize (the WM tiles the fresh window immediately) must NOT be swallowed —
 		// win_w/win_h feed every viewport, and the main loop will never see this event. No
@@ -128,7 +144,7 @@ loading_screen :: proc() {
 			case .WINDOW_RESIZED, .WINDOW_PIXEL_SIZE_CHANGED: update_size(); vk_resize()
 			}
 		}
-		pc := Push{screen = {f32(win_w), f32(win_h)}, pfire = f32(int(p)) / f32(len(PIPE_SPECS))}
+		pc := Push{screen = {f32(win_w), f32(win_h)}, pfire = f32(sync.atomic_load(&pipes_built)) / f32(len(PIPE_SPECS))}
 		cmd, img, frame_ok := frame_begin()
 		if frame_ok {
 			pass_begin(cmd, img)
@@ -138,10 +154,9 @@ loading_screen :: proc() {
 			pass_end(cmd, img)
 			frame_end(cmd, img)
 		}
-		pipelines[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend, spec.hdr)
-		if pipelines[p] == 0 { fmt.panicf("shader compilation failed at startup — run ./run.sh") }
 	}
-	pipeline_cache_save() // warm this machine's ISA cache — the next launch skips the compile
+	thread.destroy(worker)
+	if !build_ok { fmt.panicf("shader compilation failed at startup — run ./run.sh") }
 	vk.DeviceWaitIdle(vkc.device) // loader frames drained before the pipeline goes away
 	vk.DestroyPipeline(vkc.device, loader_pipe, nil)
 }
@@ -193,12 +208,21 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	gpu_stamp(cmd, 2) // city done
 	gpu_label_end(cmd)
 	gpu_label(cmd, "bodies")
-	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Body])
-	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1) // layer 0 (mode=0): ground wrecks, under everything
+	// layer 0 (mode=0): ground wrecks under everything (they lie in enemy AND ally slots)
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyWreck])
+	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1)
+	// layer 1 (mode=1): the living world, one pipeline per kind-group over its slot range —
+	// ascending slot order, so blending composites exactly like the old single draw
 	pc.mode = 1
 	vk.CmdPushConstants(cmd, vkc.pipe_layout, {.COMPUTE, .VERTEX, .FRAGMENT}, 0, size_of(Push), &pc)
-	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1) // layer 1: the living horde, bullets, pylons…
-	vk.CmdDraw(cmd, 6, 1, 0, 0)                   // …then the ship, always on top of the crowd
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyHorde])
+	vk.CmdDraw(cmd, 6, u32(MAX_ENEMIES), 0, u32(ENEMY_LO))
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyShot])
+	vk.CmdDraw(cmd, 6, u32(MAX_BULLETS), 0, u32(BULLET_LO))
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyCrew])
+	vk.CmdDraw(cmd, 6, u32(MAX_TURRETS + MAX_HELPERS + MAX_ALLIES), 0, u32(TURRET_LO))
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyShip])
+	vk.CmdDraw(cmd, 6, 1, 0, 0) // …the ship last, always on top of the crowd
 	img_pass_end(cmd, .Scene)
 	gpu_stamp(cmd, 3) // bodies done
 	gpu_label_end(cmd)

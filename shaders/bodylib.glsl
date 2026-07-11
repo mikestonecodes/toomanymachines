@@ -1,6 +1,24 @@
-#version 460
+#ifndef BODYLIB_GLSL
+#define BODYLIB_GLSL
 #include "common.glsl"
-#include "bodykit.glsl" // shared painter state + machined-metal primitives + enemy chassis (baked into the atlas)
+#include "bodykit.glsl" // painter state + machined-metal primitives + enemy chassis (baked into the atlas)
+
+// ── the BODY SPRITE LIBRARY ────────────────────────────────────────────────────
+// Every sprite function for the body pass, shared by the five per-group fragment
+// shaders (body_wreck/horde/shot/crew/ship.frag). Each group's main() calls only its
+// kinds; glslc dead-strips everything unreachable from the entry point, so the driver
+// compiles five SMALL shaders (in parallel behind the loading bar) instead of the old
+// single ~7s ubershader. The group mains share body_paint/dying_warp/dying_tint/
+// body_finish below, so the split changes NOTHING about what reaches the screen.
+
+
+// Vertex → fragment interface (must match body.vert's `out`s) + the pass output.
+layout(location = 0) in vec2      v_local; // body-frame px
+layout(location = 1) in flat uint v_id;
+layout(location = 0) out vec4 o_color;
+// the CITY CACHE (Img.CityC) — sampled for building occlusion (body_finish), replacing a
+// duplicated 8-step house_at march; the BODY ATLAS (Img.BodyA) — the baked horde chassis.
+layout(set = 0, binding = 1) uniform sampler2D TEXS[];
 
 // Every body as a procedural SDF sprite in its own body frame (+x = facing): the hover
 // ship with its turret/flash/boost flame/giant laser, the invading mechs, gate pylons,
@@ -17,17 +35,6 @@
 // lights/markings — red enemy, green friend, at a glance.
 // Red is reserved for damage/blast heat. Battle damage: below half HP the paint chars
 // and embers gutter out of the hull.
-
-// Vertex → fragment interface (must match body.vert's `out`s).
-layout(location = 0) in vec2      v_local;
-layout(location = 1) in flat uint v_id;
-layout(location = 0) out vec4 o_color;
-// the CITY CACHE (Img.CityC) — sampled for building occlusion (see the occlusion test in
-// main), replacing a duplicated 8-step house_at march.
-layout(set = 0, binding = 1) uniform sampler2D TEXS[];
-// painter state (base/cov/add), the g* paint globals, lay/soft/plate/mech_leg and the enemy
-// chassis all live in bodykit.glsl now (shared with the atlas baker). Only the v_id/time-
-// dependent bits — the gait odometer, the emissive, battle damage — stay here.
 
 // GAIT ODOMETER: leg phase advances with actual TRAVEL, not time·speed — a time·speed
 // phase re-scales its whole history whenever the velocity changes (contact shoves do,
@@ -995,12 +1002,11 @@ void burst(vec2 p, Body b) {
 	lay(vec3(0.020, 0.019, 0.019), 0.5 * fade * exp(-dot(p, p) / (spread * spread * 0.5 * (0.15 + prog)))); // smoke blot
 }
 
-void main() {
-	Body b = BODIES[v_id];
-	if (b.kind == KIND_DEAD) { discard; }
-	vec2 p = v_local;
-	float t = pc.time + hash1(v_id * 7919u) * TAU;
-	// team paint: YOUR army (and its dying/limping bodies) burns green, never red
+
+// ── shared main() pieces — verbatim from the old monolithic main ───────────────
+
+// team paint: YOUR army (and its dying/limping bodies) burns green, never red
+void body_paint() {
 	if (v_id >= ALLY_LO) { gMark = vec3(0.20, 0.44, 0.18); gEye = RIG_GRN * 0.9; }
 	// the HORDE (every enemy slot, dying ones included): dusty RUST-TONED steel — the
 	// same warm desaturated family as the city's roofs and facades, one notch more
@@ -1014,59 +1020,55 @@ void main() {
 		gEye    = vec3(1.60, 0.16, 0.06); // HDR red — the eyes BLOOM like the player's green
 		gMark   = vec3(0.85, 0.13, 0.04);    // BRIGHT red unit paint — the enemy's language
 	}
-	if      (b.kind == KIND_PLAYER) { ship(p, b); }
-	else if (b.kind == KIND_BULLET) { bullet(p, b); }
-	else if (b.kind == KIND_WRECK)  { wreck(p, b); }
-	else if (b.kind == KIND_TURRET) { turret(p, b); }
-	else if (b.kind == KIND_HELPER) { helper(p, b); }
-	else if (b.kind == KIND_ALLY)   { bot_sprite(p, b, t); }
-	else if (b.kind == KIND_DYING && (b.variant == VAR_BOOM || b.variant == VAR_SPARK)) { burst(p, b); }
-	else if (b.kind == KIND_DYING && b.hp < -50.0) {
-		// blast-stamped (the exact circle): a slow smolder that SNAPS red, then the
-		// body slumps and COOLS into the husk — no hard swap at the end
-		float lf = clamp(b.life / 0.4, 0.0, 1.0); // 1 → 0 over the stamp death
-		float pr = 1.0 - lf;
-		p *= 1.0 + smoothstep(0.75, 1.0, pr) * 0.30; // it slumps down at the end
-		bot_sprite(p, b, t);
+}
+
+// The dying wrap around a chassis sprite, split in two so each group keeps its own
+// dispatch between them: warp the body frame first, paint the sprite, then tint it.
+// hp < -50 = blast-stamped (the exact circle): a slow smolder that SNAPS red, then the
+// body slumps and COOLS into the husk. Otherwise the machine dies in place and POPS.
+vec2 dying_warp(vec2 p, Body b) {
+	if (b.hp < -50.0) {
+		float pr = 1.0 - clamp(b.life / 0.4, 0.0, 1.0); // 1 → 0 over the stamp death
+		return p * (1.0 + smoothstep(0.75, 1.0, pr) * 0.30); // it slumps down at the end
+	}
+	float prog = 1.0 - clamp(b.life / DEATH_T, 0.0, 1.0);
+	float pop = exp(-prog * 9.0);
+	p /= 1.0 + 0.25 * pop; // squash-and-stretch: an instant puff, deflating fast
+	return p + vec2(sin(pc.time * 47.0 + float(v_id)), cos(pc.time * 53.0 + float(v_id))) * 2.2 * (1.0 - prog);
+}
+void dying_tint(vec2 p, Body b) {
+	if (b.hp < -50.0) {
+		float pr = 1.0 - clamp(b.life / 0.4, 0.0, 1.0);
 		float flash = pr * pr * (1.0 - smoothstep(0.88, 1.0, pr) * 0.8); // ease-in, then it cools
 		base = mix(base, vec3(1.35, 0.40, 0.14), flash * 0.95);          // RED-hot, not white
 		base *= 1.0 - smoothstep(0.8, 1.0, pr) * 0.6;                    // charring toward the husk
 		add *= 1.0 - pr;
 		add += PAL_ACCENT * flash * 0.5 * cov; // and it glows as it goes
+		return;
 	}
-	else if (b.kind == KIND_DYING) {
-		// the machine dies in place and POPS: an instant puff, a HARD white-hot
-		// silhouette (pure base — no bloom, so it's a crisp comic pop, not a blur) and
-		// short radial burst streaks snapping outward. Then it shudders and chars down
-		// toward the husk. The effect wears the mech — no circles, no orbs.
-		float prog = 1.0 - clamp(b.life / DEATH_T, 0.0, 1.0);
-		float pop = exp(-prog * 9.0);
-		p /= 1.0 + 0.25 * pop; // squash-and-stretch: an instant puff, deflating fast
-		p += vec2(sin(pc.time * 47.0 + float(v_id)), cos(pc.time * 53.0 + float(v_id))) * 2.2 * (1.0 - prog);
-		bot_sprite(p, b, t);
-		base = mix(base, vec3(1.05, 0.85, 0.62), smoothstep(0.16, 0.04, prog) * 0.9); // the hard flash
-		if (prog < 0.30) { // comic burst streaks — crisp lines, expanding then gone
-			float bp = prog / 0.30;
-			for (float i = 0.0; i < 5.0; i += 1.0) {
-				float a = (i + 0.5) * (TAU / 5.0) + hash1(v_id * 77u) * TAU;
-				vec2 q = rot2(a) * p;
-				float r0 = b.radius * (1.3 + 1.8 * bp);
-				float r1 = r0 + b.radius * (0.9 - 0.6 * bp);
-				lay(vec3(0.95, 0.82, 0.65), soft(sd_seg(q, vec2(r0, 0.0), vec2(r1, 0.0)) - 1.3) * (1.0 - bp * bp));
-			}
+	// the POP: a HARD white-hot silhouette (pure base — no bloom, so it's a crisp comic
+	// pop, not a blur) and short radial burst streaks snapping outward. Then it shudders
+	// and chars down toward the husk. The effect wears the mech — no circles, no orbs.
+	float prog = 1.0 - clamp(b.life / DEATH_T, 0.0, 1.0);
+	base = mix(base, vec3(1.05, 0.85, 0.62), smoothstep(0.16, 0.04, prog) * 0.9); // the hard flash
+	if (prog < 0.30) { // comic burst streaks — crisp lines, expanding then gone
+		float bp = prog / 0.30;
+		for (float i = 0.0; i < 5.0; i += 1.0) {
+			float a = (i + 0.5) * (TAU / 5.0) + hash1(v_id * 77u) * TAU;
+			vec2 q = rot2(a) * p;
+			float r0 = b.radius * (1.3 + 1.8 * bp);
+			float r1 = r0 + b.radius * (0.9 - 0.6 * bp);
+			lay(vec3(0.95, 0.82, 0.65), soft(sd_seg(q, vec2(r0, 0.0), vec2(r1, 0.0)) - 1.3) * (1.0 - bp * bp));
 		}
-		base *= 1.0 - 0.72 * prog; // charring down — hands off near the husk's darkness
-		add *= 1.0 - prog;         // every light dies with it: the husk emits NOTHING
-		burst(p, b);
 	}
-	else {
-		float dmgJ = 1.0 - clamp(b.hp / max_hp(b.variant), 0.0, 1.0);
-		if (dmgJ > 0.3) { // crippled machines LIMP — a slow heavy sway, not a vibration
-			p += vec2(sin(pc.time * 6.0 + float(v_id)), cos(pc.time * 7.0 + float(v_id))) * (dmgJ - 0.3) * 2.2;
-		}
-		bot_sprite(p, b, t);
-		if (b.life > 0.0 && b.hp > -50.0) { base = mix(base, vec3(1.5, 0.62, 0.28), min(b.life, 1.0) * 0.85); } // hit flash (never on stamped bots)
-	}
+	base *= 1.0 - 0.72 * prog; // charring down — hands off near the husk's darkness
+	add *= 1.0 - prog;         // every light dies with it: the husk emits NOTHING
+	burst(p, b);
+}
+
+// The shared tail every group runs after its sprite: blast rim-light, the truck's
+// high-beams, fake-3D building occlusion, and the premultiplied output.
+void body_finish(vec2 p, Body b) {
 	// the LIVE shockwaves reach into this shader: physics publishes each blast's center
 	// + front progress (STATS[2..] — the same list the composite warps the screen with),
 	// and as a front sweeps a bot's distance it rim-lights it FROM the blast point. The
@@ -1126,3 +1128,5 @@ void main() {
 	}
 	o_color = vec4(base * cov + add, cov); // premultiplied; `add` is pure emissive
 }
+
+#endif // BODYLIB_GLSL
