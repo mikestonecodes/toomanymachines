@@ -25,6 +25,7 @@ SHADERS := [][2]string{
 	{"body.frag", "fragment"},
 	{"bloom.frag", "fragment"},
 	{"composite.frag", "fragment"},
+	{"loader.frag", "fragment"},
 }
 
 sh :: proc(cmd: string) -> int {

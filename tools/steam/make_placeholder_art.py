@@ -3,15 +3,25 @@
 # These are functional stand-ins (real key art can replace them later) so the store/playtest page
 # can be submitted. Sizes per Steamworks "Store Assets" spec.
 #   python3 tools/steam/make_placeholder_art.py [source.jpg]
-# Default source: .debug_screenshots/vk.jpg (produced by ./run.sh shot). Output: dist/steam/art/.
-import sys, os
+# Default source: .debug_screenshots/vk.jpg (produced by ./run.sh shot). Output: dist/steam/upload/
+# — ONLY the files the Playtest (4933640) needs, named by their exact Steamworks slot. Nothing extra
+# (Steam's drag-drop rejects files whose dimensions don't match a slot), so drop the whole folder in.
+import sys, os, shutil
 from PIL import Image, ImageDraw, ImageFont, ImageEnhance
 
 SRC  = sys.argv[1] if len(sys.argv) > 1 else ".debug_screenshots/vk.jpg"
-OUT  = "dist/steam/art"
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+OUT  = "dist/steam/upload"
+# A bold sans, wherever the distro keeps it (Debian and Arch differ). First existing wins.
+FONT = next((p for p in (
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",
+) if os.path.exists(p)), None)
+if FONT is None: sys.exit("no bold sans font found — install ttf-dejavu or ttf-liberation")
 TITLE = "TOO MANY\nMACHINES"
-os.makedirs(OUT, exist_ok=True)
+shutil.rmtree(OUT, ignore_errors=True); os.makedirs(OUT)  # clean folder — never leave stale/extra files
 base = Image.open(SRC).convert("RGB")
 
 def cover(box_w, box_h):
@@ -24,6 +34,8 @@ def cover(box_w, box_h):
 
 def titled(w, h, name, title=TITLE, tag=None, scale=0.16):
     im = cover(w, h)
+    if title is None and tag is None:                # plain artwork, no text (e.g. Library Hero — Steam forbids text/logos on it)
+        im.save(f"{OUT}/{name}.png"); print("  ", name, f"{w}x{h}"); return
     im = ImageEnhance.Brightness(im).enhance(0.62)   # darken for text legibility
     d = ImageDraw.Draw(im)
     fs = max(14, int(h * scale))
@@ -44,16 +56,14 @@ def titled(w, h, name, title=TITLE, tag=None, scale=0.16):
     im.save(f"{OUT}/{name}.png")
     print("  ", name, f"{w}x{h}")
 
-# App store capsules
-titled(460, 215, "header_capsule_460x215")
-titled(231,  87, "small_capsule_231x87", scale=0.22)
-titled(616, 353, "main_capsule_616x353")
-titled(374, 448, "vertical_capsule_374x448")
-titled(600, 900, "library_capsule_600x900", scale=0.10)
-titled(3840, 1240, "library_hero_3840x1240", scale=0.13)
-titled(1438, 810, "page_background_1438x810", scale=0.10)
-# Playtest is a separate app — needs its own header
-titled(460, 215, "playtest_header_460x215", tag="PLAYTEST")
+# Store assets (App Admin -> Graphical Assets -> Store assets). Current Steam spec sizes.
+titled(920, 430, "store-header-capsule-920x430")   # logo only (game name) — no other text
+titled(462, 174, "store-small-capsule-462x174", scale=0.22)
+titled(1232, 706, "store-main-capsule-1232x706")
+# Library assets (App Admin -> Graphical Assets -> Library assets).
+titled(600, 900, "library-capsule-600x900", scale=0.10)
+titled(920, 430, "library-header-920x430")
+titled(3840, 1240, "library-hero-3840x1240", title=None)  # hero: artwork ONLY, no text/logo (the logo is a separate asset)
 
 # Library logo: transparent PNG, title text only (Steam overlays it on the hero)
 logo = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
@@ -65,11 +75,11 @@ for ln in lines:
     d.text((tx + 4, ty + 4), ln, font=f, fill=(0, 0, 0, 180))
     d.text((tx, ty), ln, font=f, fill=(245, 242, 236, 255))
     ty += lh
-logo.save(f"{OUT}/library_logo_1280x720.png"); print("   library_logo_1280x720 1280x720 (transparent)")
+logo.save(f"{OUT}/library-logo-1280x720.png"); print("   library-logo-1280x720 (transparent)")
 
 # The real screenshot, kept as a store screenshot
-base.save(f"{OUT}/screenshot_01_1280x720.jpg", quality=92)
-print("   screenshot_01_1280x720 (real gameplay)")
+base.save(f"{OUT}/screenshot-1280x720.jpg", quality=92)
+print("   screenshot-1280x720 (real gameplay)")
 
 # App / shortcut icon: the game's red targeting reticle on near-black — reads at small sizes.
 def icon(sz):
@@ -85,8 +95,7 @@ def icon(sz):
     d.ellipse([c-lw, c-lw, c+lw, c+lw], fill=red)                                # center dot
     return im
 ic = icon(512)
-ic.resize((184, 184), Image.LANCZOS).save(f"{OUT}/app_icon_184x184.png")
-ic.resize((256, 256), Image.LANCZOS).save(f"{OUT}/shortcut_icon_256x256.png")
-ic.save(f"{OUT}/shortcut_icon.ico", sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
-print("   app_icon_184x184 / shortcut_icon_256x256 / shortcut_icon.ico")
+ic.resize((184, 184), Image.LANCZOS).save(f"{OUT}/app-icon-184x184.png")   # Community -> App Icon
+ic.save(f"{OUT}/shortcut-icon.ico", sizes=[(16,16),(32,32),(48,48),(64,64),(128,128),(256,256)])
+print("   app-icon-184x184 / shortcut-icon.ico")
 print("done ->", OUT)

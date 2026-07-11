@@ -27,6 +27,12 @@ dev_tick: proc(frame_n: int) -> bool
 dev_win:    [2]i32 = {960, 600}
 dev_hidden: bool
 
+// Dev seam: force a fixed dt (and freeze sim_time) when >= 0. The GPU profiler harness sets it
+// to 0 so every captured frame is byte-identical — Nsight samples an arbitrary window of frames,
+// so a moving sim would make per-pass ms swing on workload alone. -1 (default) = live dt, the
+// shipped game never touches it.
+dev_dt_override: f32 = -1
+
 update_size :: proc() {
 	pw, ph, lw: i32
 	SDL.GetWindowSizeInPixels(window, &pw, &ph)

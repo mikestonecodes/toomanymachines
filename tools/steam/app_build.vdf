@@ -9,7 +9,11 @@
 	"desc"	"too many machines playtest"
 	"buildoutput"	"../../dist/steam/output/"       // upload logs + chunk cache (gitignored)
 	"contentroot"	"../../dist/steam/content/"      // built by `./run.sh dist steam`
-	"setlive"	""                                  // set a branch (e.g. "playtest") to auto-go-live, or do it in the web UI
+	"setlive"	""                                  // SteamCMD CANNOT set the DEFAULT branch live (Valve blocks it — the
+	                                                // commit fails). Options: (a) leave empty + click Set Build Live in
+	                                                // the web UI; (b) use a NAMED beta branch here (steamcmd allows those)
+	                                                // for one-command autodeploy; (c) the Steamworks Web API SetAppBuildLive
+	                                                // (publisher key) to script the default branch. See tools/steam/README.
 
 	"depots"
 	{

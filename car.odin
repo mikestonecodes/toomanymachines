@@ -556,7 +556,7 @@ game_update :: proc(dt: f32) {
 		if l := linalg.length(off); l > 0.001 && l < BOOM_R * 1.4 {
 			k := (1 - prog) * (1 - l / (BOOM_R * 1.4))
 			car_vel += off / l * 2400 * k * dt
-			cam_shake = min(cam_shake + 30 * k * dt, 8)
+			cam_shake = min(cam_shake + 16 * k * dt, 8) // gentler ramp: a wall of blasts shouldn't pin the shake at max
 		}
 	}
 
@@ -652,7 +652,7 @@ game_update :: proc(dt: f32) {
 			barrel = -barrel
 			muzzle = weapon == .Mines ? muzzle : 1
 			heavy := weapon == .Rail || weapon == .Airstrike || ride == int(RIDE_TANK)
-			cam_shake = min(cam_shake + (weapon == .Mines ? 0.5 : weapon == .Auto ? 1.1 : heavy ? 6.0 : rd.walker ? 2.6 : 4.2), 8) // Auto: rapid cadence, gentle kick
+			cam_shake = min(cam_shake + (weapon == .Mines ? 0.5 : weapon == .Auto ? 0.5 : heavy ? 6.0 : rd.walker ? 2.6 : 4.2), 8) // Auto: rapid cadence → tiny per-shot kick so it doesn't saturate
 			car_vel -= a * (rd.walker ? 16 : 58) * (weapon == .Auto ? 0.3 : weapon == .Mines ? 0 : 1) // recoil
 		}
 	}

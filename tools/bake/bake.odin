@@ -25,7 +25,9 @@ main :: proc() {
 	if window == nil { fmt.panicf("CreateWindow: %s", SDL.GetError()) }
 	update_size()
 	vk_init()
-	render_init() // buffers + the bindless set (house_at reads the CITY buffer through it)
+	render_init() // buffers + the bindless set (house_at reads the CITY buffer through it) — also
+	              // warms this machine's runtime pipeline cache as a side effect (build_pipelines
+	              // saves it), so the game launch after a rebake skips the ISA recompile.
 	game_init()   // generates the Res.City block layout the city march consumes
 	for job in Bake { bake_run(job) }
 	os.exit(0)

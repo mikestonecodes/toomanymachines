@@ -35,12 +35,24 @@ IMG_SCENE  :: u32(0)
 IMG_BLOOMA :: u32(1)
 IMG_BLOOMB :: u32(2)
 IMG_CITYC  :: u32(3)  // the CITY CACHE: the whole static building layer pre-marched once
-// (offline `./toomanymachines bake` → assets/city.cache), loaded as a texture the game just
-// SAMPLES instead of ray-marching every pixel. 1 texel = ZOOM world px = 1 screen px, so a
-// texel-snapped camera makes the NEAREST fetch byte-identical to the live march it replaced.
+// (offline bake → assets/city.cache), loaded as a texture the game just SAMPLES instead of
+// ray-marching every pixel. 1 texel = ZOOM world px = 1 screen px, so a texel-snapped camera
+// makes the NEAREST (texelFetch) fetch byte-identical to the live march it replaced.
+IMG_BODYA  :: u32(4)  // the BODY ATLAS: the enemy chassis sprites (spider/skitter/brute) baked
+// once (→ assets/body.cache) into a grid of [kind × gait-frame] tiles, so the horde's fragment
+// shader (body.frag) samples a tile instead of running ~45 vnoise across 6 procedural legs.
 CACHE_DIM    :: u32(8192)   // covers the city disk (CITY_R0 + LEAN·HMAX projection) at full res
 CACHE_ORIGIN :: 2867 * ZOOM // world px of texel (0,0); 2867 chosen so ORIGIN/ZOOM is integer
                             // AND ORIGIN + CACHE_DIM·ZOOM/2 ≈ WORLD·0.5 (centered on the city)
+// body atlas layout — the baker writes tiles, body.frag reads them (see bake_body.frag):
+ATLAS_DIM    :: u32(2048) // square rgba16f atlas
+ATLAS_TILE   :: u32(128)  // px per tile
+ATLAS_COLS   :: u32(16)   // ATLAS_DIM/ATLAS_TILE — tiles per row
+ATLAS_FRAMES :: u32(24)   // gait-phase keyframes per kind (sampled + cross-faded at runtime)
+ATLAS_KINDS  :: u32(3)    // 0 spider, 1 skitter, 2 brute (atlas_kind() maps the variant)
+ATLAS_RAD    :: f32(15)   // reference body radius the tiles are baked at (proportions are radius-
+                          // relative so this cancels at runtime; only the grunge frequency rides it)
+ATLAS_EXTK   :: f32(2.6)  // tile half-extent = ATLAS_RAD*ATLAS_EXTK (matches body.vert's enemy quad ext)
 // @glsl-end
 MODE_COUNT :: 3 // CPU-only: number of compute passes per frame
 
@@ -60,14 +72,15 @@ BUF_SPECS := [Res]BufSpec{
 
 // ── offscreen images ── HDR render targets for the post chain, (re)created with the swapchain.
 // Row order is the binding-1 bindless slot (IMG_* constants above index them from shaders).
-Img :: enum { Scene, BloomA, BloomB, CityC }
+Img :: enum { Scene, BloomA, BloomB, CityC, BodyA }
 IMG_SPECS := [Img]ImgSpec{
 	.Scene  = {div = 1}, // full-res HDR scene (city + bodies)
 	.BloomA = {div = 2}, // half-res bloom ping (bright-extract + horizontal blur)
 	.BloomB = {div = 2}, // half-res bloom pong (vertical blur)
-	// the city cache is FIXED-size + world-anchored (not swapchain-relative), so it lives
-	// outside the swapchain create/resize path — city_cache.odin owns its image + memory.
-	.CityC  = {fixed = CACHE_DIM},
+	// the baked caches are FIXED-size (not swapchain-relative), so they live outside the
+	// swapchain create/resize path — bake_cache.odin owns their images + memory.
+	.CityC  = {fixed = CACHE_DIM},  // world-anchored static building layer
+	.BodyA  = {fixed = ATLAS_DIM},  // [kind × gait-frame] enemy-chassis sprite atlas
 }
 
 // ── pipelines ── add one = one row + its compiled .spv stages. `compute` picks the type;
@@ -82,6 +95,9 @@ PIPE_SPECS := [Pipe]PipeSpec{
 	.Composite = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/composite.frag.spv"}},
 }
 
+// The synchronous init path — the offline baker's (tools/bake). The game itself splits this
+// across the loading screen in loop.odin: alloc_buffers up front, build_pipelines on a worker
+// thread behind the bar.
 render_init :: proc() {
 	alloc_buffers()
 	if !build_pipelines(&pipelines) { panic("shader compilation failed at startup — run ./run.sh") }
@@ -93,7 +109,11 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	// frame_begin already ran at the top of the main loop — the fence+acquire block sits
 	// BEFORE input sampling so the frame is recorded from fresh input (main.odin).
 	w, h := f32(win_w), f32(win_h)
-	shake := [2]f32{math.sin(sim_time * 143), math.cos(sim_time * 119)} * cam_shake
+	// camera shake: a firm low-frequency RUMBLE, not a jitter. The old 143/119 rad/s (~22Hz)
+	// aliased on a 60fps display into near-random per-frame jumps that read as LAG, especially
+	// under rapid fire (Auto) + a wall of blasts pinning cam_shake at its cap. ~9Hz + trimmed
+	// amplitude reads as impact without the nausea.
+	shake := [2]f32{math.sin(sim_time * 58), math.cos(sim_time * 49)} * cam_shake * 0.6
 	// SNAP the view to whole city-cache texels (1 texel = ZOOM world px). Every layer reads
 	// pc.cam, so this quantizes the whole frame's pan by ≤1 screen px coherently (no inter-
 	// layer shimmer) — and makes each pixel's g0 land on a texel CENTER, so the cache's
@@ -104,6 +124,7 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	// pfire: the mounted weapons' hold envelope — for the SINGULARITY it IS the charge
 	pc := Push{screen = {w, h}, cam = scam, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, pfire = weapon == .Sing ? sing_charge : fire_v, city_r = city_r, angle = car_angle, pweap = u32(weapon)}
 
+	gpu_label(cmd, "physics")
 	vk.CmdBindPipeline(cmd, .COMPUTE, pipelines[.Physics])
 	groups := (u32(max(GRID_CELLS, BODY_COUNT)) + 63) / 64
 	for m in 0 ..< MODE_COUNT {
@@ -117,14 +138,18 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	// step → the draw stages read bodies (body.vert/.frag fetch Body, city.frag reads the truck angle)
 	mem_barrier(cmd, {.COMPUTE_SHADER}, {.SHADER_WRITE}, {.VERTEX_SHADER, .FRAGMENT_SHADER}, {.SHADER_READ})
 	gpu_stamp(cmd, 1) // physics done
+	gpu_label_end(cmd)
 
 	// HDR scene: procedural city backdrop, then every body as an instanced SDF sprite.
 	img_pass_begin(cmd, .Scene)
 	pc.mode = 0
 	vk.CmdPushConstants(cmd, vkc.pipe_layout, {.COMPUTE, .VERTEX, .FRAGMENT}, 0, size_of(Push), &pc)
+	gpu_label(cmd, "city")
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.City])
 	vk.CmdDraw(cmd, 3, 1, 0, 0)
 	gpu_stamp(cmd, 2) // city done
+	gpu_label_end(cmd)
+	gpu_label(cmd, "bodies")
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Body])
 	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1) // layer 0 (mode=0): ground wrecks, under everything
 	pc.mode = 1
@@ -133,9 +158,11 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	vk.CmdDraw(cmd, 6, 1, 0, 0)                   // …then the ship, always on top of the crowd
 	img_pass_end(cmd, .Scene)
 	gpu_stamp(cmd, 3) // bodies done
+	gpu_label_end(cmd)
 
 	// Bloom (fishlab's chain): mode 0 = bright-extract + horizontal gaussian (Scene→BloomA),
 	// mode 1 = vertical gaussian (BloomA→BloomB). Both at half res.
+	gpu_label(cmd, "bloom")
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Bloom])
 	for m in 0 ..< 2 {
 		pc.mode = u32(m)
@@ -145,12 +172,15 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 		img_pass_end(cmd, m == 0 ? Img.BloomA : Img.BloomB)
 	}
 	gpu_stamp(cmd, 4) // bloom done
+	gpu_label_end(cmd)
 
 	// Composite → swapchain: scene + bloom, ACES tonemap, film grain, vignette.
+	gpu_label(cmd, "composite")
 	pass_begin(cmd, img)
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Composite])
 	vk.CmdDraw(cmd, 3, 1, 0, 0)
 	pass_end(cmd, img)
 	gpu_stamp(cmd, 5) // composite done — whole GPU frame
+	gpu_label_end(cmd)
 	frame_end(cmd, img)
 }

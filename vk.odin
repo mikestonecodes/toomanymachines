@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:time"
 import SDL "vendor:sdl3"
 import vk "vendor:vulkan"
 
@@ -48,6 +49,7 @@ vkc: struct {
 	desc_pool:   vk.DescriptorPool,
 	desc_set:    vk.DescriptorSet,
 	pipe_layout: vk.PipelineLayout,
+	pipe_cache:  vk.PipelineCache, // driver's compiled-ISA cache, persisted to disk (pipeline_cache_load/save)
 	buf_next:    u32,
 
 	// offscreen HDR targets (IMG_SPECS in render.odin) + the one shared sampler
@@ -88,13 +90,18 @@ vk_init :: proc() {
 	for i in 0 ..< ext_count { append(&exts, sdl_exts[i]) }
 
 	layers: [dynamic]cstring
+	// EXT_debug_utils is enabled in EVERY build (not just validation): it carries the debug
+	// callback AND the per-pass CmdBegin/EndDebugUtilsLabelEXT perf markers (gpu_label_*) that
+	// let the actual GPU profiler (Nsight Graphics GPU Trace) attribute time to physics/city/
+	// bodies/… under LOCKED clocks — the only reliable per-pass timing on a clocks-locked-out
+	// laptop GPU. Labels are near-free and the shipped game never records them (only ngfx does).
+	append(&exts, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
 	// Validation is a BUILD property, not a runtime flag: debug builds validate (./run.sh, shot,
 	// gpuav, test), the release build (the watch loop's play launch) has this whole block compiled
 	// out. Zero-tolerance — when on, the debug callback aborts on any error (see debug_callback).
 	when ODIN_DEBUG {
 		if has_layer(VALIDATION_LAYER) {
 			append(&layers, cstring(VALIDATION_LAYER))
-			append(&exts, vk.EXT_DEBUG_UTILS_EXTENSION_NAME)
 			append(&exts, vk.EXT_VALIDATION_FEATURES_EXTENSION_NAME)
 			append(&exts, vk.EXT_LAYER_SETTINGS_EXTENSION_NAME)
 			vkc.validated = true
@@ -263,6 +270,43 @@ bindless_init :: proc() {
 	pcr := vk.PushConstantRange{stageFlags = {.COMPUTE, .VERTEX, .FRAGMENT}, offset = 0, size = size_of(Push)}
 	pli := vk.PipelineLayoutCreateInfo{sType = .PIPELINE_LAYOUT_CREATE_INFO, setLayoutCount = 1, pSetLayouts = &vkc.set_layout, pushConstantRangeCount = 1, pPushConstantRanges = &pcr}
 	vkok(vk.CreatePipelineLayout(vkc.device, &pli, nil, &vkc.pipe_layout), "CreatePipelineLayout")
+
+	pipeline_cache_load()
+}
+
+// SPIR-V is NOT native GPU code — the driver recompiles it to device ISA on every
+// CreateXxxPipelines call. That compile is the whole first-launch cost (body.frag's ubershader
+// alone is ~7s) and it's unavoidable on a fresh machine: the ISA is device+driver specific, so
+// nothing baked on the build box helps foreign hardware. Instead the game keeps a RUNTIME
+// VkPipelineCache per machine: loaded from the user's pref dir at init, saved back after every
+// successful pipeline build — the first launch shows the loading bar (loop.odin), every launch
+// after is instant. Vulkan validates the blob's device/driver UUID and silently ignores a
+// mismatch (→ recompile), so a stale/corrupt/foreign file is safe, just slow.
+pipe_cache_path: string // <SDL pref dir>/pipeline.cache — per-user writable on every OS, unlike the install dir
+
+pipeline_cache_load :: proc() {
+	if pref := SDL.GetPrefPath("", "toomanymachines"); pref != nil {
+		pipe_cache_path = fmt.aprintf("%spipeline.cache", cstring(pref)) // pref dir ends in the separator
+		SDL.free(rawptr(pref))
+	}
+	ci := vk.PipelineCacheCreateInfo{sType = .PIPELINE_CACHE_CREATE_INFO}
+	data, rerr := os.read_entire_file(pipe_cache_path, context.allocator)
+	if rerr == nil { ci.initialDataSize = len(data); ci.pInitialData = raw_data(data) }
+	vkok(vk.CreatePipelineCache(vkc.device, &ci, nil, &vkc.pipe_cache), "CreatePipelineCache")
+	if rerr == nil { delete(data) }
+}
+
+// Persist the driver-populated ISA cache after a successful build — the loading screen, hot
+// reloads and the baker all warm the same file. Non-fatal: a failed save just means the next
+// launch recompiles behind the loading bar again.
+pipeline_cache_save :: proc() {
+	size: int
+	if pipe_cache_path == "" { return }
+	if vk.GetPipelineCacheData(vkc.device, vkc.pipe_cache, &size, nil) != .SUCCESS || size == 0 { return }
+	buf := make([]byte, size, context.allocator)
+	defer delete(buf)
+	if vk.GetPipelineCacheData(vkc.device, vkc.pipe_cache, &size, raw_data(buf)) != .SUCCESS { return }
+	if werr := os.write_entire_file(pipe_cache_path, buf[:size]); werr != nil { fmt.eprintln("pipeline cache: failed to write", pipe_cache_path, werr) }
 }
 
 // ── buffers ──────────────────────────────────────────────────────────────────
@@ -444,7 +488,7 @@ make_compute_pipeline :: proc(path: string) -> vk.Pipeline {
 		layout = vkc.pipe_layout,
 	}
 	p: vk.Pipeline
-	vkok(vk.CreateComputePipelines(vkc.device, 0, 1, &ci, nil, &p), "CreateComputePipelines")
+	vkok(vk.CreateComputePipelines(vkc.device, vkc.pipe_cache, 1, &ci, nil, &p), "CreateComputePipelines")
 	return p
 }
 
@@ -494,7 +538,7 @@ make_graphics_pipeline :: proc(vert, frag: string, blend: Blend, hdr: bool) -> v
 		layout              = vkc.pipe_layout,
 	}
 	p: vk.Pipeline
-	vkok(vk.CreateGraphicsPipelines(vkc.device, 0, 1, &ci, nil, &p), "CreateGraphicsPipelines")
+	vkok(vk.CreateGraphicsPipelines(vkc.device, vkc.pipe_cache, 1, &ci, nil, &p), "CreateGraphicsPipelines")
 	return p
 }
 
@@ -511,6 +555,7 @@ build_pipelines :: proc(out: ^[Pipe]vk.Pipeline) -> (ok: bool) {
 		out[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend, spec.hdr)
 		if out[p] == 0 { ok = false }
 	}
+	if ok { pipeline_cache_save() } // every build warms the per-machine ISA cache (first launch, hot reloads, the baker)
 	return
 }
 
@@ -524,6 +569,39 @@ rebuild_pipelines :: proc() {
 	}
 	for p in Pipe { vk.DestroyPipeline(vkc.device, pipelines[p], nil) }
 	pipelines = newp
+}
+
+// ── shader modules + hot reload ───────────────────────────────────────────────
+// The game only READS precompiled SPIR-V (shaders/spv/, produced by tools/build.odin). No shader
+// compilation lives here. Hot reload watches the compiled .spv files (the ones listed in
+// PIPE_SPECS) and rebuilds the pipelines when the watcher recompiles them — see build.odin `watch`.
+
+// Load a precompiled SPIR-V file → VkShaderModule (0 on failure).
+load_spv :: proc(path: string) -> vk.ShaderModule {
+	data, err := os.read_entire_file(path, context.allocator)
+	if err != nil { fmt.eprintln("missing compiled shader:", path, "— run ./run.sh"); return 0 }
+	defer delete(data)
+	ci := vk.ShaderModuleCreateInfo{sType = .SHADER_MODULE_CREATE_INFO, codeSize = len(data), pCode = cast(^u32)raw_data(data)}
+	m: vk.ShaderModule
+	vkok(vk.CreateShaderModule(vkc.device, &ci, nil, &m), "CreateShaderModule")
+	return m
+}
+
+// Poll every pipeline's .spv; when the watcher recompiles them (mtime changes), rebuild the
+// pipelines. Pure consumer — the watcher owns GLSL → SPIR-V (+ naga).
+@(private = "file") hot_stamp: i64
+
+hot_reload_poll :: proc() {
+	sum: i64
+	for spec in PIPE_SPECS {
+		for spv in spec.shaders { t, _ := os.last_write_time_by_name(spv); sum += time.to_unix_nanoseconds(t) }
+	}
+	if hot_stamp == 0 { hot_stamp = sum; return }
+	if sum != hot_stamp {
+		hot_stamp = sum
+		fmt.println("hot reload: shaders changed — reloading pipelines")
+		rebuild_pipelines()
+	}
 }
 
 // ── frame scaffolding: acquire → record → submit → present ────────────────────
@@ -563,6 +641,16 @@ frame_begin :: proc() -> (cmd: vk.CommandBuffer, img: u32, ok: bool) {
 gpu_stamp :: proc(cmd: vk.CommandBuffer, i: u32) {
 	vk.CmdWriteTimestamp(cmd, {.BOTTOM_OF_PIPE}, vkc.qpools[vkc.frame], i)
 }
+
+// Per-pass GPU perf marker (render.odin brackets each pass). Nsight Graphics reports the GPU
+// time INSIDE each region under locked clocks (gpuprof.sh parses it) — authoritative per-pass
+// timing that the engine's own timestamps can't give on a laptop whose clocks can't be locked.
+// Near-free; the proc pointer is always resolved (EXT_debug_utils is enabled in every build).
+gpu_label :: proc(cmd: vk.CommandBuffer, name: cstring) {
+	l := vk.DebugUtilsLabelEXT{sType = .DEBUG_UTILS_LABEL_EXT, pLabelName = name}
+	vk.CmdBeginDebugUtilsLabelEXT(cmd, &l)
+}
+gpu_label_end :: proc(cmd: vk.CommandBuffer) { vk.CmdEndDebugUtilsLabelEXT(cmd) }
 
 // Transition the swapchain image to a color target and open dynamic rendering (clear + viewport).
 pass_begin :: proc(cmd: vk.CommandBuffer, img: u32) {
@@ -670,15 +758,22 @@ create_swapchain :: proc() {
 	count := caps.minImageCount + 1
 	if caps.maxImageCount > 0 && count > caps.maxImageCount { count = caps.maxImageCount }
 
-	// Prefer MAILBOX: FIFO quantizes any frame that slips past a vblank into a 33ms
-	// double-frame — visible stutter when the frame cost rides the 16.7ms edge.
-	// MAILBOX always presents the newest image, so a slow frame costs only itself.
-	pmode := vk.PresentModeKHR.FIFO
+	// Present mode by preference, best first — the whole point is to NEVER stall to a 33ms
+	// double-frame when a frame rides the 16.7ms vblank edge (that's the "dips below 60" hitch):
+	//   MAILBOX      — uncapped, always shows the newest image; a slow frame costs only itself.
+	//   FIFO_RELAXED — vsync, BUT a frame that missed the vblank tears in immediately instead of
+	//                  waiting a whole refresh. Kills the 33ms quantization on Wayland/X where
+	//                  MAILBOX often isn't offered.
+	//   FIFO         — hard vsync fallback (the only universally-guaranteed mode).
 	pmn: u32
 	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.phys, vkc.surface, &pmn, nil)
 	pmodes := make([]vk.PresentModeKHR, pmn, context.temp_allocator)
 	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.phys, vkc.surface, &pmn, raw_data(pmodes))
-	for m in pmodes { if m == .MAILBOX { pmode = .MAILBOX; break } }
+	has :: proc(ms: []vk.PresentModeKHR, want: vk.PresentModeKHR) -> bool { for m in ms { if m == want { return true } }; return false }
+	pmode := vk.PresentModeKHR.FIFO
+	if has(pmodes, .FIFO_RELAXED) { pmode = .FIFO_RELAXED }
+	if has(pmodes, .MAILBOX)      { pmode = .MAILBOX }
+	fmt.println("vulkan: present mode", pmode)
 
 	sci := vk.SwapchainCreateInfoKHR{
 		sType            = .SWAPCHAIN_CREATE_INFO_KHR,

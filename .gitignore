@@ -1,11 +1,13 @@
 /toomanymachines
 /toomanymachines-shot
 /toomanymachines_profile
-/citybake
+/bake
+/bake.tmp
 /devharness
-tools/citybake/gen/
+/devharness.tmp
+tools/bake/gen/
 tools/devharness/gen/
-assets/city.cache
+assets/
 .ngfx-perf/
 .nsys-reports/
 *.o
