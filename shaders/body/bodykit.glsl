@@ -8,8 +8,6 @@
 // Everything here is a pure function of (p, body, gait phase, the g* paint globals) — NO v_id,
 // NO pc.time, NO emissive. The time/id-dependent bits (eyes pulse, exhaust embers, battle damage,
 // the gait odometer) live in bodyspiders.glsl: they can't be baked, and the baker has no v_id.
-#ifndef BODYKIT_GLSL
-#define BODYKIT_GLSL
 
 const vec3 BOT_ORANGE = vec3(0.72, 0.14, 0.05);  // red unit marking
 const vec3 BOT_LINE   = vec3(0.045, 0.045, 0.040); // panel lining / lower struts
@@ -179,5 +177,3 @@ void brute_chassis(vec2 p, Body b, float gt) {
 	// forward glacis — plain armor, NO marking (painted shapes all read as glyphs)
 	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.56, 0.0), vec2(r * 0.22, r * 0.34)) - r * 0.06, gPlateB, 6.0);
 }
-
-#endif

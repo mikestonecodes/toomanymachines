@@ -1,6 +1,3 @@
-#version 460
-#include "common.glsl"
-
 // The city, drawn per-pixel — OBLIQUE fake 3D: a point at height t over ground pos g
 // appears shifted straight up-screen by LEAN*t (pure translation — no shear, roofs sit
 // directly behind their facades), so we march t from the sky down through scene_h()

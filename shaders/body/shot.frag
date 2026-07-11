@@ -1,6 +1,3 @@
-#version 460
-#include "bodyfx.glsl"
-
 // ── body group: SHOTS (bullet slots BULLET_LO..TURRET_LO) ──────────────────────
 // Plasma bolts with their trails, settled mines, and the detonation flash of dying
 // shells (VAR_BOOM — the shockwave itself is the composite's distortion).

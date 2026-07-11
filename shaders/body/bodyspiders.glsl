@@ -1,7 +1,3 @@
-#ifndef BODYSPIDERS_GLSL
-#define BODYSPIDERS_GLSL
-#include "bodyfx.glsl"
-
 // ── the SPIDER FAMILY: the horde's three walkers, procedural path ──────────────
 // Chassis (plates/legs) come from bodykit.glsl (shared with the atlas baker); this adds
 // the LIVE emissive (pulsing eyes, exhausts — id/time-dependent, unbakeable) and wraps
@@ -42,5 +38,3 @@ void brute_emissive(vec2 p, Body b) {
 }
 
 void brute(vec2 p, Body b, float t) { brute_chassis(p, b, gait_ph(b)); brute_emissive(p, b); battle_damage(p, b, HP_BRUTE); }
-
-#endif // BODYSPIDERS_GLSL

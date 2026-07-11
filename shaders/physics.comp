@@ -1,6 +1,3 @@
-#version 460
-#include "common.glsl"
-
 // GPU sim: clear → scatter → step, one dispatch per mode (pc.mode). Bucket grid over the
 // whole WORLD (GCOUNT + GITEM). Every body only writes ITSELF → no data races (grid
 // scatter + the pit's STATS counters are the only atomics). The enemy↔bullet kill is a
@@ -65,7 +62,6 @@ void building_push(inout vec2 p, inout vec2 v, float r) {
 bool in_building(vec2 p) {
 	return bldg_pen(p) > 0.0;
 }
-
 
 // Spawner for the endless assault: variant mix 60/30/10 (walkers only — the armor is
 // YOURS), marching in from a ring just beyond the CURRENT city edge (pc.city_r) — the

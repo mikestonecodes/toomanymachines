@@ -1,7 +1,3 @@
-#version 460
-#include "common.glsl"
-#include "bodykit.glsl"
-
 // ── the OFFLINE BODY-ATLAS BAKE ───────────────────────────────────────────────
 // Renders the enemy CHASSIS (spider/skitter/brute) into assets/body.cache, once, as a grid of
 // [kind × gait-frame] tiles. The runtime horde (horde.frag: enemy_atlas) then FETCHES a tile

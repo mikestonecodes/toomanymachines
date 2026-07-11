@@ -1,6 +1,3 @@
-#version 460
-#include "bodyrigs.glsl"
-
 // ── body group: the SHIP (instance 0, drawn last, over the crowd) ──────────────
 // The player's current garage ride — ship() dispatches the ride variant across the
 // same war-rig chassis the army wears (bodyrigs.glsl) plus the player-only walkers

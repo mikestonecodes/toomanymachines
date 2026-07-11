@@ -1,5 +1,3 @@
-#version 460
-
 // Fullscreen triangle from 3 vertices — shared by every fullscreen pass
 // (city backdrop, bloom, composite). No varyings; frags work off gl_FragCoord.
 void main() {

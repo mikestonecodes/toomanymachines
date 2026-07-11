@@ -1,6 +1,3 @@
-#version 460
-#include "common.glsl"
-
 // Bloom blur pass, ported from fishlab post.wgsl (fs_blur + bloom_bright): mode 0 =
 // bright-extract fused into the horizontal gaussian (Scene → BloomA), mode 1 = vertical
 // gaussian (BloomA → BloomB). Runs at half res; taps 2 source-px apart for a wide halo.

@@ -1,7 +1,3 @@
-#ifndef BODYRIGS_GLSL
-#define BODYRIGS_GLSL
-#include "bodyfx.glsl"
-
 // ── the WAR RIGS: tracked/wheeled/walking gun platforms ─────────────────────────
 // YOUR army's five classes (crew.frag) — and the same chassis double as garage rides,
 // aimed by the mouse instead of a target lock (ship() in ship.frag).
@@ -170,5 +166,3 @@ void bomber(vec2 p, Body b, float t) {
 	add += gEye * 1.3 * beat * soft(sd_box(p - vec2(-r * 0.05, 0.0), vec2(r * 0.05, r * 0.08)));
 	battle_damage(p, b, HP_BOMBER);
 }
-
-#endif // BODYRIGS_GLSL

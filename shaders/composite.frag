@@ -1,6 +1,3 @@
-#version 460
-#include "common.glsl"
-
 // Final composite → swapchain, ported from fishlab post.wgsl (fs_composite): scene +
 // bloom, ACES tonemap, animated film grain, vignette, and a mild warm-shadow grade so
 // the frame sits in the palette.

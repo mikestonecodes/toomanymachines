@@ -1,6 +1,3 @@
-#version 460
-#include "common.glsl"
-
 // One instanced quad per body, sized per kind (legs, tracers, tow beams and death
 // bursts all need margin beyond the collision radius), rotated into the body's facing
 // (+x = forward). Screen mapping is world/ZOOM around the camera.

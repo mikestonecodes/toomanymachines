@@ -1,6 +1,3 @@
-#version 460
-#include "common.glsl"
-
 // ── the LOADING BAR (ported from ../fishlab loader.odin/loader.wgsl, re-skinned to the
 // 60/30/10 palette) ──────────────────────────────────────────────────────────────────
 // Drawn straight to the swapchain while the worker threads compile the game pipelines

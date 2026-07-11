@@ -1,6 +1,3 @@
-#version 460
-#include "common.glsl"
-
 // ── the OFFLINE CITY BAKE ─────────────────────────────────────────────────────
 // Renders the whole STATIC building layer, once, into the world-anchored city cache
 // (Img.CityC). This is the SAME oblique march city.frag used to run per-pixel every

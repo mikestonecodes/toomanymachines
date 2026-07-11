@@ -1,7 +1,3 @@
-#version 460
-#include "bodyspiders.glsl"
-#include "bodyrigs.glsl"
-
 // ── body group: the CREW (turret/helper/ally slots, TURRET_LO..) ───────────────
 // Defense towers with their sweeping fire, the salvage-drone fleet, YOUR army's war
 // rigs (bodyrigs.glsl — the same chassis double as garage rides in ship.frag), their

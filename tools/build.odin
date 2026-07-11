@@ -20,23 +20,48 @@ import "core:strings"
 import "core:sys/linux"
 import "core:time"
 
-// src : glslc shader stage. Compiles to shaders/spv/<src>.spv.
-SHADERS := [][2]string{
-	{"physics.comp", "compute"},
-	{"fs_tri.vert", "vertex"},
-	{"city.frag", "fragment"},
-	{"body.vert", "vertex"},
-	// the body pass, split per kind-group: each frag owns its sprites and includes only the
-	// shared modules it uses (bodyfx/bodyspiders/bodyrigs), so the driver compiles five
-	// small shaders in parallel instead of one ~7s ubershader
-	{"wreck.frag", "fragment"},
-	{"horde.frag", "fragment"},
-	{"shot.frag", "fragment"},
-	{"crew.frag", "fragment"},
-	{"ship.frag", "fragment"},
-	{"bloom.frag", "fragment"},
-	{"composite.frag", "fragment"},
-	{"loader.frag", "fragment"},
+// Shaders are Odin-style PACKAGES: no #version/#include in any source — every file in a
+// package shares one namespace (names unique) and compose() glues prelude + modules +
+// entry into one translation unit, exactly like an Odin package. NOTHING is listed by
+// hand: every .comp/.vert/.frag under shaders/ is an entry point (stage = extension),
+// entries under shaders/body/ get the body modules on top of the base ones, and bake
+// frags (tools/bake) get base + the chassis kit. Only the MODULE order below is explicit
+// — GLSL requires declaration-before-use, so someone must say it. #line directives keep
+// glslc errors pointing at the real files.
+PKG_MODULES := []string{
+	"shaders/gen.glsl",              // the generated CPU↔GPU contract (structs/constants/buffers)
+	"shaders/common.glsl",           // palette + shared helpers
+	"shaders/body/bodykit.glsl",     // machined-metal primitives + enemy chassis (shared w/ the baker)
+	"shaders/body/bodyfx.glsl",      // body-pass scaffolding + varyings + TEXS (FRAGMENT-only from here on)
+	"shaders/body/bodyspiders.glsl", // the horde family
+	"shaders/body/bodyrigs.glsl",    // the war rigs
+}
+pkg_modules :: proc(pkg: string) -> []string {
+	switch pkg {
+	case "kit":  return PKG_MODULES[:3]
+	case "body": return PKG_MODULES
+	}
+	return PKG_MODULES[:2] // base
+}
+
+// Glue one translation unit: version+extensions prelude, the package modules, the entry —
+// each chunk behind a #line so errors name the real file. Written next to the .spv
+// (shaders/spv/<name>.glsl, gitignored) so a failing compile is easy to inspect.
+compose :: proc(pkg: string, entry_path: string, out_path: string) {
+	b: strings.Builder
+	strings.write_string(&b, "#version 460\n")
+	strings.write_string(&b, "#extension GL_EXT_nonuniform_qualifier : require\n")
+	strings.write_string(&b, "#extension GL_EXT_scalar_block_layout  : require\n")
+	strings.write_string(&b, "#extension GL_GOOGLE_cpp_style_line_directive : require\n")
+	for f in pkg_modules(pkg) {
+		data, err := os.read_entire_file(f, context.temp_allocator)
+		if err != nil { fmt.eprintln("compose: missing package module", f); os.exit(1) }
+		fmt.sbprintf(&b, "#line 1 \"%s\"\n%s\n", f, string(data))
+	}
+	data, err := os.read_entire_file(entry_path, context.temp_allocator)
+	if err != nil { fmt.eprintln("compose: missing shader", entry_path); os.exit(1) }
+	fmt.sbprintf(&b, "#line 1 \"%s\"\n%s", entry_path, string(data))
+	_ = os.write_entire_file(out_path, transmute([]u8)strings.to_string(b))
 }
 
 sh :: proc(cmd: string) -> int {
@@ -172,7 +197,7 @@ gpuprof :: proc() {
 // NOTE: a live `watch` session editing ONLY the shaders (.glsl saves, no game relaunch) won't
 // auto-rebake — rerun ./run.sh to refresh the baked layers.
 BAKE_CACHES := []string{"assets/city.cache", "assets/body.cache"}
-BAKE_SRCS := []string{"shaders/common.glsl", "shaders/city.frag", "shaders/bodykit.glsl", "car.odin", "render.odin", "bake_cache.odin", "tools/bake/bake.odin"}
+BAKE_SRCS := []string{"shaders/common.glsl", "shaders/city.frag", "shaders/body/bodykit.glsl", "car.odin", "render.odin", "bake_cache.odin", "tools/bake/bake.odin"}
 BAKE_GEN :: "tools/bake/gen" // assembled baker package (copied game sources + harness)
 
 ensure_bakes :: proc() {
@@ -194,10 +219,12 @@ ensure_bakes :: proc() {
 	if !stale { return }
 	fmt.println(">> baking static caches (a bake source changed)…")
 	assemble_harness(BAKE_GEN, "tools/bake") // game sources (minus main.odin) + the baker's main
-	// each baker frag → shaders/spv (loaded by the harness at runtime), validated.
+	// each baker frag → shaders/spv (loaded by the harness at runtime), validated. Bake frags
+	// compose over the `kit` package (gen + common + the shared chassis primitives).
 	for f in frags {
 		name := filepath.base(f) // e.g. bake_city.frag
-		must(fmt.tprintf("glslc -I shaders --target-env=vulkan1.3 -Werror -fshader-stage=fragment %s -o shaders/spv/%s.tmp.spv", f, name))
+		compose("kit", f, fmt.tprintf("shaders/spv/%s.glsl", name))
+		must(fmt.tprintf("glslc --target-env=vulkan1.3 -Werror -fshader-stage=fragment shaders/spv/%s.glsl -o shaders/spv/%s.tmp.spv", name, name))
 		must(fmt.tprintf("spirv-val shaders/spv/%s.tmp.spv", name))
 		must(fmt.tprintf("mv shaders/spv/%s.tmp.spv shaders/spv/%s.spv", name, name))
 	}
@@ -255,15 +282,26 @@ prep :: proc() {
 // Each .spv is compiled + validated as a .tmp.spv and RENAMED into place: the rename is
 // atomic, so the running game's hot-reload (and a concurrent headless pass loading its
 // pipelines) can never read a half-written shader.
+// One entry's full pipeline: compose the package unit, compile, validate, install the .spv
+// under its basename (shaders/spv/<name>.spv — PIPE_SPECS addresses them flat).
+build_shader :: proc(pkg, src: string, naga: bool) {
+	name := filepath.base(src)
+	stage := strings.has_suffix(name, ".comp") ? "compute" : strings.has_suffix(name, ".vert") ? "vertex" : "fragment"
+	compose(pkg, src, fmt.tprintf("shaders/spv/%s.glsl", name))
+	must(fmt.tprintf("glslc --target-env=vulkan1.3 -Werror -fshader-stage=%s shaders/spv/%s.glsl -o shaders/spv/%s.tmp.spv", stage, name, name))
+	must(fmt.tprintf("spirv-val shaders/spv/%s.tmp.spv", name))
+	if naga { sh(fmt.tprintf("naga shaders/spv/%s.tmp.spv", name)) } // advisory cross-check
+	must(fmt.tprintf("mv shaders/spv/%s.tmp.spv shaders/spv/%s.spv", name, name))
+}
+
 build_shaders :: proc(naga: bool) {
 	os.make_directory("shaders/spv")
-	for s in SHADERS {
-		src, stage := s[0], s[1]
-		must(fmt.tprintf("glslc -I shaders --target-env=vulkan1.3 -Werror -fshader-stage=%s shaders/%s -o shaders/spv/%s.tmp.spv", stage, src, src))
-		must(fmt.tprintf("spirv-val shaders/spv/%s.tmp.spv", src))
-		if naga { sh(fmt.tprintf("naga shaders/spv/%s.tmp.spv", src)) } // advisory cross-check
-		must(fmt.tprintf("mv shaders/spv/%s.tmp.spv shaders/spv/%s.spv", src, src))
+	for pat in ([]string{"shaders/*.comp", "shaders/*.vert", "shaders/*.frag"}) {
+		entries, _ := filepath.glob(pat, context.temp_allocator)
+		for src in entries { build_shader("base", src, naga) }
 	}
+	body, _ := filepath.glob("shaders/body/*.frag", context.temp_allocator)
+	for src in body { build_shader("body", src, naga) }
 	fmt.println("shaders → shaders/spv/")
 }
 
@@ -522,7 +560,8 @@ watch :: proc() {
 	if fd < 0 { fmt.eprintln("inotify_init failed"); return }
 	if inotify_add_watch(fd, ".", WATCH_MASK) < 0 { fmt.eprintln("add_watch . failed"); return }
 	if inotify_add_watch(fd, "shaders", WATCH_MASK) < 0 { fmt.eprintln("add_watch shaders failed"); return }
-	fmt.println("Watching . (.odin) + shaders (.glsl)")
+	if inotify_add_watch(fd, "shaders/body", WATCH_MASK) < 0 { fmt.eprintln("add_watch shaders/body failed"); return }
+	fmt.println("Watching . (.odin) + shaders + shaders/body (.glsl)")
 
 	buf: [4096]u8
 	fds := Poll_Fd{fd = fd, events = 0x0001 /*POLLIN*/}

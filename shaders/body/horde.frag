@@ -1,6 +1,3 @@
-#version 460
-#include "bodyspiders.glsl"
-
 // ── body group: the HORDE (enemy slots ENEMY_LO..BULLET_LO) ────────────────────
 // The 80k live machines off the baked atlas, their dying bodies on the procedural
 // spider-family path (bodyspiders.glsl, byte-identical to the pre-split monolith),

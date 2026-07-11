@@ -1,8 +1,3 @@
-#ifndef BODYFX_GLSL
-#define BODYFX_GLSL
-#include "common.glsl"
-#include "bodykit.glsl"
-
 // ── shared BODY-PASS SCAFFOLDING ────────────────────────────────────────────────
 // Everything every body-group fragment shader needs around its sprites: the varyings,
 // the gait odometer, team paint, battle damage, the wreck husk + death bursts (multiple
@@ -271,5 +266,3 @@ void body_finish(vec2 p, Body b) {
 	}
 	o_color = vec4(base * cov + add, cov); // premultiplied; `add` is pure emissive
 }
-
-#endif // BODYFX_GLSL

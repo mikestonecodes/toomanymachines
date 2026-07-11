@@ -1,16 +1,12 @@
-// Shared shader contract. Included by every shader via `#include "common.glsl"`
-// (glslc resolves it with -I shaders). The GPU structs (Body, Push) are injected
-// from the Odin definitions (render.odin @glsl block) → shaders/gen.glsl, below.
-#ifndef COMMON_GLSL
-#define COMMON_GLSL
-
-#extension GL_EXT_nonuniform_qualifier : require
-#extension GL_EXT_scalar_block_layout  : require
+// Shared shader contract — part of every shader PACKAGE (Odin-style: no #include
+// anywhere; tools/build.odin composes each shader as prelude + package files + entry,
+// one shared namespace, names unique — see SHADERS/pkg_files there). The GPU structs
+// (Body, Push) are injected from the Odin definitions (render.odin @glsl block) →
+// shaders/gen.glsl, composed just before this file.
 
 // Odin-generated (from the @glsl blocks + BUF_SPECS): the Body/Push structs, gameplay constants,
 // the bindless storage-buffer arrays (bodyBuf[], uintBuf[]) + accessor macros, and the push
 // block. Varyings are NOT here — a graphics pipeline declares its own in its .vert/.frag.
-#include "gen.glsl"
 
 // ── the 60/30/10 palette: night battlefield, hot red-orange lights ───────────
 // 60% near-black asphalt/dirt, 30% dark warm metal, 10% hot red-orange emissives
@@ -276,5 +272,3 @@ float house_h(House hs) {
 	}
 	return h;
 }
-
-#endif
