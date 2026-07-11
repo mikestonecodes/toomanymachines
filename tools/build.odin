@@ -7,6 +7,7 @@ package main
 //   odin run tools/build.odin -file -- shot      headless capture, env-driven flags (--x/--y/--no-fire/--loader…)
 //   odin run tools/build.odin -file -- test      600-frame wall/GPU/CPU profile print
 //   odin run tools/build.odin -file -- gpuprof   Nsight GPU Trace: locked-clock per-pass median ms
+//   odin run tools/build.odin -file -- smoke     run the shipped Linux+Windows(Wine) binaries: boot + play or die
 // Shaders compile with validation on (glslc -Werror + spirv-val); the game reads shaders/spv/*.spv.
 
 import "core:c"
@@ -126,6 +127,60 @@ flagv :: proc(i: ^int) -> string {
 	i^ += 1
 	if i^ >= len(os.args) { fmt.eprintln(os.args[i^ - 1], "needs a value"); os.exit(2) }
 	return os.args[i^]
+}
+
+// ── `smoke`: prove the SHIPPED binaries boot and PLAY — Linux natively, Windows under
+// Wine (winevulkan → the real host GPU; WINEDLLOVERRIDES kills the .NET-prompt noise,
+// which Windows players never see anyway). Each run starts from a COLD pipeline cache,
+// so it exercises SDL init → Vulkan device → the full loader compile → the cache save →
+// the live render loop. The cache file appearing IS the boot-success marker (it's only
+// written after every pipeline built), and the process must still be running SMOKE_ALIVE
+// seconds later to count as "playing". Any failure dumps the log tail and exits nonzero.
+// `deploy steam` runs this automatically before uploading; macOS can't be tested from
+// Linux (no darling) — the Steam playtest is its test bed.
+SMOKE_ALIVE :: 6 // seconds the game must keep running after boot to count as playing
+
+smoke :: proc() {
+	if !os.exists("dist/toomanymachines-linux-x86_64/toomanymachines") { dist("linux") }
+	if !os.exists("dist/toomanymachines-windows-x86_64/toomanymachines.exe") { dist("windows") }
+	home := os.get_env("HOME", context.temp_allocator)
+	smoke_run("linux", "dist/toomanymachines-linux-x86_64", "./toomanymachines",
+		fmt.tprintf("%s/.local/share/toomanymachines/pipeline.cache", home), "-x toomanymachines")
+	smoke_run("windows", "dist/toomanymachines-windows-x86_64",
+		"WINEPREFIX=\"$(pwd)/../../.winetest\" WINEDEBUG=-all WINEDLLOVERRIDES=mscoree= wine toomanymachines.exe",
+		".winetest/drive_c/users/*/AppData/Roaming/toomanymachines/pipeline.cache", "-f toomanymachines.exe")
+	fmt.println(">> smoke: Linux + Windows both BOOTED and PLAYED — good to ship")
+}
+
+smoke_run :: proc(label, dir, cmd, cache_glob, pgrep_expr: string) {
+	fmt.printfln(">> smoke [%s]: cold boot (pipeline cache wiped — full loader path)…", label)
+	sh(cat("pkill ", pgrep_expr, " 2>/dev/null; sleep 0.2"))
+	sh(cat("rm -f ", cache_glob))
+	log := cat("dist/smoke-", label, ".log")
+	must(cat("(cd ", dir, " && ", cmd, ") > ", log, " 2>&1 & true"))
+	booted := -1
+	for i in 0 ..< 120 { // wine's first run also builds its prefix — generous budget
+		time.sleep(time.Second)
+		if g, _ := filepath.glob(cache_glob, context.temp_allocator); len(g) > 0 { booted = i + 1; break }
+		if i > 4 && sh(cat("pgrep ", pgrep_expr, " > /dev/null")) != 0 {
+			fmt.printfln(">> smoke [%s]: FAILED — process died before booting. Log tail:", label)
+			sh(cat("tail -25 ", log))
+			os.exit(1)
+		}
+	}
+	if booted < 0 {
+		fmt.printfln(">> smoke [%s]: FAILED — no boot marker within 120s. Log tail:", label)
+		sh(cat("tail -25 ", log))
+		os.exit(1)
+	}
+	time.sleep(SMOKE_ALIVE * time.Second)
+	if sh(cat("pgrep ", pgrep_expr, " > /dev/null")) != 0 {
+		fmt.printfln(">> smoke [%s]: FAILED — booted but died while playing. Log tail:", label)
+		sh(cat("tail -25 ", log))
+		os.exit(1)
+	}
+	sh(cat("pkill ", pgrep_expr))
+	fmt.printfln(">> smoke [%s]: PASS — booted in %ds (all pipelines compiled + cache saved), still playing %ds later", label, booted, SMOKE_ALIVE)
 }
 
 // Newest file matching a glob (ngfx writes one export dir per run; we parse the latest).
@@ -513,6 +568,12 @@ main :: proc() {
 		return
 	}
 
+	// `smoke`: run the SHIPPED Linux + Windows(Wine) binaries and prove they boot + play.
+	if mode == "smoke" {
+		smoke()
+		return
+	}
+
 	// `dist [linux|windows|mac|all]`: cross-compile shippable native builds FROM LINUX (default all).
 	// Godot-style — one Linux host produces Windows/macOS/Linux bundles. See the dist section below.
 	if mode == "dist" {
@@ -531,6 +592,7 @@ main :: proc() {
 			os.exit(1)
 		}
 		dist("steam")
+		smoke() // gate the upload: both shipped binaries must boot + play (Linux native, Windows via Wine)
 		user := len(os.args) > 3 ? os.args[3] : os.get_env("STEAM_USER", context.temp_allocator)
 		if user == "" {
 			fmt.eprintln("deploy steam: set STEAM_USER=<steam login> (or pass it as the 3rd arg); login must be cached (`steamcmd +login <user>` once)")
