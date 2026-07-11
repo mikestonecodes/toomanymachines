@@ -11,8 +11,10 @@ import vk "vendor:vulkan"
 // The first launch on a machine pays the driver's SPIR-V→ISA compile — per-device,
 // so it can't ship pre-built. build_pipelines (vk.odin) fans the shaders out one
 // thread each while this thread pumps events and draws loader.frag's bar (progress =
-// pipelines built / total). The bar is LAZY: it only appears if the build outlives a
-// 100ms grace, so a warm runtime cache (~1ms) goes straight to the game with no flash.
+// pipelines built / total). The bar only exists when the runtime cache didn't
+// (pipe_cache_seeded): a seeded cache builds in ~1ms and goes straight to the game.
+// (If a driver/GPU swap invalidates the seeded blob, that one launch compiles slow
+// with no bar — the save after the build refreshes the file, so it self-heals.)
 // The profiler drive (dev_dt_override >= 0, gpuprof's frozen sim) builds without
 // presents instead — Nsight counts PRESENTED frames for its capture window.
 
@@ -25,16 +27,12 @@ loading_screen :: proc() {
 		sync.atomic_store(done, true)
 	})
 	bar: vk.Pipeline
-	t0 := time.tick_now()
+	if !pipe_cache_seeded {
+		bar = make_graphics_pipeline("shaders/spv/fs_tri.vert.spv", "shaders/spv/loader.frag.spv", .None, false)
+		if bar == 0 { fmt.panicf("loader shader missing — run ./run.sh") }
+	}
 	for !sync.atomic_load(&build_done) {
-		if time.duration_milliseconds(time.tick_diff(t0, time.tick_now())) < 100 {
-			time.sleep(5 * time.Millisecond) // the grace window — a warm cache never gets past here
-			continue
-		}
-		if bar == 0 {
-			bar = make_graphics_pipeline("shaders/spv/fs_tri.vert.spv", "shaders/spv/loader.frag.spv", .None, false)
-			if bar == 0 { fmt.panicf("loader shader missing — run ./run.sh") }
-		}
+		if bar == 0 { time.sleep(time.Millisecond); continue } // seeded cache: just wait out the ~1ms build
 		// drain events: quit is honored right after the load (the compile can't be cancelled),
 		// and a resize (the WM tiles the fresh window immediately) must NOT be swallowed —
 		// win_w/win_h feed every viewport, and the main loop will never see this event. No

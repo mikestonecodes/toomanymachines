@@ -284,7 +284,9 @@ bindless_init :: proc() {
 // successful pipeline build — the first launch shows the loading bar (loop.odin), every launch
 // after is instant. Vulkan validates the blob's device/driver UUID and silently ignores a
 // mismatch (→ recompile), so a stale/corrupt/foreign file is safe, just slow.
-pipe_cache_path: string // <SDL pref dir>/pipeline.cache — per-user writable on every OS, unlike the install dir
+pipe_cache_path:   string // <SDL pref dir>/pipeline.cache — per-user writable on every OS, unlike the install dir
+pipe_cache_seeded: bool   // a cache file existed and seeded the VkPipelineCache → the build will be
+                          // near-instant, so the loading screen never shows (loader.odin)
 
 pipeline_cache_load :: proc() {
 	if pref := SDL.GetPrefPath("", "toomanymachines"); pref != nil {
@@ -293,7 +295,7 @@ pipeline_cache_load :: proc() {
 	}
 	ci := vk.PipelineCacheCreateInfo{sType = .PIPELINE_CACHE_CREATE_INFO}
 	data, rerr := os.read_entire_file(pipe_cache_path, context.allocator)
-	if rerr == nil { ci.initialDataSize = len(data); ci.pInitialData = raw_data(data) }
+	if rerr == nil { ci.initialDataSize = len(data); ci.pInitialData = raw_data(data); pipe_cache_seeded = true }
 	vkok(vk.CreatePipelineCache(vkc.device, &ci, nil, &vkc.pipe_cache), "CreatePipelineCache")
 	if rerr == nil { delete(data) }
 }
