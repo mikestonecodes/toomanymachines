@@ -1,13 +1,13 @@
 // ── the SHARED BODY SPRITE KIT ────────────────────────────────────────────────
 // The v_id-free, time-free machined-metal primitives + the ENEMY CHASSIS sprites, factored out
 // so BOTH consumers compile the exact same code with zero divergence:
-//   • the game (bodylib.glsl) — draws every body live, and for the alive horde SAMPLES the baked
+//   • the game (the body-group frags via bodyspiders.glsl) — draws every body live, and for the alive horde SAMPLES the baked
 //     atlas instead of re-running the chassis per fragment (the big bodies win).
 //   • the offline baker (tools/bake/bake_body.frag) — renders each <kind × gait-frame> tile of
 //     assets/body.cache by calling these chassis functions directly.
 // Everything here is a pure function of (p, body, gait phase, the g* paint globals) — NO v_id,
 // NO pc.time, NO emissive. The time/id-dependent bits (eyes pulse, exhaust embers, battle damage,
-// the gait odometer) live in bodylib.glsl: they can't be baked, and the baker has no v_id.
+// the gait odometer) live in bodyspiders.glsl: they can't be baked, and the baker has no v_id.
 #ifndef BODYKIT_GLSL
 #define BODYKIT_GLSL
 
@@ -107,7 +107,7 @@ void mech_leg(vec2 p, float r, float aa, float ph, float wUp, float wLo) {
 
 // ── the ENEMY CHASSIS: the DIFFUSE sprite only (base + coverage), gait phase explicit ─────────
 // No eyes glow, no exhaust embers, no damage — those are emissive/id/time-dependent and are added
-// live in bodylib.glsl (or, for the atlas path, re-added procedurally after the fetch). Baking these
+// live in bodyspiders.glsl (or, for the atlas path, re-added procedurally after the fetch). Baking these
 // three is what turns the horde's fragment cost from ~45 vnoise + 6 legs into one texture fetch.
 
 void spider_chassis(vec2 p, Body b, float gt) {
@@ -132,7 +132,7 @@ void spider_chassis(vec2 p, Body b, float gt) {
 			lay(BOT_LINE * 2.6, soft(length(p - vec2(sx * r * 0.48, sy * r * 0.36)) - r * 0.055));
 		}
 	}
-	// paired sensor EYE SOCKETS on the front hull corners (the glow is emissive → bodylib.glsl)
+	// paired sensor EYE SOCKETS on the front hull corners (the glow is emissive → bodyspiders.glsl)
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		lay(BOT_LINE, soft(length(p - vec2(r * 0.58, s * r * 0.28)) - r * 0.12));
 	}

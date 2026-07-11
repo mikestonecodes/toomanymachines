@@ -4,17 +4,17 @@
 
 // ── the OFFLINE BODY-ATLAS BAKE ───────────────────────────────────────────────
 // Renders the enemy CHASSIS (spider/skitter/brute) into assets/body.cache, once, as a grid of
-// [kind × gait-frame] tiles. The runtime horde (bodylib.glsl: enemy_atlas) then FETCHES a tile
+// [kind × gait-frame] tiles. The runtime horde (horde.frag: enemy_atlas) then FETCHES a tile
 // instead of running ~45 vnoise + 6 procedural legs per fragment — the big bodies win.
 //
 // Only the DETERMINISTIC diffuse chassis is baked: the plate grunge is vnoise(body-frame p) with
 // per-plate constant seeds — NO v_id — so every enemy of a kind already shares it (baking is
 // lossless, not a loss of variation). The gait cycle is the only per-body variable, sampled at
 // ATLAS_FRAMES phases here and cross-faded at runtime. Everything id/time-dependent (pulsing
-// eyes, exhaust embers, battle damage) is NOT baked — bodylib.glsl re-adds it live.
+// eyes, exhaust embers, battle damage) is NOT baked — bodyspiders.glsl re-adds it live.
 //
 // Output per texel: RGB = diffuse base, A = coverage. gl_FragCoord picks the tile + the in-tile
-// body-frame position, the exact inverse of bodylib.glsl's p→uv mapping (ATLAS_EXTK · ATLAS_RAD).
+// body-frame position, the exact inverse of horde.frag's p→uv mapping (ATLAS_EXTK · ATLAS_RAD).
 
 layout(location = 0) out vec4 o_color;
 
@@ -30,7 +30,7 @@ void main() {
 	vec2 inTile = (gl_FragCoord.xy - vec2(col, row) * float(ATLAS_TILE)) / float(ATLAS_TILE);
 	vec2 p = (inTile - 0.5) * 2.0 * (ATLAS_RAD * ATLAS_EXTK);
 
-	// the horde's paint (mirrors bodylib.glsl body_paint()'s enemy branch) — the DIFFUSE values the
+	// the horde's paint (mirrors bodyfx.glsl body_paint()'s enemy branch) — the DIFFUSE values the
 	// chassis reads. gEye is emissive-only (re-added live), set here just for parity.
 	gPlateA = vec3(0.120, 0.121, 0.136); // slightly cool steel
 	gPlateB = vec3(0.063, 0.064, 0.075);

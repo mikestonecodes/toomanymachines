@@ -44,11 +44,11 @@ IMG_CITYC  :: u32(3)  // the CITY CACHE: the whole static building layer pre-mar
 // makes the NEAREST (texelFetch) fetch byte-identical to the live march it replaced.
 IMG_BODYA  :: u32(4)  // the BODY ATLAS: the enemy chassis sprites (spider/skitter/brute) baked
 // once (→ assets/body.cache) into a grid of [kind × gait-frame] tiles, so the horde's fragment
-// shader (bodylib.glsl: enemy_atlas) samples a tile instead of running ~45 vnoise across 6 procedural legs.
+// shader (horde.frag: enemy_atlas) samples a tile instead of running ~45 vnoise across 6 procedural legs.
 CACHE_DIM    :: u32(8192)   // covers the city disk (CITY_R0 + LEAN·HMAX projection) at full res
 CACHE_ORIGIN :: 2867 * ZOOM // world px of texel (0,0); 2867 chosen so ORIGIN/ZOOM is integer
                             // AND ORIGIN + CACHE_DIM·ZOOM/2 ≈ WORLD·0.5 (centered on the city)
-// body atlas layout — the baker writes tiles, body.frag reads them (see bake_body.frag):
+// body atlas layout — the baker writes tiles, horde.frag reads them (see bake_body.frag):
 ATLAS_DIM    :: u32(2048) // square rgba16f atlas
 ATLAS_TILE   :: u32(128)  // px per tile
 ATLAS_COLS   :: u32(16)   // ATLAS_DIM/ATLAS_TILE — tiles per row
@@ -91,18 +91,19 @@ IMG_SPECS := [Img]ImgSpec{
 // graphics pipelines pick a `blend` mode and render into the HDR scene format (`hdr`) or the
 // swapchain. Every pipeline shares the one bindless descriptor set + push-constant layout.
 // The body pass is FIVE pipelines over the same body.vert — one small fragment shader per
-// kind-group (shared sprite code in bodylib.glsl), each drawn over just its slot range, in
-// the same ascending-slot order the old single draw blended in. Five small driver compiles
-// (parallel, behind the loading bar) instead of one ~7s ubershader.
-Pipe :: enum { Physics, City, BodyWreck, BodyHorde, BodyShot, BodyCrew, BodyShip, Bloom, Composite }
+// kind-group (wreck/horde/shot/crew/ship.frag; shared sprite modules in bodyfx/bodyspiders/
+// bodyrigs.glsl), each drawn over just its slot range, in the same ascending-slot order the
+// old single draw blended in. Five small driver compiles (parallel, behind the loading bar)
+// instead of one ~7s ubershader.
+Pipe :: enum { Physics, City, Wreck, Horde, Shot, Crew, Ship, Bloom, Composite }
 PIPE_SPECS := [Pipe]PipeSpec{
 	.Physics   = {compute = true, shaders = {"shaders/spv/physics.comp.spv"}},
 	.City      = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/city.frag.spv"}, hdr = true},
-	.BodyWreck = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_wreck.frag.spv"}, blend = .Premul, hdr = true},
-	.BodyHorde = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_horde.frag.spv"}, blend = .Premul, hdr = true},
-	.BodyShot  = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_shot.frag.spv"}, blend = .Premul, hdr = true},
-	.BodyCrew  = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_crew.frag.spv"}, blend = .Premul, hdr = true},
-	.BodyShip  = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/body_ship.frag.spv"}, blend = .Premul, hdr = true},
+	.Wreck     = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/wreck.frag.spv"}, blend = .Premul, hdr = true},
+	.Horde     = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/horde.frag.spv"}, blend = .Premul, hdr = true},
+	.Shot      = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/shot.frag.spv"}, blend = .Premul, hdr = true},
+	.Crew      = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/crew.frag.spv"}, blend = .Premul, hdr = true},
+	.Ship      = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/ship.frag.spv"}, blend = .Premul, hdr = true},
 	.Bloom     = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/bloom.frag.spv"}, hdr = true},
 	.Composite = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/composite.frag.spv"}},
 }
@@ -209,19 +210,19 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	gpu_label_end(cmd)
 	gpu_label(cmd, "bodies")
 	// layer 0 (mode=0): ground wrecks under everything (they lie in enemy AND ally slots)
-	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyWreck])
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Wreck])
 	vk.CmdDraw(cmd, 6, u32(BODY_COUNT - 1), 0, 1)
 	// layer 1 (mode=1): the living world, one pipeline per kind-group over its slot range —
 	// ascending slot order, so blending composites exactly like the old single draw
 	pc.mode = 1
 	vk.CmdPushConstants(cmd, vkc.pipe_layout, {.COMPUTE, .VERTEX, .FRAGMENT}, 0, size_of(Push), &pc)
-	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyHorde])
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Horde])
 	vk.CmdDraw(cmd, 6, u32(MAX_ENEMIES), 0, u32(ENEMY_LO))
-	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyShot])
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Shot])
 	vk.CmdDraw(cmd, 6, u32(MAX_BULLETS), 0, u32(BULLET_LO))
-	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyCrew])
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Crew])
 	vk.CmdDraw(cmd, 6, u32(MAX_TURRETS + MAX_HELPERS + MAX_ALLIES), 0, u32(TURRET_LO))
-	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.BodyShip])
+	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Ship])
 	vk.CmdDraw(cmd, 6, 1, 0, 0) // …the ship last, always on top of the crowd
 	img_pass_end(cmd, .Scene)
 	gpu_stamp(cmd, 3) // bodies done

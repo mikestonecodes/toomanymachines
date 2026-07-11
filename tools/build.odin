@@ -26,14 +26,14 @@ SHADERS := [][2]string{
 	{"fs_tri.vert", "vertex"},
 	{"city.frag", "fragment"},
 	{"body.vert", "vertex"},
-	// the body pass, split per kind-group (each a tiny main over the shared bodylib.glsl —
-	// glslc dead-strips the unreachable sprites, so the driver compiles five small shaders
-	// in parallel instead of one ~7s ubershader)
-	{"body_wreck.frag", "fragment"},
-	{"body_horde.frag", "fragment"},
-	{"body_shot.frag", "fragment"},
-	{"body_crew.frag", "fragment"},
-	{"body_ship.frag", "fragment"},
+	// the body pass, split per kind-group: each frag owns its sprites and includes only the
+	// shared modules it uses (bodyfx/bodyspiders/bodyrigs), so the driver compiles five
+	// small shaders in parallel instead of one ~7s ubershader
+	{"wreck.frag", "fragment"},
+	{"horde.frag", "fragment"},
+	{"shot.frag", "fragment"},
+	{"crew.frag", "fragment"},
+	{"ship.frag", "fragment"},
 	{"bloom.frag", "fragment"},
 	{"composite.frag", "fragment"},
 	{"loader.frag", "fragment"},

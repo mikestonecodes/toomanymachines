@@ -16,7 +16,7 @@ import vk "vendor:vulkan"
 //                (RGB = baked HDR color, A = coverage class: 0 none / 0.5 plinth / 1 house).
 //   .BodyAtlas — the enemy chassis sprites (spider/skitter/brute), pre-rendered over a grid of
 //                [kind × gait-phase] tiles so the horde's fragment shader is a texture fetch, not
-//                ~45 vnoise + 6 procedural legs (see bodylib.glsl). ALU→texture, the big bodies win.
+//                ~45 vnoise + 6 procedural legs (see horde.frag: enemy_atlas). ALU→texture, the big bodies win.
 //
 // The BAKER is a wholly separate harness (tools/bake — its own main), assembled at build time
 // from the game sources so the bake reuses the game's REAL vk_init/game_init + the SAME @glsl
