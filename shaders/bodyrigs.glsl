@@ -1,9 +1,11 @@
 #ifndef BODYRIGS_GLSL
 #define BODYRIGS_GLSL
 #include "bodyfx.glsl"
+
 // ── the WAR RIGS: tracked/wheeled/walking gun platforms ─────────────────────────
 // YOUR army's five classes (crew.frag) — and the same chassis double as garage rides,
 // aimed by the mouse instead of a target lock (ship() in ship.frag).
+
 void tank(vec2 p, Body b, float t, vec2 aimd, float shoot) {
 	// Tracked tank: rolling treads under a heavy casemate, a long cannon down `aimd`
 	// (allies face their locked target so it's +x; the PLAYER's turret tracks the

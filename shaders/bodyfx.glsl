@@ -2,6 +2,7 @@
 #define BODYFX_GLSL
 #include "common.glsl"
 #include "bodykit.glsl"
+
 // ── shared BODY-PASS SCAFFOLDING ────────────────────────────────────────────────
 // Everything every body-group fragment shader needs around its sprites: the varyings,
 // the gait odometer, team paint, battle damage, the wreck husk + death bursts (multiple
@@ -9,6 +10,7 @@
 // rim-light, high-beams, building occlusion, premultiplied output) each main runs last.
 // The sprites themselves live where they're used: bodyspiders/bodyrigs (shared) or
 // inline in the one group frag that draws them.
+
 // Vertex → fragment interface (must match body.vert's `out`s) + the pass output.
 layout(location = 0) in vec2      v_local; // body-frame px
 layout(location = 1) in flat uint v_id;

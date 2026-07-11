@@ -110,7 +110,6 @@ render_init :: proc() {
 	if !build_pipelines(&pipelines) { panic("shader compilation failed at startup — run ./run.sh") }
 }
 
-
 // One frame: GPU sim (clear → scatter → step), draw city + bodies into the HDR scene,
 // bloom it down (bright-extract+H at half res, then V), composite to the swapchain.
 render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {

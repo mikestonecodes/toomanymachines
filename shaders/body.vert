@@ -18,8 +18,9 @@ void main() {
 	uint id = uint(gl_InstanceIndex);
 	Body b = BODIES[id];
 	v_id = id;
-	// the body pass runs TWICE (render.odin): pc.mode 0 lays the ground wrecks, mode 1
-	// draws everything alive/airborne over them — dead husks never paint over live bots
+	// the body pass draws in two LAYERS (render.odin): pc.mode 0 lays the ground wrecks,
+	// mode 1 draws everything alive/airborne over them (one pipeline per kind-group, each
+	// over its slot range) — dead husks never paint over live bots
 	bool groundWreck = b.kind == KIND_WRECK && b.variant != 1u;
 	if (b.kind == KIND_DEAD || (pc.mode == 0u) != groundWreck) { // park outside the clip volume
 		gl_Position = vec4(0.0, 0.0, 2.0, 1.0);

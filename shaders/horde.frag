@@ -20,9 +20,9 @@ vec4 atlas_tile(uint kind, uint frame, vec2 uv_in) {
 	return texture(TEXS[IMG_BODYA], uv);
 }
 
-// the alive-horde FAST PATH: sample the baked DIFFUSE chassis (base in rgb, cov in a) — two gait
-// frames cross-faded — then re-add the live emissive + battle damage. Replaces ~45 vnoise + 6
-// procedural legs per fragment with two texture fetches.
+// the alive-horde FAST PATH: sample the baked DIFFUSE chassis (base in rgb, cov in a) at the
+// nearest gait frame, then re-add the live emissive + battle damage. Replaces ~45 vnoise + 6
+// procedural legs per fragment with one texture fetch.
 void enemy_atlas(vec2 p, Body b) {
 	uint kind = atlas_kind(b.variant);
 	vec2 uv_in = clamp((p / (b.radius * ATLAS_EXTK)) * 0.5 + 0.5, 0.0, 1.0); // p → in-tile uv (ext matches body.vert)

@@ -3,11 +3,11 @@
 
 // ── the LOADING BAR (ported from ../fishlab loader.odin/loader.wgsl, re-skinned to the
 // 60/30/10 palette) ──────────────────────────────────────────────────────────────────
-// Drawn straight to the swapchain between pipeline compiles (loading_screen, render.odin)
-// — the first launch on any machine pays the driver's SPIR-V→ISA compile; the runtime
-// pipeline cache makes every later launch instant. One fullscreen triangle, progress
-// (pipelines built / total) in pc.pfire; palette rules hold: near-black ground, a
-// value-grey track, the accent spent ONLY on the information — the fill. Nothing blinks.
+// Drawn straight to the swapchain while the worker threads compile the game pipelines
+// (loading_screen, loader.odin) — only on a first launch: a warm runtime pipeline cache
+// skips the loading screen entirely. One fullscreen triangle, progress (pipelines built
+// / total) in pc.pfire; palette rules hold: near-black ground, a value-grey track, the
+// accent spent ONLY on the information — the fill. Nothing blinks.
 
 layout(location = 0) out vec4 o_color;
 

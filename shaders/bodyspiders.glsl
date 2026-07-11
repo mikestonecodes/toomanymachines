@@ -1,12 +1,14 @@
 #ifndef BODYSPIDERS_GLSL
 #define BODYSPIDERS_GLSL
 #include "bodyfx.glsl"
+
 // ── the SPIDER FAMILY: the horde's three walkers, procedural path ──────────────
 // Chassis (plates/legs) come from bodykit.glsl (shared with the atlas baker); this adds
 // the LIVE emissive (pulsing eyes, exhausts — id/time-dependent, unbakeable) and wraps
 // them as full sprites for the low-count paths: dying/limping enemies (horde.frag) and
 // the ally fallback (crew.frag). The live horde reads the baked atlas instead
 // (enemy_atlas in horde.frag).
+
 void spider_emissive(vec2 p, Body b) {
 	float r = b.radius;
 	for (float s = -1.0; s <= 1.0; s += 2.0) { // rear exhausts, faintly hot

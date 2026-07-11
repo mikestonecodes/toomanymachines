@@ -124,9 +124,10 @@ void helper(vec2 p, Body b) {
 	add += RIG_GRN * 1.0 * soft(length(p - vec2(2.0, 0.0)) - 1.2) * step(0.5, fract(pc.time * 1.6 + hash1(v_id))); // status blinker — team green
 }
 
-// One dispatch for every live/dying chassis sprite. Allies carry their locked target
-// in gen — that gives the gun sprites their tracer reach (and the drones their arming
-// ramp); the ally BODY faces the target, so the gun line is +x in the body frame.
+// One dispatch for every crew-slot chassis sprite (live and dying). Allies carry their
+// locked target in gen — that gives the gun sprites their tracer reach (and the drones
+// their arming ramp); the ally BODY faces the target, so the gun line is +x in the body
+// frame. The spider fallback covers any variant without a rig of its own.
 void bot_sprite(vec2 p, Body b, float t) {
 	vec2 aimd = vec2(1.0, 0.0);
 	float shoot = 0.0, arm = 0.0;
