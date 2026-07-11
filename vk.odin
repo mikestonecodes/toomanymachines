@@ -43,8 +43,8 @@ vkc: struct {
 	swapchain: vk.SwapchainKHR,
 	format:    vk.Format,
 	extent:    vk.Extent2D,
-	images:    [dynamic; 8]vk.Image, // swapchain images (drivers give 2-4; 8 is generous)
-	views:     [dynamic; 8]vk.ImageView,
+	images:    [dynamic; 64]vk.Image, // swapchain images (drivers give 2-4; 64 can't happen)
+	views:     [dynamic; 64]vk.ImageView,
 
 	// bindless
 	set_layout:  vk.DescriptorSetLayout,
@@ -65,7 +65,7 @@ vkc: struct {
 	cmds:        [FRAMES_IN_FLIGHT]vk.CommandBuffer,
 	img_avail:   [FRAMES_IN_FLIGHT]vk.Semaphore,
 	in_flight:   [FRAMES_IN_FLIGHT]vk.Fence,
-	render_done: [dynamic; 8]vk.Semaphore, // one per swapchain image
+	render_done: [dynamic; 64]vk.Semaphore, // one per swapchain image
 	frame:       u32,
 
 	// GPU profiler: per-pass timestamps (one pool per in-flight slot)
@@ -88,10 +88,10 @@ vk_init :: proc() {
 
 	ext_count: u32
 	sdl_exts := SDL.Vulkan_GetInstanceExtensions(&ext_count)
-	exts: [dynamic; 8]cstring // SDL's surface extensions + ours below, allocation-free
+	exts: [dynamic; 64]cstring // SDL's surface extensions + ours below, allocation-free
 	for i in 0 ..< ext_count { append(&exts, sdl_exts[i]) }
 
-	layers: [dynamic; 2]cstring
+	layers: [dynamic; 16]cstring
 	// EXT_debug_utils is enabled in EVERY build (not just validation): it carries the debug
 	// callback AND the per-pass CmdBegin/EndDebugUtilsLabelEXT perf markers (gpu_label_*) that
 	// let the actual GPU profiler (Nsight Graphics GPU Trace) attribute time to physics/city/
@@ -120,8 +120,8 @@ vk_init :: proc() {
 	// (mutually exclusive with GPU_ASSISTED — we prefer GPU-AV's OOB checks over shader printf).
 	F :: vk.ValidationFeatureEnableEXT
 	FD :: vk.ValidationFeatureDisableEXT
-	val_enables: [dynamic; 4]F
-	val_disables: [dynamic; 2]FD
+	val_enables: [dynamic; 16]F
+	val_disables: [dynamic; 16]FD
 	if vk_gpuav {
 		append(&val_enables, F.GPU_ASSISTED, F.GPU_ASSISTED_RESERVE_BINDING_SLOT)
 		append(&val_disables, FD.CORE_CHECKS)
@@ -287,8 +287,8 @@ bindless_init :: proc() {
 pipe_cache_path:   string // <SDL pref dir>/pipeline.cache — per-user writable on every OS, unlike the install dir
 pipe_cache_seeded: bool   // a cache file existed and seeded the VkPipelineCache → the build will be
                           // near-instant, so the loading screen never shows (loader.odin)
-@(private = "file") pipe_cache_pathbuf: [512]u8
-@(private = "file") pipe_cache_buf: [32 * 1024 * 1024]u8 // BSS scratch for the ISA blob (~1-2MB real; zero-cost until touched)
+@(private = "file") pipe_cache_pathbuf: [4096]u8
+@(private = "file") pipe_cache_buf: [256 * 1024 * 1024]u8 // BSS scratch for the ISA blob (~1-2MB real, grows over months of hot reloads; BSS is zero-cost until touched)
 
 // Read a whole file into a fixed buffer — the game's ONLY file reader, so the game never
 // heap-allocates for IO. ok=false if missing or larger than the buffer.
@@ -571,12 +571,12 @@ pipelines: [Pipe]vk.Pipeline
 // into static storage (hot_reload_poll reads these every 30 frames — the loop stays
 // allocation-free). [0] = vert (or the compute stage), [1] = frag ("" for compute).
 pipe_spv: [Pipe][2]string
-@(private = "file") pipe_spv_buf: [Pipe][2][64]u8
+@(private = "file") pipe_spv_buf: [Pipe][2][256]u8
 
 pipe_paths_init :: proc() {
 	if pipe_spv[Pipe(0)][0] != "" { return }
 	for spec, p in PIPE_SPECS {
-		name: [32]u8 // the enum member, lowercased
+		name: [128]u8 // the enum member, lowercased
 		n := len(fmt.bprintf(name[:], "%v", p))
 		for i in 0 ..< n { if name[i] >= 'A' && name[i] <= 'Z' { name[i] += 32 } }
 		if spec.compute {
@@ -633,7 +633,7 @@ rebuild_pipelines :: proc() {
 // Load a precompiled SPIR-V file → VkShaderModule (0 on failure). A static scratch behind
 // a mutex (the parallel pipeline builders call this concurrently) — the µs of file read +
 // module creation serialize; the expensive driver ISA compile stays outside, parallel.
-@(private = "file") spv_buf: [8 * 1024 * 1024]u8
+@(private = "file") spv_buf: [64 * 1024 * 1024]u8
 @(private = "file") spv_mutex: sync.Mutex
 
 load_spv :: proc(path: string) -> vk.ShaderModule {
@@ -759,7 +759,7 @@ vk_resize :: proc() { recreate_swapchain() }
 // ── device / swapchain / helpers ─────────────────────────────────────────────
 
 has_layer :: proc(name: string) -> bool {
-	props: [64]vk.LayerProperties
+	props: [256]vk.LayerProperties
 	n: u32
 	vk.EnumerateInstanceLayerProperties(&n, nil)
 	n = min(n, len(props))
@@ -769,7 +769,7 @@ has_layer :: proc(name: string) -> bool {
 }
 
 pick_physical_device :: proc() {
-	devs: [16]vk.PhysicalDevice
+	devs: [64]vk.PhysicalDevice
 	n: u32
 	vk.EnumeratePhysicalDevices(vkc.instance, &n, nil)
 	n = min(n, len(devs))
@@ -792,7 +792,7 @@ pick_physical_device :: proc() {
 }
 
 find_queue_family :: proc(d: vk.PhysicalDevice) -> (u32, bool) {
-	qfs: [32]vk.QueueFamilyProperties
+	qfs: [64]vk.QueueFamilyProperties
 	n: u32
 	vk.GetPhysicalDeviceQueueFamilyProperties(d, &n, nil)
 	n = min(n, len(qfs))
@@ -810,7 +810,7 @@ create_swapchain :: proc() {
 	vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(vkc.phys, vkc.surface, &caps)
 
 	// Query supported surface formats (best practice) and pick BGRA8-UNORM, else the first.
-	formats: [128]vk.SurfaceFormatKHR
+	formats: [512]vk.SurfaceFormatKHR
 	fn: u32
 	vk.GetPhysicalDeviceSurfaceFormatsKHR(vkc.phys, vkc.surface, &fn, nil)
 	fn = min(fn, len(formats))
@@ -831,7 +831,7 @@ create_swapchain :: proc() {
 	//                  waiting a whole refresh. Kills the 33ms quantization on Wayland/X where
 	//                  MAILBOX often isn't offered.
 	//   FIFO         — hard vsync fallback (the only universally-guaranteed mode).
-	pmodes: [16]vk.PresentModeKHR
+	pmodes: [64]vk.PresentModeKHR
 	pmn: u32
 	vk.GetPhysicalDeviceSurfacePresentModesKHR(vkc.phys, vkc.surface, &pmn, nil)
 	pmn = min(pmn, len(pmodes))
