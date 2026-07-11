@@ -36,7 +36,7 @@
 
 ## Code Style
 - **NAME STATED ONCE — no duplicated registration, ever.** Adding a thing is ONE enum member, ONE table row, or ONE file. Everything derivable is derived by convention: shader paths from enum names, shader stages from file extensions, bindless slots from row order, entry points from globs. If two declarations must agree, derive one from the other (or #assert it) — never maintain parallel lists by hand.
-- Small bounded lists use fixed-capacity dynamic arrays (`[dynamic; N]T`, stack-backed, allocation-free — slice with `[:]` for raw_data), not heap `[dynamic]T`.
+- **Generic container pattern: `[dynamic; N]T`** (fixed-capacity dynamic array — deprecates `Small_Array`). Whenever a list's maximum count is known, default to it: stack-backed, allocation-free, same `append`/`len` API; slice with `[:]` for `raw_data`/procs. Heap `[dynamic]T` is only for genuinely unbounded, init-time collections (e.g. swapchain-sized arrays).
 - Only break out a function if used 2+ times — inline single-use functions
 - Write concrete code first, extract shared parts only after 2+ instances
 - Never create abstractions preemptively
