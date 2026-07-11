@@ -136,8 +136,11 @@ flagv :: proc(i: ^int) -> string {
 // the live render loop. The cache file appearing IS the boot-success marker (it's only
 // written after every pipeline built), and the process must still be running SMOKE_ALIVE
 // seconds later to count as "playing". Any failure dumps the log tail and exits nonzero.
-// `deploy steam` runs this automatically before uploading; macOS can't be tested from
-// Linux (no darling) — the Steam playtest is its test bed.
+// macOS can't EXECUTE on Linux (no Metal, and Darling has no GPU), so it gets a STATIC
+// bundle check instead — arch, dylib links, rpath, bundled MoltenVK/SDL, staged runtime
+// data, signature — which catches the packaging/linking mistakes that break mac ships;
+// only "does a frame render" is left to the playtest's Apple-silicon testers.
+// `deploy steam` runs all of this automatically before uploading.
 SMOKE_ALIVE :: 6 // seconds the game must keep running after boot to count as playing
 
 smoke :: proc() {
@@ -149,7 +152,33 @@ smoke :: proc() {
 	smoke_run("windows", "dist/toomanymachines-windows-x86_64",
 		"WINEPREFIX=\"$(pwd)/../../.winetest\" WINEDEBUG=-all WINEDLLOVERRIDES=mscoree= wine toomanymachines.exe",
 		".winetest/drive_c/users/*/AppData/Roaming/toomanymachines/pipeline.cache", "-f toomanymachines.exe")
-	fmt.println(">> smoke: Linux + Windows both BOOTED and PLAYED — good to ship")
+	smoke_mac()
+	fmt.println(">> smoke: Linux + Windows BOOTED and PLAYED, macOS bundle verified — good to ship")
+}
+
+smoke_mac :: proc() {
+	app := "dist/toomanymachines-macos-arm64/TooManyMachines.app"
+	if !os.exists(app) { dist("mac") }
+	fmt.println(">> smoke [macos]: static bundle check (Linux can't run Metal — packaging/linking only)…")
+	bin := cat(app, "/Contents/MacOS/toomanymachines")
+	must(cat("file ", bin, " | grep -q 'Mach-O 64-bit arm64 executable'")) // right arch, valid Mach-O
+	// every @rpath dylib the binary links must ship in Frameworks/, and the rpath must point there
+	must(cat("llvm-otool -L ", bin, " | grep -o '@rpath/[^ ]*' | sed 's|@rpath/||' | ",
+		"while read d; do test -f '", app, "/Contents/Frameworks/'$d || { echo \"smoke [macos]: missing Frameworks/$d\"; exit 1; }; done"))
+	must(cat("llvm-otool -l ", bin, " | grep -q '@executable_path/../Frameworks'"))
+	// MoltenVK isn't linked — SDL dlopens it via the loop.odin hint — so check it by hand
+	must(cat("file ", app, "/Contents/Frameworks/libMoltenVK.dylib | grep -q arm64"))
+	must(cat("file ", app, "/Contents/Frameworks/libSDL3.0.dylib | grep -q arm64"))
+	// the runtime data the game loads relative to SDL_GetBasePath (= Contents/Resources)
+	must(cat("test -f ", app, "/Contents/Info.plist"))
+	must(cat("ls ", app, "/Contents/Resources/shaders/spv/*.spv > /dev/null"))
+	must(cat("test -f ", app, "/Contents/Resources/assets/city.cache -a -f ", app, "/Contents/Resources/assets/body.cache"))
+	if sh("command -v rcodesign > /dev/null") == 0 {
+		must(cat("rcodesign verify ", bin, " > /dev/null 2>&1"))
+		fmt.println(">> smoke [macos]: PASS — arm64 Mach-O, dylibs+rpath resolve, MoltenVK+SDL bundled, data staged, signature OK")
+	} else {
+		fmt.println(">> smoke [macos]: PASS — arm64 Mach-O, dylibs+rpath resolve, MoltenVK+SDL bundled, data staged (rcodesign not installed — signature unchecked)")
+	}
 }
 
 smoke_run :: proc(label, dir, cmd, cache_glob, pgrep_expr: string) {
