@@ -27,7 +27,7 @@ run_game :: proc() {
 	update_size()
 
 	vk_init()
-	loading_screen() // pipelines compile behind the loading bar (render.odin); instant once the runtime cache is warm
+	loading_screen() // pipelines compile behind the loading bar (loader.odin); instant once the runtime cache is warm
 	game_init()
 	bake_load_all() // the pre-baked static layers (city cache + body atlas) → sampled by the shaders
 

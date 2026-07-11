@@ -109,7 +109,7 @@ gpuav_drive :: proc(frame_n: int) -> bool {
 //   TMM_SHOT_SETTLE      sim seconds to settle before the grab (default 8)
 //   TMM_SHOT_FREEZE      "1" → freeze the sim once settled (byte-stable frame for review)
 //   TMM_SHOT_OUT         output jpg path                 (default .debug_screenshots/vk.jpg)
-//   TMM_SHOT_LOADER      "1" → capture the LOADING SCREEN instead: grab a loader frame ~2.5s
+//   TMM_SHOT_LOADER      "1" → capture the LOADING SCREEN instead: grab a loader frame ~1s
 //                        into the pipeline compile (delete the pref-dir pipeline.cache first
 //                        or the load finishes before the grab) and exit on the first game frame
 //   TMM_W / TMM_H        capture resolution
@@ -176,7 +176,7 @@ test_drive :: proc(frame_n: int) -> bool {
 harness_present :: proc(cmd: vk.CommandBuffer, img: u32) {
 	if env_bool("TMM_SHOT_LOADER", false) && !h_shot.recorded && !h_shot.saved {
 		if loader_t0 == {} { loader_t0 = time.tick_now() }
-		if time.duration_seconds(time.tick_diff(loader_t0, time.tick_now())) > 2.5 { h_shot.want = true }
+		if time.duration_seconds(time.tick_diff(loader_t0, time.tick_now())) > 1.0 { h_shot.want = true }
 	}
 	// copy at most ONCE per pending shot: in loader mode dev_tick (which consumes `recorded`)
 	// doesn't run until the load finishes, so without the guard every loader frame would
