@@ -2,8 +2,6 @@
 // bloom, ACES tonemap, animated film grain, vignette, and a mild warm-shadow grade so
 // the frame sits in the palette.
 
-layout(set = 0, binding = 1) uniform sampler2D TEXS[];
-layout(location = 0) out vec4 o_color;
 
 const float BLOOM_INTENSITY = 3.6;
 

@@ -14,10 +14,8 @@
 // lamps, tower beams, desert marker lamps, the pit furnace — carried on heavy bloom,
 // with dust sheets drifting through every big glow.
 
-layout(location = 0) out vec4 o_color;
 // the CITY CACHE (Img.CityC): the whole static building layer, pre-marched offline. This
 // pass used to ray-march house_at up to 16×/pixel; now it's one NEAREST texel fetch.
-layout(set = 0, binding = 1) uniform sampler2D TEXS[];
 
 // Ground: pit + apron, streets, plazas, courtyards, and the dusty wasteland —
 // every big glow is modulated by the drifting dust, so the light SHINES THROUGH it.

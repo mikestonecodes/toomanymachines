@@ -2,8 +2,6 @@
 // bright-extract fused into the horizontal gaussian (Scene → BloomA), mode 1 = vertical
 // gaussian (BloomA → BloomB). Runs at half res; taps 2 source-px apart for a wide halo.
 
-layout(set = 0, binding = 1) uniform sampler2D TEXS[];
-layout(location = 0) out vec4 o_color;
 
 const float THRESH = 0.55; // the night ground sits far below this — every light blooms
 const float KNEE   = 0.12;

@@ -12,7 +12,6 @@
 // Output per texel: RGB = diffuse base, A = coverage. gl_FragCoord picks the tile + the in-tile
 // body-frame position, the exact inverse of horde.frag's p→uv mapping (ATLAS_EXTK · ATLAS_RAD).
 
-layout(location = 0) out vec4 o_color;
 
 void main() {
 	uint col = uint(gl_FragCoord.x) / ATLAS_TILE;

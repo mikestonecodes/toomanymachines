@@ -10,7 +10,6 @@
 // ground. gl_FragCoord.xy = texel + 0.5, so g0 lands on the exact texel-center world
 // position the runtime's NEAREST fetch will read back.
 
-layout(location = 0) out vec4 o_color;
 
 const vec2 SUN = vec2(-0.6, -0.8); // moon, really — key light from screen top-left
 

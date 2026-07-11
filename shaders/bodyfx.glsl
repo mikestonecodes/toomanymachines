@@ -6,12 +6,14 @@
 // The sprites themselves live where they're used: bodyspiders/bodyrigs (shared) or
 // inline in the one group frag that draws them.
 
-// Vertex → fragment interface (must match body.vert's `out`s) + the pass output.
+// The shared FRAGMENT interface — every fragment entry gets these (binding 1 is
+// FRAGMENT-only; a compute/vertex declaration would break pipeline layout compatibility,
+// so .comp/.vert compose over gen+common alone). A fragment may only declare inputs its
+// vertex stage writes (VUID 08743), so EVERY graphics vert outputs v_local/v_id —
+// body.vert with real values, fs_tri.vert with zeros the fullscreen frags never read.
 layout(location = 0) in vec2      v_local; // body-frame px
 layout(location = 1) in flat uint v_id;
 layout(location = 0) out vec4 o_color;
-// the CITY CACHE (Img.CityC) — sampled for building occlusion (body_finish), replacing a
-// duplicated 8-step house_at march; the BODY ATLAS (Img.BodyA) — the baked horde chassis.
 layout(set = 0, binding = 1) uniform sampler2D TEXS[];
 
 // GAIT ODOMETER: leg phase advances with actual TRAVEL, not time·speed — a time·speed

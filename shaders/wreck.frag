@@ -1,6 +1,3 @@
-#version 460
-#include "bodyfx.glsl"
-
 // ── body group: GROUND WRECKS (the old mode-0 layer) ───────────────────────────
 // Drawn first, under everything alive — dead husks never paint over live bots. The
 // draw spans every slot (wrecks lie in enemy AND ally ranges); body.vert culls the

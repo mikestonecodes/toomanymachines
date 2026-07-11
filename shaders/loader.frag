@@ -6,7 +6,6 @@
 // / total) in pc.pfire; palette rules hold: near-black ground, a value-grey track, the
 // accent spent ONLY on the information — the fill. Nothing blinks.
 
-layout(location = 0) out vec4 o_color;
 
 void main() {
 	vec2 px = gl_FragCoord.xy;
