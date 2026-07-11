@@ -296,6 +296,27 @@ main :: proc() {
 		return
 	}
 
+	// `deploy steam [user]`: build the steam bundles + upload to the Playtest depot via steamcmd.
+	// The login must already be cached (run `steamcmd +login <user>` once). STEAM_USER (or the 3rd
+	// arg) is the login. The build is uploaded but NOT set live — flip it live on the default branch
+	// yourself in Steamworks -> SteamPipe -> Builds (steamcmd can't set the default branch live).
+	if mode == "deploy" {
+		if len(os.args) < 3 || os.args[2] != "steam" {
+			fmt.eprintln("deploy: only 'steam' is supported — use ./run.sh deploy steam [user]")
+			os.exit(1)
+		}
+		dist("steam")
+		user := len(os.args) > 3 ? os.args[3] : os.get_env("STEAM_USER", context.temp_allocator)
+		if user == "" {
+			fmt.eprintln("deploy steam: set STEAM_USER=<steam login> (or pass it as the 3rd arg); login must be cached (`steamcmd +login <user>` once)")
+			os.exit(1)
+		}
+		// $(pwd) → the project root (run.sh cd's here); steamcmd wants an absolute app_build.vdf path.
+		must(cat("steamcmd +login ", user, ` +run_app_build "$(pwd)/tools/steam/app_build.vdf" +quit`))
+		fmt.println(">> uploaded — now set the build live on the DEFAULT branch in Steamworks -> SteamPipe -> Builds.")
+		return
+	}
+
 	// default `run`: build + validate + launch the actual game.
 	sh("pkill -x toomanymachines 2>/dev/null; sleep 0.1")
 	prep()
