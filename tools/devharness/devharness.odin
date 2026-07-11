@@ -102,7 +102,7 @@ gpuav_drive :: proc(frame_n: int) -> bool {
 }
 
 // ── `shot`: park at a vantage, settle, capture — every knob is an ENV VAR so ANY scene can be
-// captured with NO code edits (shot.sh wraps it). All of this is harness-only; the game is pure.
+// captured with NO code edits (`./run.sh shot` flags map onto them). All of this is harness-only; the game is pure.
 //   TMM_SHOT_X / _Y      camera+car world pos            (default the city vantage NE of the pit)
 //   TMM_SHOT_FIRE        "0" to hold fire                (default on)
 //   TMM_SHOT_LASER       "0" to hold the laser           (default on, after 4s)

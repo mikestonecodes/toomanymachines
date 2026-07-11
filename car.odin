@@ -296,7 +296,7 @@ game_init :: proc() {
 	bullet_head = 0
 	barrel = 1
 	gait_odo = 0
-	ride, style = 0, 0
+	ride, style = int(RIDE_COLOSSUS), 0 // default ride: the giant six-legged COLOSSUS (1-9 still swap)
 	weapon = .Cannon
 	input = {}
 	deposits_seen = 0

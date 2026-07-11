@@ -1,6 +1,8 @@
 package main
 
+import "core:fmt"
 import "core:math"
+import SDL "vendor:sdl3"
 import vk "vendor:vulkan"
 
 // The high-level render description — nothing but the buffer/image/pipeline lists, init,
@@ -95,12 +97,53 @@ PIPE_SPECS := [Pipe]PipeSpec{
 	.Composite = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/composite.frag.spv"}},
 }
 
-// The synchronous init path — the offline baker's (tools/bake). The game itself splits this
-// across the loading screen in loop.odin: alloc_buffers up front, build_pipelines on a worker
-// thread behind the bar.
+// The synchronous init path: the offline baker (tools/bake) and the frozen-sim profiler drive.
 render_init :: proc() {
 	alloc_buffers()
 	if !build_pipelines(&pipelines) { panic("shader compilation failed at startup — run ./run.sh") }
+}
+
+// The LOADING SCREEN — fishlab's loader pattern, no threads: draw the bar, compile one
+// pipeline, repeat. The first launch on a machine pays the driver's SPIR-V→ISA compile
+// (~7s, nearly all in body.frag's ubershader — per-device, so it can't ship pre-built);
+// pipeline_cache_save at the end warms the runtime cache (vk.odin), so every later launch
+// is instant and the bar just flashes. Progress is real (pipelines built / total); the bar
+// sits still through the Body step — accepted, dumb beats smooth here. The profiler drive
+// (dev_dt_override >= 0, gpuprof's frozen sim) builds without presents instead: Nsight
+// counts PRESENTED frames for its capture window, and loader frames would shift it.
+loading_screen :: proc() {
+	if dev_dt_override >= 0 { render_init(); return }
+	alloc_buffers()
+	loader_pipe := make_graphics_pipeline("shaders/spv/fs_tri.vert.spv", "shaders/spv/loader.frag.spv", .None, false)
+	if loader_pipe == 0 { fmt.panicf("loader shader missing — run ./run.sh") }
+	for spec, p in PIPE_SPECS {
+		// drain events: quit is honored right after the load (the compile can't be cancelled),
+		// and a resize (the WM tiles the fresh window immediately) must NOT be swallowed —
+		// win_w/win_h feed every viewport, and the main loop will never see this event. No
+		// image is acquired here, so recreating the swapchain immediately is safe.
+		ev: SDL.Event
+		for SDL.PollEvent(&ev) {
+			#partial switch ev.type {
+			case .QUIT: should_quit = true
+			case .WINDOW_RESIZED, .WINDOW_PIXEL_SIZE_CHANGED: update_size(); vk_resize()
+			}
+		}
+		pc := Push{screen = {f32(win_w), f32(win_h)}, pfire = f32(int(p)) / f32(len(PIPE_SPECS))}
+		cmd, img, frame_ok := frame_begin()
+		if frame_ok {
+			pass_begin(cmd, img)
+			vk.CmdBindPipeline(cmd, .GRAPHICS, loader_pipe)
+			vk.CmdPushConstants(cmd, vkc.pipe_layout, {.COMPUTE, .VERTEX, .FRAGMENT}, 0, size_of(Push), &pc)
+			vk.CmdDraw(cmd, 3, 1, 0, 0)
+			pass_end(cmd, img)
+			frame_end(cmd, img)
+		}
+		pipelines[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend, spec.hdr)
+		if pipelines[p] == 0 { fmt.panicf("shader compilation failed at startup — run ./run.sh") }
+	}
+	pipeline_cache_save() // warm this machine's ISA cache — the next launch skips the compile
+	vk.DeviceWaitIdle(vkc.device) // loader frames drained before the pipeline goes away
+	vk.DestroyPipeline(vkc.device, loader_pipe, nil)
 }
 
 // One frame: GPU sim (clear → scatter → step), draw city + bodies into the HDR scene,

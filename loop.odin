@@ -2,11 +2,8 @@ package main
 
 import "core:fmt"
 import "core:os"
-import "core:sync"
-import "core:thread"
 import "core:time"
 import SDL "vendor:sdl3"
-import vk "vendor:vulkan"
 
 // The game loop — shared by the game (main.odin: `main -> run_game`) and the headless dev
 // harness (tools/devharness supplies its own main that sets dev_tick, then calls run_game).
@@ -30,43 +27,7 @@ run_game :: proc() {
 	update_size()
 
 	vk_init()
-
-	// ── loading screen (bar ported from ../fishlab loader.odin) ───────────────────────
-	// The first launch on a machine pays the driver's SPIR-V→ISA compile (~7s, body.frag's
-	// ubershader) — unavoidable and per-device, so it can't be shipped pre-built. Compile on
-	// a worker thread and animate a bar meanwhile; build_pipelines saves the runtime pipeline
-	// cache (vk.odin) so every later launch skips the compile and the bar just flashes.
-	alloc_buffers()
-	loader_pipe := make_graphics_pipeline("shaders/spv/fs_tri.vert.spv", "shaders/spv/loader.frag.spv", .None, false)
-	if loader_pipe == 0 { fmt.panicf("loader shader missing — run ./run.sh") }
-	build_ok, build_done: bool
-	worker := thread.create_and_start_with_poly_data2(&build_ok, &build_done, proc(okp, done: ^bool) {
-		okp^ = build_pipelines(&pipelines)
-		sync.atomic_store(done, true)
-	})
-	load_t0 := time.tick_now()
-	for !sync.atomic_load(&build_done) {
-		ev: SDL.Event
-		for SDL.PollEvent(&ev) { if ev.type == .QUIT { should_quit = true } } // the compile can't be cancelled; honored right after
-		// the driver gives no progress signal and the compile time varies wildly per machine, so
-		// the bar is INDETERMINATE: loader.frag sweeps an ember off the elapsed time, claiming
-		// "working", not a fake percentage. A warm cache exits in <0.1s and it barely flashes.
-		pcl := Push{screen = {f32(win_w), f32(win_h)}, pfire = f32(time.duration_seconds(time.tick_diff(load_t0, time.tick_now())))}
-		cmd, img, frame_ok := frame_begin()
-		if frame_ok {
-			pass_begin(cmd, img)
-			vk.CmdBindPipeline(cmd, .GRAPHICS, loader_pipe)
-			vk.CmdPushConstants(cmd, vkc.pipe_layout, {.COMPUTE, .VERTEX, .FRAGMENT}, 0, size_of(Push), &pcl)
-			vk.CmdDraw(cmd, 3, 1, 0, 0)
-			pass_end(cmd, img)
-			frame_end(cmd, img)
-		}
-	}
-	thread.destroy(worker)
-	if !build_ok { fmt.panicf("shader compilation failed at startup — run ./run.sh") }
-	vk.DeviceWaitIdle(vkc.device) // loader frames drained before the pipeline goes away
-	vk.DestroyPipeline(vkc.device, loader_pipe, nil)
-
+	loading_screen() // pipelines compile behind the loading bar (render.odin); instant once the runtime cache is warm
 	game_init()
 	bake_load_all() // the pre-baked static layers (city cache + body atlas) → sampled by the shaders
 

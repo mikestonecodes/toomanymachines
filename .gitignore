@@ -21,3 +21,4 @@ tools/gen/types.gen.odin
 imgui.ini
 /libs/
 /dist/
+/build.bin

@@ -1,10 +1,12 @@
 package main
 
-// Build + run orchestrator. Run from the project root (see ../run.sh):
-//   odin run tools/build.odin -file            build shaders + game, run (Vulkan validation ON)
-//   odin run tools/build.odin -file -- watch   live-reload dev loop (release build: no validation)
-//   odin run tools/build.odin -file -- shot    headless: drive the game, screenshot, exit
-//   odin run tools/build.odin -file -- test    build with the test harness (-define:DEBUG_TEST) + run debug_test_run
+// Build + run orchestrator — ALL project tooling lives here as run.sh modes (never as loose
+// shell scripts). Run from the project root (see ../run.sh):
+//   odin run tools/build.odin -file              build shaders + game, run (Vulkan validation ON)
+//   odin run tools/build.odin -file -- watch     live-reload dev loop (release build: no validation)
+//   odin run tools/build.odin -file -- shot      headless capture, env-driven flags (--x/--y/--no-fire/--loader…)
+//   odin run tools/build.odin -file -- test      600-frame wall/GPU/CPU profile print
+//   odin run tools/build.odin -file -- gpuprof   Nsight GPU Trace: locked-clock per-pass median ms
 // Shaders compile with validation on (glslc -Werror + spirv-val); the game reads shaders/spv/*.spv.
 
 import "core:c"
@@ -12,6 +14,8 @@ import "core:c/libc"
 import "core:fmt"
 import "core:os"
 import "core:path/filepath"
+import "core:slice"
+import "core:strconv"
 import "core:strings"
 import "core:sys/linux"
 import "core:time"
@@ -39,6 +43,116 @@ must :: proc(cmd: string) {
 		fmt.eprintln("build failed:", cmd)
 		if !soft { os.exit(1) }
 	}
+}
+
+// Take the value of a `--flag value` pair while walking os.args (shot/gpuprof modes).
+flagv :: proc(i: ^int) -> string {
+	i^ += 1
+	if i^ >= len(os.args) { fmt.eprintln(os.args[i^ - 1], "needs a value"); os.exit(2) }
+	return os.args[i^]
+}
+
+// Newest file matching a glob (ngfx writes one export dir per run; we parse the latest).
+newest :: proc(pattern: string) -> string {
+	files, _ := filepath.glob(pattern, context.temp_allocator)
+	best, bt := "", i64(-1)
+	for f in files {
+		if t, e := os.last_write_time_by_name(f); e == os.ERROR_NONE && time.to_unix_nanoseconds(t) > bt {
+			best, bt = f, time.to_unix_nanoseconds(t)
+		}
+	}
+	return best
+}
+
+// ── `gpuprof`: per-pass GPU timing via Nsight Graphics GPU Trace ──────────────────────
+// The engine's own timestamp profiler (./run.sh test) is useless for A/B on this laptop: the
+// GPU clocks can't be locked without root and the app is present-paced, so per-pass ms swing
+// 2-3× run to run. Nsight locks the clocks (--set-gpu-clocks) for the capture window and
+// reports the true GPU time inside each debug-util label region (render.odin brackets
+// physics/city/bodies/bloom/composite with gpu_label). Clocks locked + deterministic drive
+// (TMM_PROFILE_LOOP freezes the sim) ⇒ reproducible to a couple %.
+//   ./run.sh gpuprof                    # 4K, boost-locked, 16 captured frames → per-pass median ms
+//   ./run.sh gpuprof --w 2560 --h 1600 --clocks base --frames 16 --start-after 140 --no-build
+gpuprof :: proc() {
+	w, h, clocks, frames, warmup := "3840", "2160", "boost", "16", "140"
+	build := true
+	for i := 2; i < len(os.args); i += 1 {
+		switch os.args[i] {
+		case "--w":           w = flagv(&i)
+		case "--h":           h = flagv(&i)
+		case "--clocks":      clocks = flagv(&i) // unaltered | base | boost
+		case "--frames":      frames = flagv(&i)
+		case "--start-after": warmup = flagv(&i)
+		case "--no-build":    build = false // re-measure the already-built binary (reproducibility checks)
+		case:                 fmt.eprintln("unknown flag:", os.args[i]); os.exit(2)
+		}
+	}
+	// preflight: ngfx installed, ptrace + NVIDIA profiling permissions
+	if sh("command -v ngfx >/dev/null") != 0 { fmt.eprintln("missing: ngfx (paru -S nsight-graphics)"); os.exit(1) }
+	if d, e := os.read_entire_file("/proc/sys/kernel/yama/ptrace_scope", context.temp_allocator); e != nil || strings.trim_space(string(d)) != "0" {
+		fmt.eprintln("ptrace_scope != 0 — need: sudo sysctl kernel.yama.ptrace_scope=0"); os.exit(1)
+	}
+	if d, e := os.read_entire_file("/proc/driver/nvidia/params", context.temp_allocator); e != nil || !strings.contains(string(d), "RmProfilingAdminOnly: 0") {
+		fmt.eprintln("RmProfilingAdminOnly != 0 — GPU Trace needs it 0 (nvidia module param)"); os.exit(1)
+	}
+
+	if build {
+		fmt.printfln(">> building devharness (release, per-pass labels on) + baked caches (%sx%s)…", w, h)
+		prep()
+		ensure_bakes()
+		build_devharness(release = true)
+	}
+
+	os.make_directory(".ngfx-perf")
+	// Ada (RTX 4070 Laptop) throughput metrics + the SM-sampling shader profiler.
+	_ = os.write_entire_file(".ngfx-perf/_arch.json", transmute([]u8)string(`[ { "architecture": "Ada", "metric-set-id": "1", "real-time-shader-profiler": "true", "multi-pass-metrics": "true" } ]`))
+	sh("rm -rf .ngfx-perf/*_LOCKED .ngfx-perf/*_UNLOCKED") // clear prior exports so we parse THIS run
+
+	fmt.printfln(">> ngfx GPU Trace — clocks=%s, warmup=%s, capture=%s frames…", clocks, warmup, frames)
+	sh(fmt.tprintf( // ngfx exits non-zero even on success sometimes — gate on the export below instead
+		`ngfx --activity "GPU Trace Profiler" --exe "$(pwd)/devharness" --args "test" --dir "$(pwd)" `        +
+		`--env "SDL_VIDEO_DRIVER=x11; TMM_W=%s; TMM_H=%s; TMM_HIDDEN=1; TMM_PROFILE_LOOP=1;" `                +
+		`--start-after-frames %s --limit-to-frames %s --max-duration-ms 9000 --set-gpu-clocks %s `            +
+		`--per-arch-config-path .ngfx-perf/_arch.json --pc-samples-per-pm-interval-per-sm 64 `                +
+		`--output-dir .ngfx-perf --auto-export 1 --no-timeout > .ngfx-perf/_ngfx.log 2>&1`,
+		w, h, warmup, frames, clocks))
+
+	ev := newest(".ngfx-perf/*/D3DPERF_EVENTS.xls")
+	if ev == "" {
+		fmt.eprintln("  ngfx produced no export — tail of .ngfx-perf/_ngfx.log:")
+		sh("tail -20 .ngfx-perf/_ngfx.log")
+		os.exit(1)
+	}
+
+	// D3DPERF_EVENTS.xls: tab-separated, row = "<label> <ms_frame1> <ms_frame2>…" → median per pass.
+	fmt.printfln("\n═══ per-pass GPU time (median of %s frames, clocks=%s locked) ═══", frames, clocks)
+	data, _ := os.read_entire_file(ev, context.temp_allocator)
+	total: f64
+	for line, li in strings.split_lines(string(data), context.temp_allocator) {
+		if li == 0 || len(line) == 0 { continue } // header
+		cols := strings.split(line, "\t", context.temp_allocator)
+		vals := make([dynamic]f64, context.temp_allocator)
+		for c in cols[1:] { if v, ok := strconv.parse_f64(strings.trim_space(c)); ok { append(&vals, v) } }
+		if len(vals) == 0 { continue }
+		slice.sort(vals[:])
+		n := len(vals)
+		med := n % 2 == 1 ? vals[n / 2] : (vals[n / 2 - 1] + vals[n / 2]) / 2
+		fmt.printfln("  %-12s %s ms", cols[0], fmt.tprintf("%.3f", med)) // Odin zero-pads %7.3f — format unpadded
+		total += med
+	}
+	fmt.printfln("  %-12s %s ms", "(sum)", fmt.tprintf("%.3f", total))
+	if fr := newest(".ngfx-perf/*/FRAME.xls"); fr != "" { // whole-frame GPU average
+		fdata, _ := os.read_entire_file(fr, context.temp_allocator)
+		for line in strings.split_lines(string(fdata), context.temp_allocator) {
+			if !strings.contains(line, "GPU frame time") { continue }
+			s, k: f64
+			for c in strings.split(line, "\t", context.temp_allocator)[1:] {
+				if v, ok := strconv.parse_f64(strings.trim_space(c)); ok { s += v; k += 1 }
+			}
+			if k > 0 { fmt.printfln("  %-12s %s ms  (whole-frame GPU, avg)", "frame", fmt.tprintf("%.3f", s / k)) }
+		}
+	}
+	fmt.println("\n   raw trace:", newest(".ngfx-perf/*.ngfx-gputrace"))
 }
 
 // The offline BAKE CACHES (assets/*.cache): static, view-independent layers pre-rendered once
@@ -268,8 +382,7 @@ main :: proc() {
 	}
 
 	// `harness`: build the VALIDATED (debug) dev harness + ensure the baked caches, then exit —
-	// no run. shot.sh builds with this once, then runs `./devharness shot` with its own env knobs
-	// (camera/fire/res/output) for a reliable capture of ANY vantage without touching game code.
+	// no run (for running `./devharness` by hand with custom env).
 	if mode == "harness" {
 		prep()
 		ensure_bakes()
@@ -280,12 +393,42 @@ main :: proc() {
 	// `shot`/`test` run the SEPARATE devharness binary (tools/devharness) — the game binary is
 	// never built or replaced, so a headless capture/profile can run ALONGSIDE a live `watch`
 	// session without fighting over the executable. All headless/drive/profiling code lives in
-	// the harness; the game source is pure.
+	// the harness; the game source is pure. `shot` captures ANY vantage without code edits —
+	// flags become the harness's TMM_* env knobs (documented in devharness.odin):
+	//   ./run.sh shot --x 15400 --y 9400 --no-fire --freeze --settle 6 \
+	//                 --w 1920 --h 1200 --out .debug_screenshots/horde.jpg
+	//   ./run.sh shot --loader        # capture the LOADING SCREEN (clear the pref pipeline.cache first)
+	//   ./run.sh shot --no-build ...  # reuse the built harness (fast iteration)
 	if mode == "shot" || mode == "test" {
-		prep()
-		ensure_bakes()
-		build_devharness()
-		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("./devharness %s", mode)) >> 8 & 0xff)
+		env: strings.Builder
+		build := true
+		for i := 2; i < len(os.args); i += 1 {
+			switch os.args[i] {
+			case "--x":        fmt.sbprintf(&env, "TMM_SHOT_X=%s ", flagv(&i))
+			case "--y":        fmt.sbprintf(&env, "TMM_SHOT_Y=%s ", flagv(&i))
+			case "--w":        fmt.sbprintf(&env, "TMM_W=%s ", flagv(&i))
+			case "--h":        fmt.sbprintf(&env, "TMM_H=%s ", flagv(&i))
+			case "--out":      fmt.sbprintf(&env, "TMM_SHOT_OUT=%s ", flagv(&i))
+			case "--settle":   fmt.sbprintf(&env, "TMM_SHOT_SETTLE=%s ", flagv(&i))
+			case "--no-fire":  strings.write_string(&env, "TMM_SHOT_FIRE=0 TMM_SHOT_LASER=0 ")
+			case "--freeze":   strings.write_string(&env, "TMM_SHOT_FREEZE=1 ")
+			case "--loader":   strings.write_string(&env, "TMM_SHOT_LOADER=1 ")
+			case "--no-build": build = false
+			case:              fmt.eprintln("unknown flag:", os.args[i]); os.exit(2)
+			}
+		}
+		if build {
+			prep()
+			ensure_bakes()
+			build_devharness()
+		}
+		fmt.printf("EXIT: %d\n", sh(fmt.tprintf("%s./devharness %s", strings.to_string(env), mode)) >> 8 & 0xff)
+		return
+	}
+
+	// `gpuprof`: AUTHORITATIVE per-pass GPU timing via Nsight Graphics GPU Trace.
+	if mode == "gpuprof" {
+		gpuprof()
 		return
 	}
 

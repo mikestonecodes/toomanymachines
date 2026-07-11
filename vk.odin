@@ -643,7 +643,7 @@ gpu_stamp :: proc(cmd: vk.CommandBuffer, i: u32) {
 }
 
 // Per-pass GPU perf marker (render.odin brackets each pass). Nsight Graphics reports the GPU
-// time INSIDE each region under locked clocks (gpuprof.sh parses it) — authoritative per-pass
+// time INSIDE each region under locked clocks (`./run.sh gpuprof` parses it) — authoritative per-pass
 // timing that the engine's own timestamps can't give on a laptop whose clocks can't be locked.
 // Near-free; the proc pointer is always resolved (EXT_debug_utils is enabled in every build).
 gpu_label :: proc(cmd: vk.CommandBuffer, name: cstring) {
