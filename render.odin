@@ -83,25 +83,28 @@ IMG_SPECS := [Img]ImgSpec{
 	.BodyA  = {fixed = ATLAS_DIM},  // [kind × gait-frame] enemy-chassis sprite atlas
 }
 
-// ── pipelines ── add one = one row + its compiled .spv stages. `compute` picks the type;
-// graphics pipelines pick a `blend` mode and render into the HDR scene format (`hdr`) or the
-// swapchain. Every pipeline shares the one bindless descriptor set + push-constant layout.
+// ── pipelines ── add one = ONE enum member (+ a row only if it needs non-default config).
+// Every pipeline shares the one bindless descriptor set + push-constant layout.
 // The body pass is FIVE pipelines over the same body.vert — one small fragment shader per
 // kind-group (wreck/horde/shot/crew/ship.frag; shared sprite modules in bodyfx/bodyspiders/
 // bodyrigs.glsl), each drawn over just its slot range, in the same ascending-slot order the
 // old single draw blended in. Five small driver compiles (parallel, behind the loading bar)
 // instead of one ~7s ubershader.
+// NAME STATED ONCE: the lowercased enum member IS its shader (.Wreck → wreck.frag,
+// .Physics → physics.comp — pipe_paths in vk.odin derives the .spv paths). The row holds
+// only what isn't derivable: `compute` picks the type, `vert` overrides the fs_tri
+// default, `blend`/`hdr` pick blending and the render target.
 Pipe :: enum { Physics, City, Wreck, Horde, Shot, Crew, Ship, Bloom, Composite }
 PIPE_SPECS := [Pipe]PipeSpec{
-	.Physics   = {compute = true, shaders = {"shaders/spv/physics.comp.spv"}},
-	.City      = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/city.frag.spv"}, hdr = true},
-	.Wreck     = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/wreck.frag.spv"}, blend = .Premul, hdr = true},
-	.Horde     = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/horde.frag.spv"}, blend = .Premul, hdr = true},
-	.Shot      = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/shot.frag.spv"}, blend = .Premul, hdr = true},
-	.Crew      = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/crew.frag.spv"}, blend = .Premul, hdr = true},
-	.Ship      = {shaders = {"shaders/spv/body.vert.spv", "shaders/spv/ship.frag.spv"}, blend = .Premul, hdr = true},
-	.Bloom     = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/bloom.frag.spv"}, hdr = true},
-	.Composite = {shaders = {"shaders/spv/fs_tri.vert.spv", "shaders/spv/composite.frag.spv"}},
+	.Physics   = {compute = true},
+	.City      = {hdr = true},
+	.Wreck     = {vert = "body", blend = .Premul, hdr = true},
+	.Horde     = {vert = "body", blend = .Premul, hdr = true},
+	.Shot      = {vert = "body", blend = .Premul, hdr = true},
+	.Crew      = {vert = "body", blend = .Premul, hdr = true},
+	.Ship      = {vert = "body", blend = .Premul, hdr = true},
+	.Bloom     = {hdr = true},
+	.Composite = {},
 }
 
 // The synchronous init path: the offline baker (tools/bake) and the frozen-sim profiler drive.

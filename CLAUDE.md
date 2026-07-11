@@ -31,10 +31,12 @@
 
 ## Buffer / Pipeline Interface
 - Data-driven. Add a buffer = one `BUF_SPECS` row in render.odin (`{glsl-macro, element-type, size, host-visible}`) and NOTHING else: it's auto-created, its bindless slot is its row order (asserted at registration), and `tools/gen` emits the storage-buffer view + a `<glsl-macro>` accessor into `gen.glsl` (e.g. `#define BODIES bodyBuf[0].v`) so shaders just write `BODIES`. Rows MUST be in `Res` enum order.
-- Add a pipeline = one `PIPE_SPECS` row + shader files (`hdr` picks the offscreen HDR format vs the swapchain). Every pipeline shares the one bindless descriptor set + push-constant layout — no per-pipeline descriptors.
+- Add a pipeline = ONE `Pipe` enum member: the lowercased member name IS its shader (`.Wreck` → `wreck.frag`, `.Physics` → `physics.comp`; `pipe_paths` derives the .spv paths) — plus a `PIPE_SPECS` row only for non-default config (`compute`, `vert` override, `blend`, `hdr`). Every pipeline shares the one bindless descriptor set + push-constant layout — no per-pipeline descriptors.
 - Offscreen images: one `IMG_SPECS` row per HDR target (Scene/BloomA/BloomB) — created with the swapchain, registered at binding 1 (slot = row order = the `IMG_*` constants). Sample via `layout(set=0, binding=1) uniform sampler2D TEXS[];` declared ONLY in the frags that read it (binding 1 is FRAGMENT-stage only — declaring it in a compute shader breaks pipeline layout compatibility).
 
 ## Code Style
+- **NAME STATED ONCE — no duplicated registration, ever.** Adding a thing is ONE enum member, ONE table row, or ONE file. Everything derivable is derived by convention: shader paths from enum names, shader stages from file extensions, bindless slots from row order, entry points from globs. If two declarations must agree, derive one from the other (or #assert it) — never maintain parallel lists by hand.
+- Small bounded lists use fixed-capacity dynamic arrays (`[dynamic; N]T`, stack-backed, allocation-free — slice with `[:]` for raw_data), not heap `[dynamic]T`.
 - Only break out a function if used 2+ times — inline single-use functions
 - Write concrete code first, extract shared parts only after 2+ instances
 - Never create abstractions preemptively

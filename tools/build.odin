@@ -52,11 +52,11 @@ pkg_modules :: proc(stage: string) -> []string {
 // blanked in place so #line error locations stay exact. Written next to the .spv
 // (shaders/spv/<name>.glsl, gitignored) for inspection.
 compose :: proc(stage: string, entry_path: string, out_path: string) {
-	files := make([dynamic]string, context.temp_allocator)
+	files: [dynamic; 8]string // fixed-cap: the module chain + the entry
 	append(&files, ..pkg_modules(stage))
 	append(&files, entry_path)
 	decls, protos: strings.Builder // hoisted declarations, then function prototypes
-	chunks := make([dynamic]string, context.temp_allocator)
+	chunks: [dynamic; 8]string
 	for f, fi in files {
 		data, err := os.read_entire_file(f, context.temp_allocator)
 		if err != nil { fmt.eprintln("compose: missing shader source", f); os.exit(1) }

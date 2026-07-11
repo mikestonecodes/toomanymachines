@@ -2,6 +2,7 @@ package main
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import "core:sync"
 import "core:thread"
 import "core:time"
@@ -88,10 +89,10 @@ vk_init :: proc() {
 
 	ext_count: u32
 	sdl_exts := SDL.Vulkan_GetInstanceExtensions(&ext_count)
-	exts: [dynamic]cstring
+	exts: [dynamic; 8]cstring // SDL's surface extensions + ours below, allocation-free
 	for i in 0 ..< ext_count { append(&exts, sdl_exts[i]) }
 
-	layers: [dynamic]cstring
+	layers: [dynamic; 2]cstring
 	// EXT_debug_utils is enabled in EVERY build (not just validation): it carries the debug
 	// callback AND the per-pass CmdBegin/EndDebugUtilsLabelEXT perf markers (gpu_label_*) that
 	// let the actual GPU profiler (Nsight Graphics GPU Trace) attribute time to physics/city/
@@ -120,8 +121,8 @@ vk_init :: proc() {
 	// (mutually exclusive with GPU_ASSISTED — we prefer GPU-AV's OOB checks over shader printf).
 	F :: vk.ValidationFeatureEnableEXT
 	FD :: vk.ValidationFeatureDisableEXT
-	val_enables: [dynamic]F
-	val_disables: [dynamic]FD
+	val_enables: [dynamic; 4]F
+	val_disables: [dynamic; 2]FD
 	if vk_gpuav {
 		append(&val_enables, F.GPU_ASSISTED, F.GPU_ASSISTED_RESERVE_BINDING_SLOT)
 		append(&val_disables, FD.CORE_CHECKS)
@@ -131,9 +132,9 @@ vk_init :: proc() {
 	val_features := vk.ValidationFeaturesEXT{
 		sType                          = .VALIDATION_FEATURES_EXT,
 		enabledValidationFeatureCount  = u32(len(val_enables)),
-		pEnabledValidationFeatures     = raw_data(val_enables),
+		pEnabledValidationFeatures     = raw_data(val_enables[:]),
 		disabledValidationFeatureCount = u32(len(val_disables)),
-		pDisabledValidationFeatures    = raw_data(val_disables),
+		pDisabledValidationFeatures    = raw_data(val_disables[:]),
 	}
 	// GPU-AV defaults to validating ray-query/trace-ray/mesh-shading; this device has none of
 	// those, so the layer would warn that it's disabling each. Turn them off up front instead.
@@ -152,9 +153,9 @@ vk_init :: proc() {
 		sType                   = .INSTANCE_CREATE_INFO,
 		pApplicationInfo        = &app,
 		enabledExtensionCount   = u32(len(exts)),
-		ppEnabledExtensionNames = raw_data(exts),
+		ppEnabledExtensionNames = raw_data(exts[:]),
 		enabledLayerCount       = u32(len(layers)),
-		ppEnabledLayerNames     = raw_data(layers),
+		ppEnabledLayerNames     = raw_data(layers[:]),
 		pNext                   = vkc.validated ? &dbg_ci : nil,
 	}
 	vkok(vk.CreateInstance(&ici, nil, &vkc.instance), "CreateInstance")
@@ -549,8 +550,19 @@ make_graphics_pipeline :: proc(vert, frag: string, blend: Blend, hdr: bool) -> v
 // Schema + storage for the PIPE_SPECS list in render.odin (indexed by the Pipe enum there).
 // hdr: render into the HDR offscreen format instead of the swapchain format.
 Blend :: enum { None, Alpha, Premul, Add }
-PipeSpec :: struct { compute: bool, shaders: []string, blend: Blend, hdr: bool }
+PipeSpec :: struct { compute: bool, vert: string, blend: Blend, hdr: bool }
 pipelines: [Pipe]vk.Pipeline
+
+// NAME STATED ONCE: a pipeline's shader paths derive from its enum member — lowercased name
+// = the fragment (or compute) shader stem; `vert` overrides the fs_tri default. Returns the
+// stage .spv paths, temp-allocated (compute: frag == "").
+pipe_paths :: proc(p: Pipe) -> (vert, frag: string) {
+	spec := PIPE_SPECS[p]
+	name := strings.to_lower(fmt.tprintf("%v", p), context.temp_allocator)
+	if spec.compute { return fmt.tprintf("shaders/spv/%s.comp.spv", name), "" }
+	vstem := spec.vert != "" ? spec.vert : "fs_tri"
+	return fmt.tprintf("shaders/spv/%s.vert.spv", vstem), fmt.tprintf("shaders/spv/%s.frag.spv", name)
+}
 
 // Build every PIPE_SPECS pipeline into `out`, one thread per pipeline — the driver compiles
 // them concurrently (CreateXxxPipelines and the pipeline cache are thread-safe), so a cold
@@ -564,7 +576,8 @@ build_pipelines :: proc(out: ^[Pipe]vk.Pipeline) -> (ok: bool) {
 	for _, p in PIPE_SPECS {
 		threads[p] = thread.create_and_start_with_poly_data2(out, p, proc(out: ^[Pipe]vk.Pipeline, p: Pipe) {
 			spec := PIPE_SPECS[p]
-			out[p] = spec.compute ? make_compute_pipeline(spec.shaders[0]) : make_graphics_pipeline(spec.shaders[0], spec.shaders[1], spec.blend, spec.hdr)
+			vert, frag := pipe_paths(p)
+			out[p] = spec.compute ? make_compute_pipeline(vert) : make_graphics_pipeline(vert, frag, spec.blend, spec.hdr)
 			sync.atomic_add(&pipes_built, 1)
 		})
 	}
@@ -609,8 +622,11 @@ load_spv :: proc(path: string) -> vk.ShaderModule {
 
 hot_reload_poll :: proc() {
 	sum: i64
-	for spec in PIPE_SPECS {
-		for spv in spec.shaders { t, _ := os.last_write_time_by_name(spv); sum += time.to_unix_nanoseconds(t) }
+	for _, p in PIPE_SPECS {
+		vert, frag := pipe_paths(p)
+		t, _ := os.last_write_time_by_name(vert)
+		sum += time.to_unix_nanoseconds(t)
+		if frag != "" { t2, _ := os.last_write_time_by_name(frag); sum += time.to_unix_nanoseconds(t2) }
 	}
 	if hot_stamp == 0 { hot_stamp = sum; return }
 	if sum != hot_stamp {
