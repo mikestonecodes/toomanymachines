@@ -628,10 +628,7 @@ main :: proc() {
 		dist("steam")
 		smoke() // gate the upload: both shipped binaries must boot + play (Linux native, Windows via Wine)
 		user := len(os.args) > 3 ? os.args[3] : os.get_env("STEAM_USER", context.temp_allocator)
-		if user == "" {
-			fmt.eprintln("deploy steam: set STEAM_USER=<steam login> (or pass it as the 3rd arg); login must be cached (`steamcmd +login <user>` once)")
-			os.exit(1)
-		}
+		if user == "" do user = "stonecodes" // default publisher login; must be cached (`steamcmd +login stonecodes` once)
 		// $(pwd) → the project root (run.sh cd's here); steamcmd wants an absolute app_build.vdf path.
 		must(cat("steamcmd +login ", user, ` +run_app_build "$(pwd)/tools/steam/app_build.vdf" +quit`))
 		fmt.println(">> uploaded — now set the build live on the DEFAULT branch in Steamworks -> SteamPipe -> Builds.")
