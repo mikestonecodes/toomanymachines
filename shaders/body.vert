@@ -18,8 +18,8 @@ void main() {
 	// the body pass draws in two LAYERS (render.odin): pc.mode 0 lays the ground wrecks,
 	// mode 1 draws everything alive/airborne over them (one pipeline per kind-group, each
 	// over its slot range) — dead husks never paint over live bots
-	bool groundWreck = b.kind == KIND_WRECK && b.variant != 1u;
-	if (b.kind == KIND_DEAD || (pc.mode == 0u) != groundWreck) { // park outside the clip volume
+	bool ground = (b.kind == KIND_WRECK && b.variant != 1u) || b.kind == KIND_FACTORY; // husks + the factory pads
+	if (b.kind == KIND_DEAD || (pc.mode == 0u) != ground) { // park outside the clip volume
 		gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
 		v_local = vec2(0.0);
 		return;

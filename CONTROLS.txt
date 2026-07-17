@@ -55,9 +55,58 @@ WEAPONS — bottom row: MOUNTED hardware (hold LMB)
   M  MINES        drops proximity mines off the tail; they arm after a
                   beat and BOOM when the horde steps close
 
-YOUR ARMY (autonomous — it re-musters at the center when it falls)
+YOUR ARMY (autonomous — it rebuilds at the MACHINE WORKS when it falls)
   Tank / gun-car / gunner-mech columns march out the avenues (the main
   street east of the pit gets the biggest push) and pour fire on whatever
   they lock. Suicide drones and bombers stage at the CENTER and sortie to
   wherever YOU are fighting, coming down on the horde as real blasts.
   Fallen allies leave wrecks — the salvage fleet feeds them to the pit.
+
+THE FACTORIES (two pads flanking the pit on the first ring road — park
+  ON a pad, or CLICK a pad on screen, and its panels open on the left;
+  the scrap ledger + the fleet's income per minute sit in the top-left
+  corner. Scrap = pit deposits the salvage fleet banks, exchanged 8:1
+  — and EVERY BUILD COSTS SCRAP: the opening credit floats a full army
+  of any fit, income comfortably covers rebuilding it, and the surplus
+  is what buys upgrades)
+
+  THE TECH LADDER: day one you own the GUN-CAR line and GATLING
+    research — everything else shows LOCKED and is FOUNDED one by one
+    with scrap: machines (gunner mech 250 / gun drone 500 / tank 800 /
+    kamikaze 1500 / bomber 2500), weapons (cannon 300 / laser 800 /
+    arc 1500), and each chassis' extra hardpoints (250 / 1000). Until
+    a machine is founded the line builds gun-cars in its place, so
+    every founding visibly adds its column to the army. Levels now
+    climb to 7.
+
+  MACHINE WORKS (east, on the main street crossing)
+    CLICK a machine (or keys 1..6) to set what the line builds: TANK /
+    GUN-CAR / GUNNER MECH / KAMIKAZE / BOMBER / GUN DRONE — every
+    fallen ally is rebuilt as it. AUTO MIX = the classic column.
+    Clicking an owned machine also opens its FIT panel:
+      HARDPOINTS  big chassis carry more (tank 3, gunner mech 2,
+                  gun-car 1, gun drone 2; kamikazes and bombers ARE
+                  the payload). Click a hardpoint to cycle the gun on
+                  it: CANNON / GATLING / LASER / ARC FIELD / EMPTY;
+                  click a LOCKED one to open it.
+      WEIGHT      every gun has weight; the bar shows load vs what the
+                  frame carries. Upgrading the machine (+2 per level)
+                  lets it lift heavier fits.
+      BUILD COST  chassis price + the weight of everything mounted,
+                  paid in scrap for every machine that rolls off.
+    CLICK the buy button (or F): UNLOCK THE LINE while locked, then
+    build levels — tougher hull, faster drive, more carry weight, a
+    bigger chassis.
+
+  WEAPONS LAB (west, mirrored across the pit)
+    Weapon research: CLICK a weapon (or keys 1..4), RESEARCH it if
+    locked, then buy levels — every hardpoint carrying it hits harder,
+    on every machine, from the next build on.
+
+  THE GUN DRONE: a flying quad-rotor weapons platform — ignores the
+  streets entirely, circles its prey like a gun-car, and fires
+  whatever the works hung under it.
+
+  While the cursor works a panel the guns hold their fire. The pad
+  itself still shows the readout: center glyph = selection, green pips
+  = level, the inner arc = scrap banked toward the next upgrade.

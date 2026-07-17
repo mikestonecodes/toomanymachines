@@ -107,6 +107,12 @@ gpuav_drive :: proc(frame_n: int) -> bool {
 //   TMM_SHOT_FIRE        "0" to hold fire                (default on)
 //   TMM_SHOT_LASER       "0" to hold the laser           (default on, after 4s)
 //   TMM_SHOT_SETTLE      sim seconds to settle before the grab (default 8)
+//   TMM_SHOT_MACH/_WEAP  factory selections (machine line 1..6 / lab bench 1..4) — the
+//                        army rebuilds as the selected machine during the settle
+//   TMM_SHOT_LOAD        "t,s,w[;t,s,w…]": hardpoint fits — weapon w (0..4) into slot s
+//                        of machine type t, as if cycled on the loadout panel
+//   TMM_SHOT_CLICK       "x,y,t": at sim second t, CLICK the UI at screen px (x,y) —
+//                        one LMB-down edge, exactly like a player click
 //   TMM_SHOT_FREEZE      "1" → freeze the sim once settled (byte-stable frame for review)
 //   TMM_SHOT_OUT         output jpg path                 (default .debug_screenshots/vk.jpg)
 //   TMM_SHOT_LOADER      "1" → capture the LOADING SCREEN instead: grab a loader frame ~1s
@@ -114,18 +120,59 @@ gpuav_drive :: proc(frame_n: int) -> bool {
 //                        or the load finishes before the grab) and exit on the first game frame
 //   TMM_W / TMM_H        capture resolution
 @(private = "file") shot_asked: bool
+@(private = "file") shot_clicks: int
 @(private = "file") shot_pos: [2]f32
 shot_drive :: proc(frame_n: int) -> bool {
 	ang := f32(frame_n) * 0.05
 	if frame_n == 0 { shot_pos = {env_f32("TMM_SHOT_X", CENTER.x + 1100), env_f32("TMM_SHOT_Y", CENTER.y - 1100)} }
 	car_pos = shot_pos; car_vel = {}; cam = shot_pos // re-park every frame so a shove can't drift the vantage
+	if env_bool("TMM_SHOT_UNLOCK", false) { // the whole tech ladder founded — capture any loadout
+		for t in 1 ..= 6 { mach_lv[t] = max(mach_lv[t], 1); mach_slots_unl[t] = MACH_SLOTS[t] }
+		for w in 1 ..= 4 { weap_lv[w] = max(weap_lv[w], 1) }
+	}
+	if v := env_f32("TMM_SHOT_MACH", -1); v >= 0 { fab_mach = int(v) } // factory lines, as if picked on the
+	if v := env_f32("TMM_SHOT_WEAP", -1); v >= 0 { fab_weap = int(v) } //   pads — any loadout without driving there
+	if ls := os.get_env("TMM_SHOT_LOAD", context.temp_allocator); ls != "" {
+		for seg in strings.split(ls, ";", context.temp_allocator) {
+			parts := strings.split(seg, ",", context.temp_allocator)
+			if len(parts) != 3 { continue }
+			t, _ := strconv.parse_int(parts[0])
+			s, _ := strconv.parse_int(parts[1])
+			w, _ := strconv.parse_int(parts[2])
+			if t >= 1 && t <= 6 && s >= 0 && s < 3 && w >= 0 && w <= 4 { mach_load[t][s] = w }
+		}
+	}
 	settle := env_f32("TMM_SHOT_SETTLE", 8.0)
 	input.fire  = env_bool("TMM_SHOT_FIRE", true)
 	input.laser = env_bool("TMM_SHOT_LASER", true) && sim_time >= 4.0
 	input.mouse = {f32(win_w) * 0.5 + math.cos(ang) * 240, f32(win_h) * 0.5 + math.sin(ang) * 240}
+	// scripted UI clicks: "x,y,t[;x,y,t…]" — one LMB-down edge each, in sequence, once
+	// sim time t is reached. Exercises the real widget path (ui_over + ui_click in
+	// ui.odin), not a shortcut.
+	if cs := os.get_env("TMM_SHOT_CLICK", context.temp_allocator); cs != "" {
+		for seg, i in strings.split(cs, ";", context.temp_allocator) {
+			parts := strings.split(seg, ",", context.temp_allocator)
+			if len(parts) != 3 { continue }
+			cx, _ := strconv.parse_f32(parts[0])
+			cy, _ := strconv.parse_f32(parts[1])
+			ct, _ := strconv.parse_f32(parts[2])
+			if sim_time >= ct && i >= shot_clicks {
+				input.mouse = {cx, cy}
+				ui_click = true
+				shot_clicks = i + 1 // fired: the DOWN edge lasts one frame
+				break
+			}
+			if sim_time >= ct { input.mouse = {cx, cy} } // parked on the last target — hover stays visible
+		}
+	}
 	if sim_time >= settle {
 		if env_bool("TMM_SHOT_FREEZE", false) { dev_dt_override = 0 } // freeze for a stable review frame
-		if !shot_asked { shot_asked = true; h_shot.want = true }      // record next present
+		if !shot_asked { // record next present + dump the economy ledger for balance passes
+			shot_asked = true
+			h_shot.want = true
+			fmt.printfln("econ: t=%.0f deposits=%d gpu_spent=%d cpu_spent=%d scrap=%d",
+				sim_time, stats_at(0)^, stats_at(int(STAT_SPENT))^, u32(scrap_spent), scrap_avail())
+		}
 	}
 	if sim_time >= settle + 12 { fmt.eprintln("shot: no frame captured within the drive window"); os.exit(1) }
 	return h_shot.saved

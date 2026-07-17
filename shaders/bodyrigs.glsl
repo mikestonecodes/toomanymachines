@@ -141,6 +141,31 @@ void gunner(vec2 p, Body b, float t, vec2 aimd, float shoot) {
 	battle_damage(p, b, HP_GUNNER);
 }
 
+void drone(vec2 p, Body b, float t, vec2 aimd, float shoot) {
+	// GUN DRONE: a quad-rotor weapons platform hovering low over the fight — the factory
+	// hangs its hardpoints under the hull (ally_fire draws the actual fire). Airborne:
+	// drawn a touch large, its shadow adrift on the ground below.
+	float r = b.radius;
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = 2.6;
+	lay(vec3(0.012), 0.32 * soft(length(p - vec2(5.0, 12.0)) - r * 0.85)); // shadow far below
+	p *= 0.78; // altitude: nearer the camera
+	p.y -= sin(pc.time * 3.7 + float(v_id)) * 0.6;
+	for (float sx = -1.0; sx <= 1.0; sx += 2.0) { // four rotor pods — dark shimmer, no glow
+		for (float sy = -1.0; sy <= 1.0; sy += 2.0) {
+			vec2 rp = vec2(sx * r * 0.62, sy * r * 0.62);
+			lay(BOT_LINE * 2.0, soft(length(p - rp) - r * 0.30));
+			lay(vec3(0.22, 0.23, 0.25), soft(length(p - rp) - r * 0.26) * (0.30 + 0.25 * sin(pc.time * 49.0 + sx + sy + float(v_id))));
+		}
+	}
+	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.55, r * 0.40)) - r * 0.12, gPlateA, 1.0); // hull
+	lay(gMark, soft(sd_box(p - vec2(-r * 0.15, 0.0), vec2(r * 0.05, r * 0.30))) * 0.8); // unit band
+	lay(BOT_LINE * 2.6, soft(sd_seg(p, vec2(0.0), aimd * r * 1.05) - r * 0.06)); // the underslung gun
+	float beat = 0.7 + 0.5 * sin(pc.time * 3.4 + float(v_id) * 0.8);
+	add += gEye * 1.1 * beat * soft(length(p - vec2(r * 0.42, 0.0)) - r * 0.10); // the eye
+	battle_damage(p, b, HP_DRONE);
+}
+
 void bomber(vec2 p, Body b, float t) {
 	// BOMBER: a big dark delta flying HIGH over everything (drawn large = near the
 	// camera; its shadow runs the ground far below). Yours patrol from the center and

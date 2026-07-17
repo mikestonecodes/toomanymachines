@@ -156,6 +156,27 @@ vec2 fire_slug(uint id, float rate, float mv) {
 	return vec2(cyc / rate * mv, cyc);
 }
 
+// a mounted weapon's engagement reach — ally targeting (physics.comp), the enemies'
+// incoming-fire test and the gun-line scramble all read the same number
+float aw_range(uint aw) {
+	if (aw == AW_CANNON) { return TANK_RNG; }
+	if (aw == AW_LASER)  { return 820.0; }
+	if (aw == AW_ARC)    { return 300.0; }
+	return 680.0; // AW_GAT
+}
+
+// the LOADOUT word (Body.mount / sh_tmnt — car.odin's mount_word packs it): hardpoint s
+// at bits s*6 = (weap+1) | weapon_level<<3, machine build level at bits 18-20. The same
+// decode runs in physics (damage) and the body sprites (tracers), so a machine can
+// never draw a gun it doesn't fire.
+uint mount_weap(uint mnt, uint s) { return (mnt >> (s * 6u)) & 7u; } // 0 = empty, else aw+1
+uint mount_wlv(uint mnt, uint s) { return (mnt >> (s * 6u + 3u)) & 7u; }
+uint mount_slots(uint mnt) { uint n = 0u; for (uint s = 0u; s < 3u; s++) { if (mount_weap(mnt, s) != 0u) { n++; } } return n; }
+float mount_range(uint mnt) { float r = 0.0; for (uint s = 0u; s < 3u; s++) { if (mount_weap(mnt, s) != 0u) { r = max(r, aw_range(mount_weap(mnt, s) - 1u)); } } return r; }
+// hardpoint fire lines sit side by side: rank k of n mounts offsets this far off the
+// body's lock line (+y in the body frame) — physics corridors + drawn tracers agree
+float mount_off(uint k, uint n) { return (float(k) - 0.5 * (float(n) - 1.0)) * 14.0; }
+
 // can a shooter at a hit b, or does a building block interpose? 3 samples of the solid
 // test — deterministic, so physics (impact) and the drawing always agree.
 bool fire_los(vec2 a, vec2 b) {

@@ -120,10 +120,74 @@ void helper(vec2 p, Body b) {
 	add += RIG_GRN * 1.0 * soft(length(p - vec2(2.0, 0.0)) - 1.2) * step(0.5, fract(pc.time * 1.6 + hash1(v_id))); // status blinker — team green
 }
 
+// The FACTORY LOADOUT firing: every mounted hardpoint pours its weapon down the lock
+// line (+x in the body frame, out to `shoot` = the target's distance), each on its own
+// lateral offset — the EXACT per-slot fire physics.comp chews enemies with (mount_off /
+// mount_weap / fire_slug salts all match).
+void ally_fire(vec2 p, Body b, vec2 aimd, float shoot) {
+	float r = b.radius;
+	uint mnt = b.mount;
+	uint nsl = mount_slots(mnt);
+	uint rank = 0u;
+	for (uint si = 0u; si < 3u; si++) {
+		uint w1 = mount_weap(mnt, si);
+		if (w1 == 0u) { continue; }
+		uint aw = w1 - 1u;
+		float wk = 0.8 + 0.2 * max(float(mount_wlv(mnt, si)), 1.0); // level: a hotter, thicker stream
+		vec2 pp = p - vec2(-aimd.y, aimd.x) * mount_off(rank, nsl); // this hardpoint's fire frame
+		rank++;
+		vec2 muz = aimd * (r * 1.2);
+		if (aw == AW_CANNON) { // heavy slugs off the fire_slug cadence (identical to the tank's)
+			vec2 sl = fire_slug(v_id + rank * 37u, TANK_RATE, TANK_MV);
+			float mz = exp(-sl.y * 9.0); // the shot just left: a hard muzzle flash
+			add += (PAL_EMBER * 2.2 + vec3(0.9)) * exp(-dot(pp - muz, pp - muz) / (60.0 * mz + 4.0)) * mz * 2.0;
+			if (sl.x < shoot) { // the slug in flight, dragging a hot wake
+				vec2 sp2 = muz + aimd * sl.x;
+				add += vec3(1.45, 1.1, 0.7) * exp(-dot(pp - sp2, pp - sp2) / 16.0) * 2.4 * wk;
+				float wkd = sd_seg(pp, sp2 - aimd * min(sl.x, 90.0), sp2);
+				add += PAL_EMBER * exp(-wkd * wkd / 14.0) * 0.5;
+			} else if (sl.x - shoot < 120.0) { // ARRIVAL: sparks burst off the target
+				vec2 hit = muz + aimd * shoot;
+				add += (PAL_EMBER * 1.6 + vec3(0.5)) * exp(-dot(pp - hit, pp - hit) / 240.0) * exp(-(sl.x - shoot) * 0.03) * 1.6;
+			}
+		} else if (aw == AW_LASER) { // the cutting beam: a steady bar to the lock, flickering hot
+			float bd = sd_seg(pp, muz, aimd * shoot);
+			float flick = 0.85 + 0.30 * sin(pc.time * 43.0 + dot(pp, aimd) * 0.05 + float(v_id));
+			// kept modest: a whole column's beams STACK (premul adds), and a firing line
+			// must not bloom into a white wall
+			add += (vec3(1.3, 1.0, 0.7) + PAL_EMBER * 0.4) * exp(-bd * bd / (7.0 * wk * flick)) * 1.2;
+			add += PAL_EMBER * exp(-bd * bd / (90.0 * wk)) * 0.2;
+			vec2 hit = aimd * shoot; // the cut point burns
+			add += (PAL_EMBER * 1.4 + vec3(0.4)) * exp(-dot(pp - hit, pp - hit) / 60.0);
+		} else if (aw == AW_ARC) { // the discharge field: jagged bolts snapping around the rig
+			for (float i = 0.0; i < 3.0; i += 1.0) {
+				uint sj = v_id * 173u + uint(pc.time * 13.0) * 31u + uint(i) * 7u + rank * 13u;
+				float a = hash1(sj) * TAU;
+				vec2 tip = rot2(a) * vec2(90.0 + hash1(sj + 1u) * 190.0, 0.0);
+				vec2 mid = tip * 0.5 + vec2(hash1(sj + 2u) - 0.5, hash1(sj + 3u) - 0.5) * 60.0;
+				float bd = min(sd_seg(p, vec2(0.0), mid), sd_seg(p, mid, tip));
+				add += (vec3(1.2, 1.1, 0.9) + PAL_EMBER * 0.3) * exp(-bd * bd / 3.0) * 1.4 * wk;
+				add += (PAL_EMBER * 1.2 + vec3(0.4)) * exp(-dot(p - tip, p - tip) / 30.0) * 0.8; // the strike point
+			}
+		} else { // AW_GAT: the chewing stream (identical to the gun-car's hose)
+			float alongp = dot(pp, aimd);
+			float perp = dot(pp, vec2(-aimd.y, aimd.x));
+			if (alongp > r * 1.1 && alongp < shoot) {
+				float cycR = fract(alongp / 40.0 - pc.time * 32.0 + float(rank) * 0.37);
+				float slug2 = exp(-pow((cycR - 0.5) * 6.0, 2.0));
+				add += vec3(1.4, 1.05, 0.65) * slug2 * exp(-perp * perp / (2.5 * wk)) * 1.8;
+			}
+			add += (PAL_EMBER * 1.6 + vec3(0.6)) * exp(-dot(pp - muz, pp - muz) / 10.0) * (0.6 + 0.4 * sin(pc.time * 89.0 + float(v_id) + float(rank)));
+		}
+	}
+}
+
 // One dispatch for every crew-slot chassis sprite (live and dying). Allies carry their
 // locked target in gen — that gives the gun sprites their tracer reach (and the drones
 // their arming ramp); the ally BODY faces the target, so the gun line is +x in the body
-// frame. The spider fallback covers any variant without a rig of its own.
+// frame. ALL weapon fire comes from ally_fire off the mount word (the chassis' built-in
+// streams get shoot = 0) — what's drawn is exactly what the enemies take. The spider
+// fallback covers unrigged variants.
 void bot_sprite(vec2 p, Body b, float t) {
 	vec2 aimd = vec2(1.0, 0.0);
 	float shoot = 0.0, arm = 0.0;
@@ -131,14 +195,17 @@ void bot_sprite(vec2 p, Body b, float t) {
 		shoot = distance(BODIES[b.gen - 1u].pos, b.pos);
 		arm = clamp(1.0 - shoot / 900.0, 0.0, 1.0);
 	}
+	bool mounted = b.kind == KIND_ALLY && b.variant != VAR_SUICIDE && b.variant != VAR_BOMBER;
 	if      (b.variant == VAR_SKITTER) { skitter(p, b, t); }
 	else if (b.variant == VAR_BRUTE)   { brute(p, b, t); }
-	else if (b.variant == VAR_TANK)    { tank(p, b, t, aimd, shoot); }
-	else if (b.variant == VAR_RAIDER)  { raider(p, b, t, aimd, shoot); }
+	else if (b.variant == VAR_TANK)    { tank(p, b, t, aimd, 0.0); }
+	else if (b.variant == VAR_RAIDER)  { raider(p, b, t, aimd, 0.0); }
 	else if (b.variant == VAR_SUICIDE) { suicide(p, b, t, arm); }
-	else if (b.variant == VAR_GUNNER)  { gunner(p, b, t, aimd, shoot); }
+	else if (b.variant == VAR_GUNNER)  { gunner(p, b, t, aimd, 0.0); }
 	else if (b.variant == VAR_BOMBER)  { bomber(p, b, t); }
+	else if (b.variant == VAR_DRONE)   { drone(p, b, t, aimd, 0.0); }
 	else                               { spider(p, b, t); }
+	if (mounted && shoot > 0.0) { ally_fire(p, b, aimd, shoot); }
 }
 
 void main() {

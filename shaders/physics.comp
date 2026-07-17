@@ -90,22 +90,54 @@ Body spawn_enemy(uint slot, uint gen) {
 	b.angle = atan(to.y, to.x);
 	b.kind = KIND_ENEMY;
 	b.gen = gen;
+	b.mount = 0u; // no factory loadout — the horde brings only claws
 	return b;
 }
 
-// YOUR army, mustered on the pit apron — role is FIXED by slot (this is the ONE source
-// of ally stats; the CPU only seeds the slots dead and this births them). Ground armor
-// (tanks / gun-cars / gunner mechs) pushes out the avenues; the suicide-drone corps and
-// the bomber wings are STAGED AT THE CENTER and sortie out to the player's fight.
+// YOUR army rolls off the MACHINE WORKS line (the east factory pad) — this is the ONE
+// source of ally stats; the CPU only seeds the slots dead and this births them. The
+// FACTORY decides the build: pc.fab picks the machine (0 = the classic slot-role mix)
+// and the CPU-published Stats table carries each type's full LOADOUT word (STAT_MOUNT —
+// hardpoints + levels, see car.odin) and build cost (STAT_COST). A build first RESERVES
+// its price from the scrap ledger (atomic on STATS[STAT_SPENT], against the grant + pit
+// deposits − the CPU's upgrade spending); if the till can't pay, the slot waits at the
+// gate and retries. The mount word is what every consumer decodes — physics damage,
+// battle_damage's hp scale and the crew.frag tracers.
 Body spawn_ally(uint slot) {
 	Body b;
-	if      (slot < 18u) { b.variant = VAR_TANK;    b.radius = R_TANK;    b.hp = HP_TANK; }
-	else if (slot < 32u) { b.variant = VAR_RAIDER;  b.radius = R_RAIDER;  b.hp = HP_RAIDER; }
-	else if (slot < 44u) { b.variant = VAR_GUNNER;  b.radius = R_GUNNER;  b.hp = HP_GUNNER; }
-	else if (slot < 56u) { b.variant = VAR_SUICIDE; b.radius = R_SUICIDE; b.hp = HP_SUICIDE; }
-	else                 { b.variant = VAR_BOMBER;  b.radius = R_BOMBER;  b.hp = HP_BOMBER; }
-	float a = float(slot) * (TAU / float(MAX_ALLIES));
-	b.pos = vec2(WORLD * 0.5) + vec2(cos(a), sin(a)) * (PIT_R + 190.0);
+	uint sel = pc.fab & 0xFu;
+	uint mtype = sel; // 1..6 = tank / gun-car / gunner / suicide / bomber / gun drone
+	if (sel == 0u) { // auto: the classic mixed column, role fixed by normalized slot
+		uint q = slot * 64u / MAX_ALLIES;
+		mtype = q < 16u ? 1u : q < 28u ? 2u : q < 40u ? 3u : q < 48u ? 6u : q < 58u ? 4u : 5u;
+	}
+	// a line still LOCKED (mount bit 31 — the tech ladder in car.odin) builds the
+	// day-one GUN-CAR in its place: unlocks visibly add their column to the army
+	if ((STATS[STAT_MOUNT + mtype - 1u] >> 31) != 0u) { mtype = 2u; }
+	uint cost = STATS[STAT_COST + mtype - 1u];
+	uint prior = atomicAdd(STATS[STAT_SPENT], cost); // reserve the scrap…
+	if (prior + cost + STATS[STAT_CPUSP] > STATS[0] / FAB_EXCH + FAB_GRANT) {
+		atomicAdd(STATS[STAT_SPENT], 0u - cost); // …can't pay: refund, wait at the gate
+		b.pos = vec2(0.0); b.vel = vec2(0.0);
+		b.radius = 1.0; b.life = 0.5; b.hp = 0.0; b.angle = 0.0;
+		b.kind = KIND_DEAD; b.variant = 0u; b.gen = 0u; b.mount = 0u;
+		return b;
+	}
+	if      (mtype == 1u) { b.variant = VAR_TANK;    b.radius = R_TANK;    b.hp = HP_TANK; }
+	else if (mtype == 2u) { b.variant = VAR_RAIDER;  b.radius = R_RAIDER;  b.hp = HP_RAIDER; }
+	else if (mtype == 3u) { b.variant = VAR_GUNNER;  b.radius = R_GUNNER;  b.hp = HP_GUNNER; }
+	else if (mtype == 4u) { b.variant = VAR_SUICIDE; b.radius = R_SUICIDE; b.hp = HP_SUICIDE; }
+	else if (mtype == 5u) { b.variant = VAR_BOMBER;  b.radius = R_BOMBER;  b.hp = HP_BOMBER; }
+	else                  { b.variant = VAR_DRONE;   b.radius = R_DRONE;   b.hp = HP_DRONE; }
+	b.mount = STATS[STAT_MOUNT + mtype - 1u];
+	uint mlv = max((b.mount >> 18) & 7u, 1u);
+	b.hp *= 1.0 + 0.5 * float(mlv - 1u);      // the build level hardens the hull...
+	b.radius *= 1.0 + 0.07 * float(mlv - 1u); // ...and the chassis grows a visible notch
+	// roll off the line SPREAD over the works' apron, a fresh spot every rebuild — the
+	// whole army re-mustering on one tight ring stacked into a single white-hot pile
+	uint sh = slot * 131u + uint(pc.time * 0.5);
+	float a = hash1(sh) * TAU;
+	b.pos = vec2(WORLD * 0.5) + vec2(FAB_D, 0.0) + vec2(cos(a), sin(a)) * (FAB_R * (0.5 + hash1(sh + 7u)));
 	b.vel = vec2(0.0);
 	b.life = 0.0;
 	b.angle = a;
@@ -138,35 +170,42 @@ float laser_hit(vec2 pos, float radius, out vec2 push) {
 
 // The defense page, cached per workgroup — the enemy loop over it ran 80k×128 buffer
 // reads a frame without this. Slots [0,64) = the turret fleet, [64,128) = the ALLY army
-// (kv packs kind | variant<<8; ang/len = the ally's gun line toward its locked target,
-// len 0 = holding fire — enemies take the fire and body.frag draws it off the SAME state).
+// (kv packs kind | variant<<8; tmnt = the ally's LOADOUT word; ang/len = its gun line
+// toward the locked target, len 0 = holding fire — enemies take the fire and body.frag
+// draws it off the SAME state).
 const uint SH_N = MAX_TURRETS + MAX_ALLIES;
 shared vec2  sh_tpos[SH_N];
 shared uint  sh_tkv[SH_N];
+shared uint  sh_tmnt[SH_N];
 shared float sh_tang[SH_N];
 shared float sh_tlen[SH_N];
 
 void main() {
 	uint id = gl_GlobalInvocationID.x;
 	if (pc.mode == 2u) { // one cooperative load before ANY early return (uniform barrier)
-		uint li = gl_LocalInvocationID.x; // local_size_x = 64 == MAX_TURRETS == MAX_ALLIES
-		Body tw0 = BODIES[TURRET_LO + li];
-		sh_tpos[li] = tw0.pos;
-		sh_tkv[li] = tw0.kind;
-		sh_tang[li] = 0.0;
-		sh_tlen[li] = 0.0;
-		Body al = BODIES[ALLY_LO + li];
-		uint ai = MAX_TURRETS + li;
-		sh_tpos[ai] = al.pos;
-		sh_tkv[ai] = al.kind | (al.variant << 8);
-		float aang = 0.0, alen = 0.0;
-		if (al.kind == KIND_ALLY && al.gen != 0u) {
-			vec2 dt2 = BODIES[al.gen - 1u].pos - al.pos;
-			alen = length(dt2);
-			aang = atan(dt2.y, dt2.x);
+		for (uint li = gl_LocalInvocationID.x; li < SH_N; li += 64u) { // local_size_x = 64
+			if (li < MAX_TURRETS) {
+				Body tw0 = BODIES[TURRET_LO + li];
+				sh_tpos[li] = tw0.pos;
+				sh_tkv[li] = tw0.kind;
+				sh_tmnt[li] = 0u;
+				sh_tang[li] = 0.0;
+				sh_tlen[li] = 0.0;
+			} else {
+				Body al = BODIES[ALLY_LO + (li - MAX_TURRETS)];
+				sh_tpos[li] = al.pos;
+				sh_tkv[li] = al.kind | (al.variant << 8);
+				sh_tmnt[li] = al.mount;
+				float aang = 0.0, alen = 0.0;
+				if (al.kind == KIND_ALLY && al.gen != 0u) {
+					vec2 dt2 = BODIES[al.gen - 1u].pos - al.pos;
+					alen = length(dt2);
+					aang = atan(dt2.y, dt2.x);
+				}
+				sh_tang[li] = aang;
+				sh_tlen[li] = alen;
+			}
 		}
-		sh_tang[ai] = aang;
-		sh_tlen[ai] = alen;
 		barrier();
 	}
 
@@ -182,6 +221,7 @@ void main() {
 		// shells, the airborne allies and the flying WING player stay ABOVE the brawl)
 		Body b = BODIES[id];
 		if (b.kind == KIND_DEAD || b.kind == KIND_WRECK || b.kind == KIND_HELPER || b.kind == KIND_BULLET) { return; }
+		if (b.kind == KIND_FACTORY) { return; } // the pads are flat aprons — nothing collides
 		if (b.kind == KIND_DYING && b.variant != VAR_BOOM) { return; }
 		if (b.kind == KIND_ALLY && (b.variant == VAR_SUICIDE || b.variant == VAR_BOMBER)) { return; }
 		if (b.kind == KIND_PLAYER && b.variant == RIDE_WING) { return; }
@@ -194,7 +234,7 @@ void main() {
 	// ── mode 2: step ─────────────────────────────────────────────────────────
 	Body b = BODIES[id];
 
-	if (b.kind == KIND_TURRET) { return; } // towers are static; enemies read them from the grid
+	if (b.kind == KIND_TURRET || b.kind == KIND_FACTORY) { return; } // towers + pads are static; enemies read towers from the grid
 
 	if (b.kind == KIND_HELPER) {
 		// ── salvage drone: a FREE-ROAMING scavenger (no player escort) — wander a
@@ -253,7 +293,9 @@ void main() {
 		// wherever the PLAYER is fighting, coming down on the horde as real blasts.
 		vec2 ctr = vec2(WORLD * 0.5);
 		bool air = b.variant == VAR_SUICIDE || b.variant == VAR_BOMBER;
-		float rng = b.variant == VAR_TANK ? TANK_RNG : (b.variant == VAR_RAIDER ? RAID_RNG : GUN_RNG);
+		bool fly = b.variant == VAR_DRONE; // the gun drone flies but FIGHTS like armor
+		float rng = mount_range(b.mount);  // reach = the longest mounted hardpoint
+		float mk = 1.0 + 0.08 * (max(float((b.mount >> 18) & 7u), 1.0) - 1.0); // build level: a faster drivetrain
 		uint tgt = b.gen;
 		if (tgt != 0u) { // still a live catch in range?
 			Body tb = BODIES[tgt - 1u];
@@ -281,7 +323,7 @@ void main() {
 			if (tgt != 0u) {
 				Body tb = BODIES[tgt - 1u];
 				goal = tb.pos;
-				speed = b.variant == VAR_SUICIDE ? 620.0 : 480.0;
+				speed = (b.variant == VAR_SUICIDE ? 620.0 : 480.0) * mk;
 				if (distance(b.pos, tb.pos) < tb.radius + b.radius + 24.0) {
 					b.kind = KIND_DYING; b.variant = VAR_BOOM; b.life = BOOM_T; b.vel = vec2(0.0); b.gen = 0u;
 					BODIES[id] = b;
@@ -302,15 +344,15 @@ void main() {
 			BODIES[id] = b;
 			return;
 		}
-		// ── ground armor
-		float spd = b.variant == VAR_TANK ? 120.0 : (b.variant == VAR_RAIDER ? 320.0 : 170.0);
-		if (tgt != 0u) { // engaged: train the gun; gun-cars circle their prey
+		// ── ground armor (+ the flying gun drone, which fights the same way)
+		float spd = (b.variant == VAR_TANK ? 120.0 : b.variant == VAR_RAIDER ? 320.0 : fly ? 300.0 : 170.0) * mk;
+		if (tgt != 0u) { // engaged: train the gun; gun-cars + drones circle their prey
 			Body tb = BODIES[tgt - 1u];
 			vec2 dtp = tb.pos - b.pos;
 			float td = max(length(dtp), 1.0);
 			b.angle = atan(dtp.y, dtp.x);
 			vec2 desired = vec2(0.0);
-			if (b.variant == VAR_RAIDER) {
+			if (b.variant == VAR_RAIDER || fly) {
 				vec2 pn = dtp / td;
 				float side = hash1(id * 17u) < 0.5 ? -1.0 : 1.0;
 				desired = (vec2(-pn.y, pn.x) * side + pn * clamp((td - 320.0) / 200.0, -0.8, 0.8)) * spd;
@@ -326,6 +368,9 @@ void main() {
 			if (length(b.vel) > 20.0) { b.angle = atan(b.vel.y, b.vel.x); }
 		}
 		// contact: the horde CHEWS the line — scan my 3×3 for enemies, separate + bleed
+		// (separation accumulates and applies clamped, same as the horde's own scan —
+		// a chewed-under machine must not teleport-jitter out of the pile)
+		vec2 sep = vec2(0.0);
 		int cx = int(clamp(b.pos.x / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
 		int cy = int(clamp(b.pos.y / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
 		for (int dy = -1; dy <= 1; dy++) {
@@ -340,18 +385,22 @@ void main() {
 					uint j = GITEM[cell * CELL_CAP + k];
 					if (j == id) { continue; }
 					Body o = BODIES[j];
-					if (o.kind != KIND_ENEMY) { continue; }
+					if (o.kind != KIND_ENEMY && o.kind != KIND_ALLY) { continue; }
 					vec2 off = b.pos - o.pos;
 					float d = length(off);
 					float md = b.radius + o.radius;
 					if (d < md && d > 0.001) {
-						b.pos += (off / d) * (md - d) * 0.5;
-						b.hp -= 9.0 * pc.dt; // claws on armor
-						b.life = max(b.life, 0.4);
+						sep += (off / d) * (md - d) * 0.5;
+						if (o.kind == KIND_ENEMY) { // claws on armor — formation-mates just keep spacing
+							b.hp -= 9.0 * pc.dt;
+							b.life = max(b.life, 0.4);
+						}
 					}
 				}
 			}
 		}
+		float sl = length(sep);
+		if (sl > 0.001) { b.pos += sep * (min(sl, b.radius * 0.5) / sl); }
 		if (b.hp <= 0.0) { // the line breaks: a husk for the salvage fleet
 			b.kind = KIND_DYING;
 			b.life = DEATH_T;
@@ -361,10 +410,12 @@ void main() {
 			return;
 		}
 		b.pos += b.vel * pc.dt;
-		building_push(b.pos, b.vel, b.radius);
-		vec2 fromPit = b.pos - ctr;
-		float pitd = length(fromPit);
-		if (pitd < PIT_R + b.radius) { b.pos = ctr + fromPit / max(pitd, 0.001) * (PIT_R + b.radius); }
+		if (!fly) { // the drone flies straight over the blocks and the pit
+			building_push(b.pos, b.vel, b.radius);
+			vec2 fromPit = b.pos - ctr;
+			float pitd = length(fromPit);
+			if (pitd < PIT_R + b.radius) { b.pos = ctr + fromPit / max(pitd, 0.001) * (PIT_R + b.radius); }
+		}
 		b.pos = clamp(b.pos, vec2(10.0), vec2(WORLD - 10.0));
 		b.life = max(b.life - pc.dt * 6.0, 0.0);
 		b.gen = tgt;
@@ -390,12 +441,15 @@ void main() {
 			// self-detonators (VAR_BOOM) leave nothing — the blast WAS the body
 			if (husk && b.variant != VAR_SPARK && b.variant != VAR_BOOM) {
 				b.kind = KIND_WRECK; // the husk stays — SCRAP for the salvage fleet
-				b.life = WRECK_T;
+				// an ally's husk crumbles FAST: its slot is the production line's, and a
+				// wreck rotting in the city (off-limits to the fleet) must not hold the
+				// works idle for a minute — the fab generates CONSTANTLY
+				b.life = id >= ALLY_LO ? 10.0 : WRECK_T;
 				b.vel = vec2(0.0);
 			} else {
 				b.kind = KIND_DEAD;
-				// a fallen ally REBUILDS at the center after a long gap
-				b.life = id >= ALLY_LO ? 15.0 : 1.0 + hash1(id * 331u + uint(pc.time)) * 3.0;
+				// a fallen ally is back on the line after a short beat
+				b.life = id >= ALLY_LO ? 4.0 : 1.0 + hash1(id * 331u + uint(pc.time)) * 3.0;
 			}
 		}
 		BODIES[id] = b;
@@ -630,33 +684,63 @@ void main() {
 		} else if (kd == KIND_ALLY) {
 			float len2 = sh_tlen[ti];
 			if (len2 <= 0.0) { continue; } // holding fire
-			uint av = sh_tkv[ti] >> 8;
+			uint av = (sh_tkv[ti] >> 8) & 0xFFu;
 			if (av == VAR_SUICIDE || av == VAR_BOMBER) { continue; } // they ARE the ammunition
+			// the FACTORY LOADOUT: every mounted hardpoint fires down the lock line, each
+			// on its own lateral offset (mount_off) — crew.frag draws the identical guns
+			// from the same word
+			uint mnt = sh_tmnt[ti];
+			uint nsl = mount_slots(mnt);
+			if (nsl == 0u) { continue; } // stripped chassis: nothing to take
 			vec2 apos = sh_tpos[ti];
-			vec2 dtw = b.pos - apos;
-			float rng = av == VAR_TANK ? TANK_RNG : (av == VAR_RAIDER ? RAID_RNG : GUN_RNG);
-			if (dot(dtw, dtw) > rng * rng) { continue; }
+			vec2 dtw0 = b.pos - apos;
+			float maxr = mount_range(mnt);
+			if (dot(dtw0, dtw0) > maxr * maxr) { continue; }
 			vec2 ad = vec2(cos(sh_tang[ti]), sin(sh_tang[ti]));
-			float along = dot(dtw, ad);
-			if (along < 0.0 || along > len2 + 60.0) { continue; }
-			float dd = length(dtw - ad * along);
-			float wd = av == VAR_TANK ? 16.0 : 9.0;
-			vec2 away = dd > 0.001 ? (dtw - ad * along) / dd : vec2(-ad.y, ad.x);
-			if (dd < wd + b.radius) {
-				if (av == VAR_TANK) { // heavy shells arrive as slugs (fire_slug both sides)
-					vec2 sl = fire_slug(ALLY_LO + (ti - MAX_TURRETS), TANK_RATE, TANK_MV);
-					if (abs(sl.x - along) < 60.0) {
-						b.hp -= 140.0 * pc.dt; // ~8hp over the slug's pass, frame-rate independent
-						b.life = max(b.life, 0.6);
-						b.vel += (ad * 420.0 + away * 220.0) * pc.dt * 5.0;
-					}
-				} else { // gun-car / gunner mech: a steady chewing stream
-					b.hp -= (av == VAR_RAIDER ? 8.0 : 14.0) * pc.dt;
+			vec2 aperp = vec2(-ad.y, ad.x);
+			uint rank = 0u;
+			for (uint si = 0u; si < 3u; si++) {
+				uint w1 = mount_weap(mnt, si);
+				if (w1 == 0u) { continue; }
+				uint aw = w1 - 1u;
+				float dk = 1.0 + 0.5 * (max(float(mount_wlv(mnt, si)), 1.0) - 1.0); // weapon level → damage
+				float off = mount_off(rank, nsl);
+				rank++;
+				float rng = aw_range(aw);
+				if (dot(dtw0, dtw0) > rng * rng) { continue; }
+				if (aw == AW_ARC) { // the arc projector: a crackling field around the rig, no gun line
+					b.hp -= 7.0 * dk * pc.dt;
 					b.life = max(b.life, 0.4);
-					b.vel += ad * 300.0 * pc.dt * 4.0;
+					float ja = hash1(id * 87u + uint(pc.time * 14.0)) * TAU; // jolted about
+					b.vel += vec2(cos(ja), sin(ja)) * 700.0 * pc.dt * 3.0;
+					continue;
 				}
-			} else if (dd < wd * 6.0) { // scramble off the gun line
-				desired = mix(desired, away * spd * 1.6, 0.5);
+				vec2 dtw = dtw0 - aperp * off; // this hardpoint's own fire line
+				float along = dot(dtw, ad);
+				if (along < 0.0 || along > len2 + 60.0) { continue; }
+				float dd = length(dtw - ad * along);
+				float wd = aw == AW_CANNON ? 16.0 : (aw == AW_LASER ? 14.0 : 9.0);
+				vec2 away = dd > 0.001 ? (dtw - ad * along) / dd : vec2(-ad.y, ad.x);
+				if (dd < wd + b.radius) {
+					if (aw == AW_CANNON) { // heavy shells arrive as slugs (fire_slug both sides)
+						vec2 sl = fire_slug(ALLY_LO + (ti - MAX_TURRETS) + rank * 37u, TANK_RATE, TANK_MV);
+						if (abs(sl.x - along) < 60.0) {
+							b.hp -= 140.0 * dk * pc.dt; // ~8hp over the slug's pass, frame-rate independent
+							b.life = max(b.life, 0.6);
+							b.vel += (ad * 420.0 + away * 220.0) * pc.dt * 5.0;
+						}
+					} else if (aw == AW_LASER) { // a steady cutting beam down the lock line
+						b.hp -= 9.0 * dk * pc.dt;
+						b.life = max(b.life, 0.4);
+						b.vel += (ad * 260.0 + away * 260.0) * pc.dt * 4.0;
+					} else { // gatling: a steady chewing stream
+						b.hp -= 11.0 * dk * pc.dt;
+						b.life = max(b.life, 0.4);
+						b.vel += ad * 300.0 * pc.dt * 4.0;
+					}
+				} else if (dd < wd * 6.0) { // scramble off the gun line
+					desired = mix(desired, away * spd * 1.6, 0.5);
+				}
 			}
 		}
 	}
@@ -751,6 +835,10 @@ void main() {
 	// the player. Far from the ship nobody sees the crowd overlap and bullets can't
 	// reach; skipping the 3×3 scan there is what makes an 80k horde cheap.
 	if (pd < 2400.0) {
+		// separation ACCUMULATES and applies once, clamped: in a deep pile the per-pair
+		// corrections sum to a multi-radius teleport that flips direction every frame —
+		// the crowd visibly jitters. Clamped, the pile relaxes over a few frames instead.
+		vec2 sep = vec2(0.0);
 		int cx = int(clamp(b.pos.x / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
 		int cy = int(clamp(b.pos.y / CELL_SIZE, 0.0, float(GRID_SIZE) - 1.0));
 		for (int dy = -1; dy <= 1; dy++) {
@@ -795,13 +883,15 @@ void main() {
 								atomicAdd(STATS[30], uint(int(-(off.x / d) * 180.0)));
 								atomicAdd(STATS[31], uint(int(-(off.y / d) * 180.0)));
 							} else {
-								b.pos += (off / d) * (md - d) * 0.5;
+								sep += (off / d) * (md - d) * 0.5;
 							}
 						}
 					}
 				}
 			}
 		}
+		float sl = length(sep);
+		if (sl > 0.001) { b.pos += sep * (min(sl, b.radius * 0.5) / sl); }
 	}
 	// gun/laser kills die immediately; blast-stamped bots (hp = -100) walk on until
 	// their distance fuse runs out, so the deaths sweep radially outward

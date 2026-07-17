@@ -9,6 +9,7 @@ void main() {
 	if (b.kind == KIND_DEAD) { discard; }
 	body_paint();
 	vec2 p = v_local;
-	wreck(p, b);
+	if (b.kind == KIND_FACTORY) { factory(p, b); } // the pads are ground too — the horde walks over them
+	else { wreck(p, b); }
 	body_finish(p, b);
 }

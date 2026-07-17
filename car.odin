@@ -28,6 +28,10 @@ KIND_TURRET :: u32(6) // static defense tower (perimeter laser / inner machine g
 KIND_HELPER :: u32(7) // friendly salvage drone: hauls wrecks to the pit on its own
 KIND_ALLY   :: u32(8) // YOUR army: tanks/gun-cars/gunner mechs pushing out the avenues,
                       //   suicide drones + bombers staged at the CENTER, sortieing out
+KIND_FACTORY :: u32(9) // drivable FACTORY pad: variant 0 = the MACHINE WORKS (east, on the
+                       //   main street's first crossing — the army rolls off its line),
+                       //   1 = the WEAPONS LAB (west ring road). Park on one and the
+                       //   number keys drive production, F pays the upgrade (loop.odin)
 VAR_SPIDER  :: u32(0)
 VAR_SKITTER :: u32(1)
 VAR_BRUTE   :: u32(2)
@@ -39,6 +43,8 @@ VAR_SUICIDE :: u32(7) // ally flying drone bomb: staged at the center, dives the
 VAR_GUNNER  :: u32(8) // ally rifle mech: marches the avenues hosing autofire
 VAR_BOMBER  :: u32(9) // ally high wing: patrols from the center, dive-bombs warbands
 VAR_MINE    :: u32(10) // player proximity mine (a KIND_BULLET that waits, then BOOMs)
+VAR_DRONE   :: u32(11) // ally GUN DRONE: a flying weapons platform — flies straight over
+                       //   the blocks, orbits its prey like a gun-car, fires its hardpoints
 // mounted-weapon ids the shaders branch on — MUST equal the Weapon enum positions
 WEAP_SING   :: u32(9)  // Z: the SINGULARITY — a charging well that reels the horde
                        //    into the cursor, then erupts into a massive ring bomb
@@ -47,6 +53,32 @@ WEAP_SCYTHE :: u32(11) // C: a laser blade sweeping an arc around the aim
 WEAP_FLAMER :: u32(12) // V: rolling fire cone — burns + shoves the horde back
 WEAP_ARC    :: u32(13) // B: crackling discharge field around the rig
 WEAP_VORTEX :: u32(14) // N: drags the horde into the cursor (herding, no damage)
+// the army's HARDPOINTS. Body.mount packs a machine's whole LOADOUT, stamped at build
+// time by spawn_ally straight from the factory table the CPU publishes into Stats
+// (fab_publish): slot s at bits s*6 = (weap+1) | weapon_level<<3 (0 = empty hardpoint),
+// machine build level at bits 18-20. Physics damage, targeting range (aw_range),
+// battle_damage's hp scale and the crew.frag tracers all read the same word.
+AW_CANNON :: u32(0) // heavy slugs on the fire_slug cadence (the classic tank gun)
+AW_GAT    :: u32(1) // chewing tracer stream (the classic gun-car / gunner hose)
+AW_LASER  :: u32(2) // a steady cutting beam down the lock line
+AW_ARC    :: u32(3) // crackling discharge field around the rig — short reach, swarm peel
+FAB_D     :: f32(560) // both factory pads sit ON the first ring road, due east/west of the pit
+FAB_R     :: f32(100) // pad radius — the car parked inside it is AT that factory
+FAB_GRANT :: u32(1000) // the works' opening credit — sized so even a max-fit army (64
+                       //   triple-cannon tanks ≈ 960) rolls out in full before the
+                       //   salvage fleet has banked anything; the fab must never stall
+                       //   at the start (income ramps ~14 → ~275 deposits/s as the war
+                       //   reaches the perimeter towers, measured via the econ print)
+FAB_EXCH  :: u32(8)   // pit deposits per 1 SCRAP — the towers feed the pit thousands of
+                      //   husks; raw deposit count would drown every price
+// the factory LEDGER + LINE CONFIG live in CPU-owned Stats words (the one CPU↔GPU
+// channel): [40] scrap the GPU line has spent (atomic reserve in spawn_ally),
+// [42] scrap the CPU spent on upgrades, [44+t] machine type t's full mount word,
+// [50+t] its build cost — fab_publish (car.odin) writes 42/44../50.. every frame
+STAT_SPENT :: u32(40)
+STAT_CPUSP :: u32(42)
+STAT_MOUNT :: u32(44)
+STAT_COST  :: u32(50)
 // the GARAGE — 1..9 pick what the PLAYER body is (player.variant = ride index)
 RIDE_TRUCK    :: u32(0)
 RIDE_BUGGY    :: u32(1)
@@ -61,8 +93,8 @@ MAX_ENEMIES :: 80000
 MAX_BULLETS :: 384
 MAX_TURRETS :: 64
 MAX_HELPERS :: 240 // a SWARM of salvage drones — they do all the hauling
-MAX_ALLIES  :: 64  // the army (one shared-cache page: slots 0-17 tanks, 18-31 gun-cars,
-                   //   32-43 gunner mechs, 44-55 suicide drones, 56-63 bombers)
+MAX_ALLIES  :: 128 // the army — big enough that the works ALWAYS has a slot to fill;
+                   //   roles by normalized slot fraction (spawn_ally's auto ladder)
 ENEMY_LO    :: 1
 BULLET_LO   :: 1 + MAX_ENEMIES
 TURRET_LO   :: BULLET_LO + MAX_BULLETS
@@ -110,6 +142,7 @@ R_RAIDER    :: f32(14)
 R_SUICIDE   :: f32(12)
 R_GUNNER    :: f32(17)
 R_BOMBER    :: f32(30)
+R_DRONE     :: f32(13)
 HP_SPIDER   :: f32(3)
 HP_SKITTER  :: f32(1)
 HP_BRUTE    :: f32(10)
@@ -118,11 +151,10 @@ HP_RAIDER   :: f32(12)
 HP_SUICIDE  :: f32(6)
 HP_GUNNER   :: f32(16)
 HP_BOMBER   :: f32(12)
-TANK_RATE   :: f32(0.45) // ally tank cannon: volleys per second,
+HP_DRONE    :: f32(10)
+TANK_RATE   :: f32(0.45) // ally cannon: volleys per second,
 TANK_MV     :: f32(2000) //   shell muzzle velocity (px/s),
-TANK_RNG    :: f32(950)  //   engagement range — enemies + the body sprites (bodyrigs.glsl) derive the slug from time + slot id
-RAID_RNG    :: f32(520)  // ally gun-car firing range (it orbits its prey at ~320)
-GUN_RNG     :: f32(720)  // ally gunner mech stream range
+TANK_RNG    :: f32(950)  //   engagement range — enemies + the body sprites (bodyrigs.glsl) derive the slug from time + slot id; the other mounted weapons' ranges live in aw_range (common.glsl)
 KNOCKBACK   :: f32(90)
 ZOOM        :: f32(1.35) // world px per screen px — pulled back so the horde reads
 LEAN        :: f32(95)   // oblique fake-3D: world px of straight up-screen lean per unit height — a pure TRANSLATION, so buildings never shear. Tuned so towers read TALL while the view stays TOP-DOWN
@@ -194,8 +226,33 @@ run_seed:      u32 // per-run salt for the warband cluster hash
 ride:          int // 1-9: which garage vehicle the player body is (index into RIDES)
 style:         int // F/G/H/J/K/L: the ride's build (index into STYLES)
 weapon:        Weapon // Q..P: what LMB does
+// ── the FACTORIES: production choice, per-machine LOADOUTS (hardpoint slots under a
+// weight cap), and upgrade levels. fab_publish packs it all into the Stats config words
+// each frame; spawn_ally stamps the mount into every new build and pays its cost.
+FAB_LVMAX ::   7      // level cap per machine/weapon type (the mount word packs levels in 3 bits)
+MACH_SLOTS := [7]int{0, 3, 1, 2, 0, 0, 2}  // hardpoints per machine type (1..6; suicide/bomber ARE the payload)
+MACH_WCAP  := [7]int{0, 10, 4, 6, 0, 0, 4} // weight budget — +2 per machine level past 1
+MACH_COST  := [7]int{0, 5, 1, 2, 1, 2, 2}  // chassis build price in scrap (+ each mounted weapon's weight)
+WEAP_WT    := [5]int{0, 4, 2, 3, 3}        // weapon weight (1..4 = cannon/gatling/laser/arc)
+// the TECH LADDER: everything except the GUN-CAR + GATLING starts LOCKED (level 0) and
+// is founded ONE BY ONE — the unlock is simply the first buy on the same ladder the
+// levels climb. Locked machines fall back to gun-cars on the line (spawn_ally), so each
+// unlock visibly adds its column to the army.
+MACH_UNLOCK := [7]int{0, 800, 0, 250, 1500, 2500, 500} // founding price (0 = open from the start)
+WEAP_UNLOCK := [5]int{0, 300, 0, 800, 1500}            // cannon/laser/arc research price
+fab_mach:      int    // MACHINE WORKS line: 0 = auto mix (classic slot roles), 1..6 = tank/gun-car/gunner/suicide/bomber/drone
+fab_weap:      int    // WEAPONS LAB bench: which weapon type is up for unlock/upgrade (0 none, 1..4)
+mach_load:     [7][3]int // the LOADOUT per machine type: weapon id per hardpoint (0 = empty)
+mach_slots_unl: [7]int   // hardpoints OPENED on each chassis — the 2nd/3rd are bought one by one
+mach_lv:       [7]int // build level per machine type (0 = still locked; [0] unused)
+weap_lv:       [5]int // level per weapon type (0 = still locked; [0] unused)
+scrap_spent:   int    // deposits burned on upgrades — the GPU line's build spending is STATS[40]
+fab_pad:       int    // pad the car is parked on this frame (0 none, 1 machine works, 2 weapons lab)
+fab_open:      int    // whose panel is up: parking opens it, clicking a pad on screen opens it from afar
 city_r:        f32 // current city radius — grows as the pit is fed (pushed to the GPU)
 deposits_seen: u32 // last pit-counter value read from the Stats buffer
+deposits_prev: u32 // previous frame's counter — feeds the income meter
+scrap_rate:    f32 // smoothed deposits/s (EMA) → the HUD's scrap-per-minute readout
 input:       struct { up, down, left, right, fire, boost, ebrake, laser: bool, mouse: [2]f32 }
 
 // Pointers into the mapped GPU buffers.
@@ -287,6 +344,136 @@ block_pen :: proc(p: [2]f32) -> (sd: f32, n: [2]f32) {
 	return
 }
 
+// ── the FACTORIES ─────────────────────────────────────────────────────────────
+// Two drivable pads on the first ring road (KIND_FACTORY bodies, drawn by crew.frag):
+// the MACHINE WORKS east on the main street crossing — the army rolls off ITS line
+// (spawn_ally) — and the WEAPONS LAB west. Parked on a pad, the number keys pick what
+// the line produces (pressing the pick again = back to auto) and F pays the next
+// upgrade level with SCRAP: the pit deposits the salvage fleet hauls in are the
+// currency (deposits_seen), upgrades burn from the same counter (scrap_spent).
+
+// The till: the opening grant + the salvage fleet's banked deposits (exchanged at
+// FAB_EXCH:1), minus CPU upgrade spending and the GPU line's build spending (STATS[40],
+// reserved atomically per build).
+scrap_avail :: proc() -> int { return int(FAB_GRANT) + int(deposits_seen / FAB_EXCH) - scrap_spent - int(stats_at(int(STAT_SPENT))^) }
+// Next-level price: QUADRATIC (50/200/450/…/1800 to the lv-7 cap), priced against the
+// MEASURED economy (econ print in the shot harness): ~105 scrap/min at the opening, a
+// one-time ~2000/min wave as the first horde mass hits the towers, then ~258/min
+// sustained against ~64-150/min build attrition. So: the first buys land inside the
+// opening minutes, the wave funds the early unlocks, and the deep levels + late
+// foundings (bomber 2500) are the long war — the fab NEVER starves for builds
+// (surplus stays positive at every army fit); the rest of the scrap is the tech ladder.
+up_cost :: proc(lv: int) -> int { return 50 * lv * lv }
+slot_cost :: proc(s: int) -> int { return 250 * s * s } // opening a chassis' 2nd/3rd hardpoint
+
+// The NEXT price on a shop's ladder: the founding fee while locked, then the levels.
+fab_price :: proc(pad, sel: int) -> int {
+	lv := pad == 1 ? mach_lv[sel] : weap_lv[sel]
+	if lv == 0 { return pad == 1 ? MACH_UNLOCK[sel] : WEAP_UNLOCK[sel] }
+	return up_cost(lv)
+}
+
+// A machine type's loadout weight: what's mounted / what the chassis can carry
+// (upgrading the machine strengthens the frame: +2 weight per level).
+weight_used :: proc(t: int) -> int {
+	w := 0
+	for s in 0 ..< mach_slots_unl[t] { w += WEAP_WT[mach_load[t][s]] }
+	return w
+}
+weight_cap :: proc(t: int) -> int { return MACH_WCAP[t] + (mach_lv[t] - 1) * 2 }
+
+// A machine type's full build price: chassis + every mounted weapon's weight in scrap.
+build_cost :: proc(t: int) -> int { return MACH_COST[t] + weight_used(t) }
+
+// A machine type's mount word — THE loadout format every consumer decodes (see the
+// AW_* comment): hardpoint s at bits s*6 = (weap+1) | weap_lv<<3, machine level at 18.
+// Bit 31 = the line is still LOCKED — spawn_ally builds a gun-car in its place.
+mount_word :: proc(t: int) -> u32 {
+	if mach_lv[t] == 0 { return 1 << 31 }
+	w := u32(mach_lv[t]) << 18
+	for s in 0 ..< mach_slots_unl[t] { // only OPENED hardpoints go to the line
+		if wp := mach_load[t][s]; wp > 0 { w |= (u32(wp) | u32(weap_lv[wp]) << 3) << u32(s * 6) }
+	}
+	return w
+}
+
+// Publish the line config into the CPU-owned Stats words (every frame + once at init) —
+// spawn_ally builds straight from this table, no push-constant packing games.
+fab_publish :: proc() {
+	stats_at(int(STAT_CPUSP))^ = u32(scrap_spent)
+	for t in 1 ..= 6 {
+		stats_at(int(STAT_MOUNT) + t - 1)^ = mount_word(t)
+		stats_at(int(STAT_COST) + t - 1)^ = u32(build_cost(t))
+	}
+}
+
+// Cycle a hardpoint to the next weapon that FITS the weight budget (…, EMPTY, CANNON,
+// GATLING, LASER, ARC, EMPTY, …), skipping weapons still locked in the lab — the
+// loadout panel's click (ui.odin).
+fab_cycle_slot :: proc(t, s: int) {
+	free_w := weight_cap(t) - weight_used(t) + WEAP_WT[mach_load[t][s]]
+	for k in 1 ..= 5 {
+		wp := (mach_load[t][s] + k) % 5
+		if WEAP_WT[wp] <= free_w && (wp == 0 || weap_lv[wp] > 0) { mach_load[t][s] = wp; return }
+	}
+}
+
+// Open the NEXT hardpoint on a chassis (they unlock strictly one by one).
+fab_buy_slot :: proc(t, s: int) {
+	if s == mach_slots_unl[t] && s < MACH_SLOTS[t] && scrap_avail() >= slot_cost(s) {
+		scrap_spent += slot_cost(s)
+		mach_slots_unl[t] += 1
+		cam_shake = min(cam_shake + 2.5, 8)
+	}
+}
+
+// A number key while parked on a pad — true = consumed by the factory.
+fab_key :: proc(n: int) -> bool {
+	if fab_pad == 1 && n <= 6 { fab_mach = fab_mach == n ? 0 : n; return true }
+	if fab_pad == 2 && n <= 4 { fab_weap = fab_weap == n ? 0 : n; return true }
+	return false
+}
+
+// Buy the selected type's next rung — the founding UNLOCK while locked, a level after —
+// the UI's button and the F key both land here.
+fab_buy :: proc(pad: int) {
+	if sel := pad == 1 ? fab_mach : fab_weap; pad != 0 && sel > 0 {
+		lv := pad == 1 ? &mach_lv[sel] : &weap_lv[sel]
+		if lv^ < FAB_LVMAX && scrap_avail() >= fab_price(pad, sel) {
+			scrap_spent += fab_price(pad, sel)
+			lv^ += 1
+			cam_shake = min(cam_shake + 2.5, 8) // the works THUMP the new level in
+		}
+	}
+}
+
+// F while parked on a pad buys the upgrade — true = consumed (parked, F belongs to the
+// factory even when it can't pay or nothing is selected).
+fab_upgrade :: proc() -> bool {
+	if fab_pad == 0 { return false }
+	fab_buy(fab_pad)
+	return true
+}
+
+// the rim arc on a pad: fraction of the selected type's next rung banked (0..100)
+fab_prog :: proc(pad, sel: int) -> u32 {
+	if sel <= 0 { return 0 }
+	if (pad == 1 ? mach_lv[sel] : weap_lv[sel]) >= FAB_LVMAX { return 100 } // topped out
+	return u32(clamp(scrap_avail() * 100 / fab_price(pad, sel), 0, 100))
+}
+
+// pc.fab: selection + selected levels + parked pad + both pads' upgrade arcs — the pad
+// READOUT's state (the sprites in bodyfx.glsl); the line itself reads the Stats table.
+fab_pack :: proc() -> u32 {
+	v := u32(fab_mach) | u32(fab_weap) << 4
+	if fab_mach > 0 { v |= u32(mach_lv[fab_mach]) << 8 }
+	if fab_weap > 0 { v |= u32(weap_lv[fab_weap]) << 12 }
+	v |= u32(fab_pad) << 16
+	v |= fab_prog(1, fab_mach) << 18
+	v |= fab_prog(2, fab_weap) << 25
+	return v
+}
+
 game_init :: proc() {
 	car_pos = CENTER + {0, -(PIT_R + 170)} // hovering just off the pit plaza
 	car_vel = {}
@@ -299,7 +486,20 @@ game_init :: proc() {
 	ride, style = int(RIDE_COLOSSUS), 0 // default ride: the giant six-legged COLOSSUS (1-9 still swap)
 	weapon = .Cannon
 	input = {}
-	deposits_seen = 0
+	deposits_seen, deposits_prev, scrap_rate = 0, 0, 0
+	// the factories reset to DAY ONE: only the GUN-CAR line + GATLING research are open;
+	// every other machine, weapon, hardpoint and level is founded one by one with scrap
+	fab_mach, fab_weap, fab_pad, fab_open, scrap_spent = 0, 0, 0, 0, 0
+	mach_lv = {}
+	weap_lv = {}
+	mach_lv[2] = 1 // the GUN-CAR line
+	weap_lv[2] = 1 // GATLING research
+	mach_load = {} // stock loadout: a gatling on every first hardpoint
+	for t in 1 ..= 6 {
+		mach_slots_unl[t] = min(1, MACH_SLOTS[t])
+		if MACH_SLOTS[t] > 0 { mach_load[t][0] = 2 }
+	}
+	ui_font_upload() // the 5x7 font bits → FONT buffer (built from the art in ui.odin)
 	for i in 0 ..< 64 { stats_at(i)^ = 0 }
 	city_r = CITY_R0
 	mem.zero(buf_map[.Skid], int(SKID_RES * SKID_RES)) // a fresh road: no rubber yet
@@ -329,10 +529,15 @@ game_init :: proc() {
 	for i in 0 ..< MAX_TURRETS { body_at(TURRET_LO + i)^ = {kind = KIND_DEAD} }
 	n := 0
 	spawn_tower :: proc(n: ^int, pos: [2]f32, a: f32) {
-		if n^ >= MAX_TURRETS { return }
+		if n^ >= MAX_TURRETS - 2 { return } // the last two turret slots are the FACTORY pads
 		body_at(TURRET_LO + n^)^ = {pos = pos, radius = R_TURRET, angle = a, hp = 100, kind = KIND_TURRET}
 		n^ += 1
 	}
+	// the FACTORY pads (static KIND_FACTORY bodies in the reserved slot tail): the
+	// MACHINE WORKS east where the main street crosses the first ring, the WEAPONS LAB
+	// mirrored west — both on open street, drivable, drawn by crew.frag off pc.fab
+	body_at(TURRET_LO + MAX_TURRETS - 2)^ = {pos = CENTER + {FAB_D, 0}, radius = FAB_R, hp = 100, kind = KIND_FACTORY, variant = 0}
+	body_at(TURRET_LO + MAX_TURRETS - 1)^ = {pos = CENTER - {FAB_D, 0}, radius = FAB_R, hp = 100, angle = math.PI, kind = KIND_FACTORY, variant = 1}
 	r_g := city_r + 120 // right on the city's shoulder — the wall of lasers guards the edge
 	for j in 0 ..< int(SPOKES) { // the gates
 		a := f32(j) * f32(math.TAU) / SPOKES + SPIRAL * r_g
@@ -359,12 +564,15 @@ game_init :: proc() {
 		body_at(HELPER_LO + i)^ = {pos = CENTER + [2]f32{math.cos(a), math.sin(a)} * (PIT_R + 140), radius = R_HELPER, angle = a, kind = KIND_HELPER}
 	}
 
-	// The ARMY assembles at the CENTER: seed the slots dead with an instant countdown —
-	// physics.comp's spawn_ally (the ONE source of ally stats/roles) births them on the
-	// pit apron the first frame, and the columns march out the avenues from there.
+	// The ARMY rolls off the MACHINE WORKS line: seed the slots dead with a staggered
+	// countdown — physics.comp's spawn_ally (the ONE source of ally stats/loadouts,
+	// reading the factory config off pc.fab + the Stats table) births one every beat
+	// at the east pad, and the columns march out the avenues from there.
 	for i in 0 ..< MAX_ALLIES {
-		body_at(ALLY_LO + i)^ = {kind = KIND_DEAD, life = 0.01, radius = 1}
+		body_at(ALLY_LO + i)^ = {kind = KIND_DEAD, life = 0.01 + f32(i) * 0.15, radius = 1}
 	}
+
+	fab_publish() // the line config table must be live before the first frame builds
 }
 
 // The same integer hash the shaders use (hash1 in common.glsl) — cluster centers need
@@ -427,6 +635,29 @@ game_update :: proc(dt: f32) {
 	// stays alive) but the radius holds at CITY_R0. Re-enable by bumping city_r by
 	// DEPOSIT_GROW per new deposit here.
 	deposits_seen = stats_at(0)^
+	// the income meter: smoothed deposits/s → the HUD's scrap-per-minute readout
+	if dt > 0.0001 {
+		scrap_rate += (f32(deposits_seen - deposits_prev) / dt - scrap_rate) * (1 - math.exp(-dt / 12))
+	}
+	deposits_prev = deposits_seen
+
+	// ── parked on a FACTORY pad? Its panel opens and the number keys + F belong to it
+	// (loop.odin). A pad can also be OPENED from afar by clicking it on screen
+	// (ui_frame handles the hit) — driving away again closes it.
+	fab_pad = 0
+	if linalg.length(car_pos - (CENTER + {FAB_D, 0})) < FAB_R { fab_pad = 1 }
+	if linalg.length(car_pos - (CENTER - {FAB_D, 0})) < FAB_R { fab_pad = 2 }
+	if fab_pad != 0 { fab_open = fab_pad }
+	if fab_open != 0 && fab_pad == 0 {
+		pp := CENTER + {fab_open == 1 ? FAB_D : -FAB_D, 0}
+		if linalg.length(car_pos - pp) > 2400 { fab_open = 0 } // out of range: the link drops
+	}
+
+	// ── the UI (ui.odin): emit this frame's HUD + factory panels, answer the click —
+	// and never fire the guns through a panel the cursor is working
+	ui_frame()
+	if ui_hover { input.fire = false; input.laser = false }
+	fab_publish() // config → the Stats table the GPU line builds from
 
 	// ── hover ship: thrust along the nose, low grip so momentum carries sideways
 	// (drift!), Space dumps boost into the mains. Yaw works even at a standstill.

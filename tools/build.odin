@@ -575,6 +575,11 @@ main :: proc() {
 			case "--h":        fmt.sbprintf(&env, "TMM_H=%s ", flagv(&i))
 			case "--out":      fmt.sbprintf(&env, "TMM_SHOT_OUT=%s ", flagv(&i))
 			case "--settle":   fmt.sbprintf(&env, "TMM_SHOT_SETTLE=%s ", flagv(&i))
+			case "--mach":     fmt.sbprintf(&env, "TMM_SHOT_MACH=%s ", flagv(&i)) // factory: machine works selection (1..5)
+			case "--weap":     fmt.sbprintf(&env, "TMM_SHOT_WEAP=%s ", flagv(&i)) // factory: weapons lab mount (1..4)
+			case "--click":    fmt.sbprintf(&env, "TMM_SHOT_CLICK='%s' ", flagv(&i)) // "x,y,t[;x,y,t…]": scripted UI clicks at screen px (x,y) at sim second t
+			case "--load":     fmt.sbprintf(&env, "TMM_SHOT_LOAD='%s' ", flagv(&i)) // "t,s,w[;t,s,w…]": hardpoint fits for machine type t
+			case "--unlock":   strings.write_string(&env, "TMM_SHOT_UNLOCK=1 ") // the whole tech ladder founded
 			case "--no-fire":  strings.write_string(&env, "TMM_SHOT_FIRE=0 TMM_SHOT_LASER=0 ")
 			case "--freeze":   strings.write_string(&env, "TMM_SHOT_FREEZE=1 ")
 			case "--loader":   strings.write_string(&env, "TMM_SHOT_LOADER=1 ")

@@ -16,15 +16,17 @@ import vk "vendor:vulkan"
 // shader-side, declared in the graphics pipeline's own .vert/.frag.) Keep the block self-contained
 // (builtins only), one struct per line. Scalar layout — Odin default alignment matches GLSL `scalar`.
 // @glsl
-Push :: struct { screen, cam, player, aim: [2]f32, dt, time, muzzle, throttle, boost, laser, pfire, city_r, angle: f32, mode, pweap: u32 }
-Body :: struct { pos, vel: [2]f32, radius, life, hp, angle: f32, kind, variant, gen: u32 }
+Push :: struct { screen, cam, player, aim: [2]f32, dt, time, muzzle, throttle, boost, laser, pfire, city_r, angle: f32, mode, pweap, fab: u32 }
+Body :: struct { pos, vel: [2]f32, radius, life, hp, angle: f32, kind, variant, gen, mount: u32 } // mount: an ally's factory loadout — weap | wlv<<4 | mlv<<8 (0 elsewhere)
+Ui :: struct { pos, size: [2]f32, color: [4]f32, v0, v1, kind: u32 } // one IMMEDIATE-MODE UI element (ui.odin fills, ui.vert/.frag draw): kind 0 = rounded fill (v0 radius), 1 = font glyph (v0 index), 2 = rounded outline (v0 radius, v1 thickness)
 // @glsl-end
 
 // Grid / layout constants shared with the shaders — generated into GLSL (see the @glsl note above).
 // @glsl
 GRID_SIZE  :: 192
 GRID_CELLS :: GRID_SIZE * GRID_SIZE
-CELL_CAP   :: 64
+CELL_CAP   :: 128 // a dense pit-rim pile overflowed 64 — dropped bodies lose separation
+                  // for a frame and the crowd visibly JITTERS; memory is free
 CELL_SIZE  :: WORLD / f32(GRID_SIZE)
 BODY_COUNT :: 1 + MAX_ENEMIES + MAX_BULLETS + MAX_TURRETS + MAX_HELPERS + MAX_ALLIES
 CITY_KMAX  :: u32(16) // block layout table: rings ×
@@ -60,7 +62,7 @@ MODE_COUNT :: 3 // CPU-only: number of compute passes per frame
 // bindless view), byte size, host-visible. WRITE IN ENUM ORDER — the row order is the bindless
 // slot. tools/gen emits the views + a `<macro>` for each (BODIES = bodyBuf[0].v, …), so shaders
 // just say BODIES/GCOUNT/GITEM/CITY. Add a buffer = add a row here and nothing else.
-Res :: enum { Body, GridCount, GridItem, Stats, City, Skid }
+Res :: enum { Body, GridCount, GridItem, Stats, City, Skid, Ui, Font }
 BUF_SPECS := [Res]BufSpec{
 	.Body      = { "BODIES", Body, u64(size_of(Body) * BODY_COUNT), true  }, // host-visible: CPU writes player + bullets
 	.GridCount = { "GCOUNT", u32,  u64(4 * GRID_CELLS),             false },
@@ -68,6 +70,8 @@ BUF_SPECS := [Res]BufSpec{
 	.Stats     = { "STATS",  u32,  u64(4 * 64),                     true  }, // host-visible: pit counters + per-frame shockwave list (composite distortion)
 	.City      = { "CITY",   u32,  u64(4 * CITY_KMAX * CITY_JMAX),  true  }, // host-visible: THE block layout (1 = built, 0 = hosts a carved plaza) — one source, both sides read it
 	.Skid      = { "SKID",   u32,  u64(SKID_RES * SKID_RES),        true  }, // host-visible: the rubber decal bytes (CPU stamps, city.frag reads)
+	.Ui        = { "UIEL",   Ui,   u64(size_of(Ui) * MAX_UI),       true  }, // host-visible: the frame's immediate-mode UI elements (ui.odin emits, ui.vert drains)
+	.Font      = { "FONT",   u32,  u64(4 * 2 * FONT_CAP),           true  }, // host-visible: the 5x7 procedural font — 2 packed u32 rows of bits per glyph, built once from the ASCII art in ui.odin (NO sprite sheet, no bake)
 }
 
 // ── offscreen images ── HDR render targets for the post chain, (re)created with the swapchain.
@@ -94,7 +98,7 @@ IMG_SPECS := [Img]ImgSpec{
 // .Physics → physics.comp — pipe_paths in vk.odin derives the .spv paths). The row holds
 // only what isn't derivable: `compute` picks the type, `vert` overrides the fs_tri
 // default, `blend`/`hdr` pick blending and the render target.
-Pipe :: enum { Physics, City, Wreck, Horde, Shot, Crew, Ship, Bloom, Composite }
+Pipe :: enum { Physics, City, Wreck, Horde, Shot, Crew, Ship, Bloom, Composite, Ui }
 PIPE_SPECS := [Pipe]PipeSpec{
 	.Physics   = {compute = true},
 	.City      = {hdr = true},
@@ -105,6 +109,7 @@ PIPE_SPECS := [Pipe]PipeSpec{
 	.Ship      = {vert = "body", blend = .Premul, hdr = true},
 	.Bloom     = {hdr = true},
 	.Composite = {},
+	.Ui        = {vert = "ui", blend = .Premul}, // screen-space immediate-mode UI, over the composite (post-tonemap)
 }
 
 // The synchronous init path: the offline baker (tools/bake) and the frozen-sim profiler drive.
@@ -132,7 +137,7 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	cs := cam + shake
 	scam := [2]f32{math.round(cs.x / ZOOM), math.round(cs.y / ZOOM)} * ZOOM
 	// pfire: the mounted weapons' hold envelope — for the SINGULARITY it IS the charge
-	pc := Push{screen = {w, h}, cam = scam, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, pfire = weapon == .Sing ? sing_charge : fire_v, city_r = city_r, angle = car_angle, pweap = u32(weapon)}
+	pc := Push{screen = {w, h}, cam = scam, player = car_pos, aim = aim_world, dt = dt, time = sim_time, muzzle = muzzle, throttle = throttle_v, boost = boost_v, laser = laser_v, pfire = weapon == .Sing ? sing_charge : fire_v, city_r = city_r, angle = car_angle, pweap = u32(weapon), fab = fab_pack()}
 
 	gpu_label(cmd, "physics")
 	vk.CmdBindPipeline(cmd, .COMPUTE, pipelines[.Physics])
@@ -193,11 +198,16 @@ render :: proc(dt: f32, cmd: vk.CommandBuffer, img: u32) {
 	gpu_stamp(cmd, 4) // bloom done
 	gpu_label_end(cmd)
 
-	// Composite → swapchain: scene + bloom, ACES tonemap, film grain, vignette.
+	// Composite → swapchain: scene + bloom, ACES tonemap, film grain, vignette — then the
+	// frame's immediate-mode UI (ui.odin filled UIEL during game_update) over the top.
 	gpu_label(cmd, "composite")
 	pass_begin(cmd, img)
 	vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Composite])
 	vk.CmdDraw(cmd, 3, 1, 0, 0)
+	if ui_count > 0 {
+		vk.CmdBindPipeline(cmd, .GRAPHICS, pipelines[.Ui])
+		vk.CmdDraw(cmd, 6, u32(ui_count), 0, 0)
+	}
 	pass_end(cmd, img)
 	gpu_stamp(cmd, 5) // composite done — whole GPU frame
 	gpu_label_end(cmd)

@@ -40,11 +40,14 @@ run_game :: proc() {
 		// microseconds old instead of a whole refresh stale.
 		cmd, img, frame_ok := frame_begin()
 
+		ui_click = false // LMB-down EDGE for the immediate-mode UI, one frame only
 		ev: SDL.Event
 		for SDL.PollEvent(&ev) {
 			#partial switch ev.type {
 			case .QUIT:
 				should_quit = true
+			case .MOUSE_BUTTON_DOWN:
+				if ev.button.button == 1 { ui_click = true }
 			case .WINDOW_RESIZED, .WINDOW_PIXEL_SIZE_CHANGED:
 				resized = true // an image is already acquired — recreate only after it presents
 			case .KEY_DOWN:
@@ -58,13 +61,14 @@ run_game :: proc() {
 				case .D:      input.right = true
 				case .LSHIFT: input.boost = true
 				case .SPACE:  input.ebrake = true
-				// the GARAGE: 1-9 pick the ride
-				case ._1: ride = 0
-				case ._2: ride = 1
-				case ._3: ride = 2
-				case ._4: ride = 3
-				case ._5: ride = 4
-				case ._6: ride = 5
+				// the GARAGE: 1-9 pick the ride — unless parked on a FACTORY pad,
+				// where the low numbers pick what the line produces (fab_key)
+				case ._1: if !fab_key(1) { ride = 0 }
+				case ._2: if !fab_key(2) { ride = 1 }
+				case ._3: if !fab_key(3) { ride = 2 }
+				case ._4: if !fab_key(4) { ride = 3 }
+				case ._5: if !fab_key(5) { ride = 4 }
+				case ._6: if !fab_key(6) { ride = 5 }
 				case ._7: ride = 6
 				case ._8: ride = 7
 				case ._9: ride = 8
@@ -86,8 +90,9 @@ run_game :: proc() {
 				case .B: weapon = .Arc
 				case .N: weapon = .Vortex
 				case .M: weapon = .Mines
-				// builds on the home row (A/S/D steer, so F..L carry the variants)
-				case .F: style = 0
+				// builds on the home row (A/S/D steer, so F..L carry the variants);
+				// on a factory pad F pays the selected upgrade instead
+				case .F: if !fab_upgrade() { style = 0 }
 				case .G: style = 1
 				case .H: style = 2
 				case .J: style = 3
