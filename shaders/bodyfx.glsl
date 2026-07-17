@@ -33,18 +33,9 @@ float gait_ph(Body b) {
 // team paint: YOUR army (and its dying/limping bodies) burns green, never red
 void body_paint() {
 	if (v_id >= ALLY_LO) { gMark = vec3(0.20, 0.44, 0.18); gEye = RIG_GRN * 0.9; }
-	// the HORDE (every enemy slot, dying ones included): dusty RUST-TONED steel — the
-	// same warm desaturated family as the city's roofs and facades, one notch more
-	// saturated so the machines read as machines — wearing RED unit paint and
-	// RED-burning sensor eyes: a field of red eyes on the night ground.
-	else if (v_id >= ENEMY_LO && v_id < BULLET_LO) {
-		gPlateA = vec3(0.120, 0.121, 0.136); // SLIGHTLY cool steel — a faint blue cast lifts the horde off the warm city
-		gPlateB = vec3(0.063, 0.064, 0.075);
-		gBrush  = 2.6; // the most worked-over, filthiest metal on the field
-		gGrime  = 1.2;
-		gEye    = vec3(1.60, 0.16, 0.06); // HDR red — the eyes BLOOM like the player's green
-		gMark   = vec3(0.85, 0.13, 0.04);    // BRIGHT red unit paint — the enemy's language
-	}
+	// the HORDE (every enemy slot, dying ones included): the shared enemy paint —
+	// horde_paint() in bodykit.glsl, the ONE definition the atlas baker also uses.
+	else if (v_id >= ENEMY_LO && v_id < BULLET_LO) { horde_paint(); }
 }
 
 // Battle damage overlay: soot creeps smoothly over the armor; the red is the hit
@@ -53,6 +44,8 @@ void body_paint() {
 // radiates outward through the bodies with the blast, staggered only by distance.
 void battle_damage(vec2 p, Body b, float maxhp) {
 	if (b.hp < -50.0) { return; } // blast-stamped: no damage glow — it walks, whitens, dies
+	float mlv = float((b.mount >> 18) & 7u); // the factory build level hardened this hull
+	if (mlv > 1.0) { maxhp *= 1.0 + 0.5 * (mlv - 1.0); }
 	float dmg = 1.0 - clamp(b.hp / maxhp, 0.0, 1.0);
 	if (dmg < 0.10) { return; }
 	float m = (dmg - 0.10) * 1.30;
@@ -101,6 +94,122 @@ void wreck(vec2 p, Body b) {
 	add += vec3(0.26, 0.29, 0.34) * glint * fade * cov * 0.45;
 	base *= 0.4 + 0.6 * fade; // crumbles away if left to rot
 	if (b.variant != 1u) { cov *= 0.55; } // on the ground: faded but clearly THERE
+}
+
+// ── the FACTORY PADS (KIND_FACTORY, drawn on the GROUND layer by wreck.frag so the
+// horde walks OVER them) ──────────────────────────────────────────────────────────
+// Selection GLYPHS — no text in this game: the factory deck shows a pictogram of what
+// its line is set to (machine silhouettes / weapon marks; a dot ring = AUTO). Pale
+// readout grey — the pad's green is reserved for the level/scrap state.
+void fab_glyph_mach(vec2 p, uint sel, float r) {
+	vec3 ink = vec3(0.42, 0.44, 0.40);
+	if (sel == 0u) { // AUTO: the mixed column — one dot per class in a ring
+		for (float i = 0.0; i < 5.0; i += 1.0) {
+			vec2 c = rot2(i * TAU / 5.0) * vec2(r * 0.30, 0.0);
+			lay(ink, soft(length(p - c) - r * 0.07));
+		}
+	} else if (sel == 1u) { // TANK: casemate + barrel
+		lay(ink, soft(sd_box(p, vec2(r * 0.22, r * 0.16)) - r * 0.04));
+		lay(ink, soft(sd_seg(p, vec2(0.0), vec2(r * 0.44, 0.0)) - r * 0.035));
+	} else if (sel == 2u) { // GUN-CAR: hull + four proud wheels
+		lay(ink, soft(sd_box(p, vec2(r * 0.26, r * 0.12)) - r * 0.03));
+		for (float sx = -1.0; sx <= 1.0; sx += 2.0) {
+			for (float sy = -1.0; sy <= 1.0; sy += 2.0) {
+				lay(ink, soft(length(p - vec2(sx * r * 0.17, sy * r * 0.17)) - r * 0.05));
+			}
+		}
+	} else if (sel == 3u) { // GUNNER MECH: body, four legs, the long autogun
+		for (float i = 0.0; i < 4.0; i += 1.0) {
+			vec2 tip = rot2(0.8 + i * (TAU / 4.0)) * vec2(r * 0.30, 0.0);
+			lay(ink, soft(sd_seg(p, vec2(0.0), tip) - r * 0.025));
+		}
+		lay(ink, soft(length(p) - r * 0.14));
+		lay(ink, soft(sd_seg(p, vec2(0.0), vec2(r * 0.45, 0.0)) - r * 0.03));
+	} else if (sel == 4u) { // SUICIDE DRONE: shell + the live core
+		lay(ink, soft(length(p) - r * 0.16));
+		add += RIG_GRN * 0.9 * soft(length(p) - r * 0.06);
+	} else if (sel == 5u) { // BOMBER: the delta wing
+		float w = sd_seg(p, vec2(r * 0.32, 0.0), vec2(-r * 0.24, r * 0.26));
+		w = min(w, sd_seg(p, vec2(r * 0.32, 0.0), vec2(-r * 0.24, -r * 0.26)));
+		w = min(w, sd_seg(p, vec2(-r * 0.24, r * 0.26), vec2(-r * 0.24, -r * 0.26)));
+		lay(ink, soft(w - r * 0.03));
+	} else { // GUN DRONE: hull + four rotor dots
+		lay(ink, soft(sd_box(p, vec2(r * 0.14, r * 0.10)) - r * 0.03));
+		for (float sx = -1.0; sx <= 1.0; sx += 2.0) {
+			for (float sy = -1.0; sy <= 1.0; sy += 2.0) {
+				lay(ink, soft(length(p - vec2(sx * r * 0.24, sy * r * 0.24)) - r * 0.06));
+			}
+		}
+	}
+}
+
+void fab_glyph_weap(vec2 p, uint sel, float r) {
+	vec3 ink = vec3(0.42, 0.44, 0.40);
+	if (sel == 0u) { // AUTO: each chassis keeps its classic gun — a dot per weapon
+		for (float i = 0.0; i < 4.0; i += 1.0) {
+			vec2 c = rot2(i * TAU / 4.0) * vec2(r * 0.28, 0.0);
+			lay(ink, soft(length(p - c) - r * 0.07));
+		}
+	} else if (sel == 1u) { // CANNON: breech + fat barrel
+		lay(ink, soft(length(p - vec2(-r * 0.18, 0.0)) - r * 0.13));
+		lay(ink, soft(sd_seg(p, vec2(-r * 0.1, 0.0), vec2(r * 0.42, 0.0)) - r * 0.055));
+	} else if (sel == 2u) { // GATLING: the gun under a stream of dashes
+		for (float i = 0.0; i < 3.0; i += 1.0) {
+			lay(ink, soft(sd_box(p - vec2((i - 1.0) * r * 0.26, r * 0.10), vec2(r * 0.08, r * 0.035))));
+		}
+		lay(ink, soft(sd_box(p - vec2(-r * 0.1, -r * 0.14), vec2(r * 0.16, r * 0.05)) - r * 0.02));
+	} else if (sel == 3u) { // LASER: one long thin beam off an emitter
+		lay(ink, soft(length(p - vec2(-r * 0.30, 0.0)) - r * 0.09));
+		lay(ink, soft(sd_seg(p, vec2(-r * 0.2, 0.0), vec2(r * 0.46, 0.0)) - r * 0.02));
+	} else { // ARC: three bolts snapping off a core
+		lay(ink, soft(length(p) - r * 0.08));
+		for (float i = 0.0; i < 3.0; i += 1.0) {
+			mat2 rt = rot2(i * TAU / 3.0);
+			vec2 m = rt * vec2(r * 0.20, r * 0.07);
+			lay(ink, soft(min(sd_seg(p, rt * vec2(r * 0.06, 0.0), m), sd_seg(p, m, rt * vec2(r * 0.38, -r * 0.04))) - r * 0.018));
+		}
+	}
+}
+
+void factory(vec2 p, Body b) {
+	// FACTORY PAD: variant 0 = the MACHINE WORKS, 1 = the WEAPONS LAB — a flat drivable
+	// service apron. Everything on it is GAMEPLAY readout (green = your side): the deck
+	// glyph is the line's current selection, the pip row its level, the inner rim arc
+	// the scrap banked toward the NEXT level (a full circle = F can pay). The CPU packs
+	// all of it into pc.fab (fab_pack, car.odin); production itself is spawn_ally's.
+	bool mach = b.variant == 0u;
+	uint sel  = mach ? (pc.fab & 0xFu) : ((pc.fab >> 4) & 0xFu);
+	float lv  = float(mach ? (pc.fab >> 8) & 0xFu : (pc.fab >> 12) & 0xFu);
+	bool parked = ((pc.fab >> 16) & 0x3u) == (mach ? 1u : 2u);
+	float prog = float((pc.fab >> (mach ? 18u : 25u)) & 0x7Fu) * 0.01;
+	float r = b.radius;
+	if (length(p) > r * 1.3) { return; }
+	gL = rot2(-b.angle) * normalize(vec2(-0.6, -0.8));
+	gCS = r * 0.5; // sheen scaled to the pad — bot-sized gCS turns a deck this big into a blooming mirror
+	plate(p, vec2(0.0), length(p) - r * 1.12, BOT_LINE * 2.2, 1.0); // apron ring
+	float pa = atan(p.y, p.x);
+	// hazard dashes around the apron — neutral, static
+	lay(vec3(0.30, 0.29, 0.25), soft(abs(length(p) - r * 1.02) - 4.5) * step(0.5, fract(pa / TAU * 24.0)) * 0.8);
+	plate(p, vec2(0.0), length(p) - r * 0.88, vec3(0.095, 0.096, 0.104), 2.0); // the deck — dark service asphalt
+	plate(p, vec2(0.0), length(p) - r * 0.52, vec3(0.135, 0.136, 0.146), 3.0); // readout slab
+	for (float i = 0.0; i < 4.0; i += 1.0) { // corner service pylons, ivory work lamps
+		vec2 c = rot2(i * TAU / 4.0 + TAU / 8.0) * vec2(r * 0.72, 0.0);
+		plate(p, c, sd_box(p - c, vec2(r * 0.10, r * 0.10)) - r * 0.03, gPlateA, i + 4.0);
+		add += PAL_LAMP * 0.5 * soft(length(p - c) - r * 0.035);
+	}
+	// team strip: green = YOURS. Steady when idle, breathing only while you're PARKED
+	// on it (live state — the pad is listening to the number keys)
+	float act = parked ? 0.85 + 0.35 * sin(pc.time * 3.2) : 0.4;
+	add += RIG_GRN * act * soft(abs(length(p) - r * 0.94) - 2.2);
+	// the scrap arc: the slice of the next upgrade already banked — a thin readout line,
+	// NOT a beacon (a full HDR-green circle bloomed the whole deck green)
+	if (fract(pa / TAU + 0.25) < prog) { add += RIG_GRN * 0.4 * soft(abs(length(p) - r * 0.60) - 1.6); }
+	for (float i = 0.0; i < 7.0; i += 1.0) { // level pips across the deck's rear edge (0 lit = still locked)
+		vec2 c = vec2(-r * 0.33 + i * r * 0.11, -r * 0.72);
+		lay(BOT_LINE * 3.0, soft(length(p - c) - r * 0.038));
+		if (i < lv) { add += RIG_GRN * 1.2 * soft(length(p - c) - r * 0.026); }
+	}
+	if (mach) { fab_glyph_mach(p, sel, r); } else { fab_glyph_weap(p, sel, r); }
 }
 
 void burst(vec2 p, Body b) {
@@ -254,7 +363,7 @@ void body_finish(vec2 p, Body b) {
 	// bombers) and the player's WING fly ABOVE it all and skip the test.
 	if (b.kind != KIND_HELPER && b.kind != KIND_BULLET
 	    && !(b.kind == KIND_WRECK && b.variant == 1u)
-	    && !(b.kind == KIND_ALLY && (b.variant == VAR_SUICIDE || b.variant == VAR_BOMBER))
+	    && !(b.kind == KIND_ALLY && (b.variant == VAR_SUICIDE || b.variant == VAR_BOMBER || b.variant == VAR_DRONE))
 	    && !(b.kind == KIND_PLAYER && b.variant == RIDE_WING)
 	    && (cov > 0.003 || dot(add, add) > 0.00001)) {
 		// building occlusion: a bot behind a building must not paint onto its roof. This

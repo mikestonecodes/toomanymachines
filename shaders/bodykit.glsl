@@ -31,6 +31,18 @@ vec3 gPlateB = vec3(0.168, 0.166, 0.128); // secondary / recessed plate
 float gBrush = 1.7;                       // brushing depth — every machine here is worked metal
 float gGrime = 0.80;                      // oily grime ground into the brushing — HEAVY on every machine, yours included
 
+// the HORDE's paint, stated ONCE for both consumers (body_paint() live, bake_body.frag baking
+// the atlas): cool steel lifted a notch off the near-black ground, under bold RED war paint and
+// HDR-red sensor eyes — the enemy's language.
+void horde_paint() {
+	gPlateA = vec3(0.150, 0.150, 0.172); // SLIGHTLY cool steel — a faint blue cast lifts the horde off the warm city
+	gPlateB = vec3(0.082, 0.083, 0.098);
+	gBrush  = 2.6; // the most worked-over, filthiest metal on the field
+	gGrime  = 1.2;
+	gEye    = vec3(1.90, 0.16, 0.05); // HDR red — the eyes BLOOM like the player's green
+	gMark   = vec3(1.00, 0.10, 0.03); // BRIGHT red war paint
+}
+
 void lay(vec3 c, float a) {
 	a = clamp(a, 0.0, 1.0);
 	base = mix(base, c, a);
@@ -124,6 +136,11 @@ void spider_chassis(vec2 p, Body b, float gt) {
 	plate(p, vec2(0.0), sd_box(p, vec2(r * 0.72, r * 0.56)) - r * 0.14, gPlateA, 1.0);
 	plate(p, vec2(r * 0.5, 0.0), sd_box(p - vec2(r * 0.5, 0.0), vec2(r * 0.26, r * 0.42)) - r * 0.08, gPlateB, 2.0);
 	plate(p, vec2(-r * 0.55, 0.0), sd_box(p - vec2(-r * 0.55, 0.0), vec2(r * 0.20, r * 0.34)) - r * 0.06, gPlateB * 0.75, 3.0);
+	// war-paint CHEVRON on the glacis, pointing where the machine is going — one glyph, team color
+	for (float s = -1.0; s <= 1.0; s += 2.0) {
+		vec2 q = rot2(s * 0.65) * (p - vec2(r * 0.44, s * r * 0.17));
+		lay(gMark, soft(sd_box(q, vec2(r * 0.20, r * 0.05))) * 0.92);
+	}
 	// corner deck bolts — visible fasteners say MACHINE
 	for (float sx = -1.0; sx <= 1.0; sx += 2.0) {
 		for (float sy = -1.0; sy <= 1.0; sy += 2.0) {
@@ -149,7 +166,9 @@ void skitter_chassis(vec2 p, Body b, float gt) {
 	mech_leg(p, r, -2.25, gt,           wUp, wLo);
 	plate(p, vec2(0.0), sd_box(p, vec2(r * 1.02, r * 0.38)) - r * 0.18, gPlateB, 1.0);
 	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.58, 0.0), vec2(r * 0.30, r * 0.26)) - r * 0.10, gPlateA, 2.0);
-	lay(gMark, soft(sd_box(p - vec2(-r * 0.25, 0.0), vec2(r * 0.48, r * 0.055))) * 0.85);
+	// war paint: full spine stripe running onto a painted NOSE band — the scout reads as a red dart
+	lay(gMark, soft(sd_box(p - vec2(-r * 0.25, 0.0), vec2(r * 0.48, r * 0.07))) * 0.92);
+	lay(gMark, soft(sd_box(p - vec2(r * 0.74, 0.0), vec2(r * 0.09, r * 0.24)) - r * 0.03) * 0.92);
 }
 
 void brute_chassis(vec2 p, Body b, float gt) {
@@ -170,10 +189,15 @@ void brute_chassis(vec2 p, Body b, float gt) {
 	for (float s = -1.0; s <= 1.0; s += 2.0) {
 		vec2 pod = vec2(r * 0.08, s * r * 0.52);
 		plate(p, pod, sd_box(p - pod, vec2(r * 0.34, r * 0.16)) - r * 0.05, gPlateB, s + 4.0);
+		lay(gMark, soft(sd_box(p - pod - vec2(0.0, s * r * 0.115), vec2(r * 0.32, r * 0.035))) * 0.92); // outboard pod stripe
 		for (float k = -1.0; k <= 1.0; k += 1.0) {
 			lay(BOT_LINE, soft(length(p - pod - vec2(k * r * 0.2, 0.0)) - r * 0.055));
 		}
 	}
-	// forward glacis — plain armor, NO marking (painted shapes all read as glyphs)
+	// forward glacis wearing the heavy's war-paint CHEVRON — the biggest glyph on the field
 	plate(p, vec2(r * 0.55, 0.0), sd_box(p - vec2(r * 0.56, 0.0), vec2(r * 0.22, r * 0.34)) - r * 0.06, gPlateB, 6.0);
+	for (float s = -1.0; s <= 1.0; s += 2.0) {
+		vec2 q = rot2(s * 0.75) * (p - vec2(r * 0.52, s * r * 0.15));
+		lay(gMark, soft(sd_box(q, vec2(r * 0.19, r * 0.055))) * 0.92);
+	}
 }

@@ -25,14 +25,9 @@ void main() {
 	vec2 inTile = (gl_FragCoord.xy - vec2(col, row) * float(ATLAS_TILE)) / float(ATLAS_TILE);
 	vec2 p = (inTile - 0.5) * 2.0 * (ATLAS_RAD * ATLAS_EXTK);
 
-	// the horde's paint (mirrors bodyfx.glsl body_paint()'s enemy branch) — the DIFFUSE values the
-	// chassis reads. gEye is emissive-only (re-added live), set here just for parity.
-	gPlateA = vec3(0.120, 0.121, 0.136); // slightly cool steel
-	gPlateB = vec3(0.063, 0.064, 0.075);
-	gBrush  = 2.6;
-	gGrime  = 1.2;
-	gEye    = vec3(1.60, 0.16, 0.06);
-	gMark   = vec3(0.85, 0.13, 0.04);
+	// the horde's paint — the SAME horde_paint() body_paint() runs live (bodykit.glsl), so the
+	// baked diffuse can never drift from the procedural dying/limping path.
+	horde_paint();
 
 	Body b;
 	b.pos = vec2(0.0); b.vel = vec2(0.0); b.radius = ATLAS_RAD; b.life = 0.0;

@@ -77,8 +77,11 @@ compose :: proc(stage: string, entry_path: string, out_path: string) {
 				}
 			}
 			if fi == 0 { continue } // gen.glsl is emitted verbatim up front — nothing to hoist
-			// any other top-level single-line declaration: struct / const / global / layout()
-			if !strings.has_suffix(strings.trim_right_space(line), ";") { continue }
+			// any other top-level single-line declaration: struct / const / global / layout() —
+			// judged on the CODE alone, so a trailing // comment doesn't stop the hoist
+			code := line
+			if ci := strings.index(code, "//"); ci >= 0 { code = code[:ci] }
+			if !strings.has_suffix(strings.trim_right_space(code), ";") { continue }
 			if strings.has_prefix(line, "struct ") || strings.has_prefix(line, "const ") ||
 			   strings.has_prefix(line, "layout(") || (word > 0 && is_glsl_type(line[:word])) {
 				fmt.sbprintf(&decls, "%s\n", line)
